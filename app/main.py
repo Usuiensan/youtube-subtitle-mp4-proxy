@@ -248,10 +248,10 @@ def ffmpeg_subtitle_arg(path: Path) -> str:
 async def download_sources(video_id: str, lang: str, work_dir: Path) -> tuple[Path, Path]:
     url = f"https://www.youtube.com/watch?v={video_id}"
     format_selector = (
-        f"bv*[height<={settings.max_height}][ext=mp4]+ba[ext=m4a]/"
-        f"b[height<={settings.max_height}][ext=mp4]/"
         f"bv*[height<={settings.max_height}]+ba/"
-        f"b[height<={settings.max_height}]"
+        f"b[height<={settings.max_height}]/"
+        "bv*+ba/"
+        "b"
     )
     await run_command(
         yt_dlp_base_args()
@@ -268,7 +268,7 @@ async def download_sources(video_id: str, lang: str, work_dir: Path) -> tuple[Pa
             "-f",
             format_selector,
             "--merge-output-format",
-            "mp4",
+            "mkv",
             "-o",
             "%(id)s.%(ext)s",
             url,
