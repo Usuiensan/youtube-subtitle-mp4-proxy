@@ -37,6 +37,7 @@ class Settings:
     subtitle_back_colour = os.getenv("SUBTITLE_BACK_COLOUR", "&H99000000")
     hls_segment_seconds = int(os.getenv("HLS_SEGMENT_SECONDS", "6"))
     hls_ready_timeout_seconds = int(os.getenv("HLS_READY_TIMEOUT_SECONDS", "1800"))
+    ytdlp_cookies_file = os.getenv("YTDLP_COOKIES_FILE")
 
 
 settings = Settings()
@@ -106,6 +107,13 @@ def assert_authorized(x_api_key: str | None) -> None:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
 
+def yt_dlp_base_args() -> list[str]:
+    args = ["yt-dlp", "--ignore-config"]
+    if settings.ytdlp_cookies_file:
+        args.extend(["--cookies", settings.ytdlp_cookies_file])
+    return args
+
+
 def is_fresh(path: Path) -> bool:
     if not path.exists():
         return False
@@ -172,9 +180,8 @@ async def run_command(args: list[str], cwd: Path | None = None) -> str:
 async def fetch_video_info(video_id: str) -> dict:
     url = f"https://www.youtube.com/watch?v={video_id}"
     raw = await run_command(
-        [
-            "yt-dlp",
-            "--ignore-config",
+        yt_dlp_base_args()
+        + [
             "--dump-single-json",
             "--skip-download",
             "--no-warnings",
@@ -247,9 +254,8 @@ async def download_sources(video_id: str, lang: str, work_dir: Path) -> tuple[Pa
         f"b[height<={settings.max_height}]"
     )
     await run_command(
-        [
-            "yt-dlp",
-            "--ignore-config",
+        yt_dlp_base_args()
+        + [
             "--no-playlist",
             "--write-subs",
             "--write-auto-subs",
