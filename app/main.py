@@ -57,6 +57,10 @@ class Settings:
     subtitle_back_colour = os.getenv("SUBTITLE_BACK_COLOUR", "&H99000000")
     hls_segment_seconds = int(os.getenv("HLS_SEGMENT_SECONDS", "6"))
     hls_ready_timeout_seconds = int(os.getenv("HLS_READY_TIMEOUT_SECONDS", "1800"))
+    ffmpeg_video_encoder = os.getenv("FFMPEG_VIDEO_ENCODER", "libx264")
+    ffmpeg_video_preset = os.getenv("FFMPEG_VIDEO_PRESET")
+    ffmpeg_video_crf = os.getenv("FFMPEG_VIDEO_CRF", "23")
+    ffmpeg_video_cq = os.getenv("FFMPEG_VIDEO_CQ", "23")
     ytdlp_cookies_file = os.getenv("YTDLP_COOKIES_FILE")
     ytdlp_bin = os.getenv("YTDLP_BIN")
     ytdlp_proxy = os.getenv("YTDLP_PROXY")
@@ -73,11 +77,13 @@ _hls_inflight: dict[str, asyncio.Task[Path]] = {}
 
 
 def cache_key(video_id: str, lang: str) -> str:
-    return f"{video_id}_{lang}_{subtitle_style_id()}"
+    return f"{video_id}_{lang}_{render_profile_id()}"
 
 
-def subtitle_style_id() -> str:
-    return hashlib.sha1(subtitle_force_style().encode("utf-8")).hexdigest()[:8]
+def render_profile_id() -> str:
+    return hashlib.sha1(
+        "\n".join([subtitle_force_style(), *ffmpeg_video_args()]).encode("utf-8")
+    ).hexdigest()[:8]
 
 
 def entry_dir(key: str) -> Path:
@@ -288,6 +294,39 @@ def ffmpeg_subtitle_arg(path: Path) -> str:
     )
 
 
+def ffmpeg_video_args() -> list[str]:
+    encoder = settings.ffmpeg_video_encoder.strip().lower()
+    if encoder in {"nvenc", "h264_nvenc"}:
+        return [
+            "-c:v",
+            "h264_nvenc",
+            "-preset",
+            settings.ffmpeg_video_preset or "fast",
+            "-rc",
+            "vbr",
+            "-cq",
+            settings.ffmpeg_video_cq,
+            "-b:v",
+            "0",
+            "-pix_fmt",
+            "yuv420p",
+        ]
+
+    if encoder != "libx264":
+        raise HTTPException(status_code=500, detail=f"Unsupported video encoder: {encoder}")
+
+    return [
+        "-c:v",
+        "libx264",
+        "-preset",
+        settings.ffmpeg_video_preset or "veryfast",
+        "-crf",
+        settings.ffmpeg_video_crf,
+        "-pix_fmt",
+        "yuv420p",
+    ]
+
+
 async def download_sources(video_id: str, lang: str, work_dir: Path) -> tuple[Path, Path]:
     url = f"https://www.youtube.com/watch?v={video_id}"
     format_selector = (
@@ -331,12 +370,7 @@ async def burn_subtitles(video: Path, subtitle: Path, destination: Path) -> None
             str(video),
             "-vf",
             ffmpeg_subtitle_arg(subtitle),
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "23",
+            *ffmpeg_video_args(),
             "-c:a",
             "aac",
             "-movflags",
@@ -361,12 +395,7 @@ async def create_hls(video: Path, subtitle: Path, destination_dir: Path) -> None
             str(video),
             "-vf",
             ffmpeg_subtitle_arg(subtitle),
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "23",
+            *ffmpeg_video_args(),
             "-c:a",
             "aac",
             "-f",

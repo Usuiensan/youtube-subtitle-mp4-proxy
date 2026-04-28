@@ -47,7 +47,7 @@ curl -L http://127.0.0.1:8000/youtube-hls/dQw4w9WgXcQ/ja
 - 最大画質: 720p
 - 同時変換: 1 件
 - キャッシュ TTL: 24 時間
-- 同一 `videoId + lang + 字幕スタイル` は変換ジョブを共有
+- 同一 `videoId + lang + 字幕スタイル + エンコード設定` は変換ジョブを共有
 - `Accept-Ranges: bytes` 対応
 - `yt-dlp` のユーザー設定は `--ignore-config` で無視
 - HLS は最初の `segment_*.ts` が生成されたら `m3u8` を返す
@@ -80,6 +80,24 @@ export SUBTITLE_FONT='BIZ UDGothic'
 curl -H 'X-Api-Key: change-me' -L -o out.mp4 \
   http://127.0.0.1:8000/youtube/dQw4w9WgXcQ/ja
 ```
+
+## GPU エンコード
+
+NVIDIA GTX 1050 Ti など NVENC 対応 GPU がある Windows 環境では、ローカル起動時に GPU エンコードを有効化できます。
+
+```powershell
+.\start-local-server.bat -GpuEncode
+```
+
+手動で指定する場合:
+
+```powershell
+$env:FFMPEG_VIDEO_ENCODER="h264_nvenc"
+$env:FFMPEG_VIDEO_PRESET="fast"
+$env:FFMPEG_VIDEO_CQ="23"
+```
+
+CPU エンコードに戻す場合は `FFMPEG_VIDEO_ENCODER=libx264` を指定します。NVENC を使うには、NVIDIA ドライバーと `h264_nvenc` 対応の FFmpeg が必要です。
 
 ## Nginx 例
 

@@ -4,7 +4,7 @@ setlocal
 cd /d "%~dp0"
 
 echo [youtube-mp4-proxy] Preparing local settings...
-powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\reset-local-env.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\reset-local-env.ps1" %*
 if errorlevel 1 goto error
 
 if not exist ".venv\Scripts\python.exe" (

@@ -7,6 +7,11 @@ param(
     [int]$JobTimeoutSeconds = 7200,
     [int]$HlsSegmentSeconds = 6,
     [int]$HlsReadyTimeoutSeconds = 1800,
+    [switch]$GpuEncode,
+    [string]$FfmpegVideoEncoder = "",
+    [string]$FfmpegVideoPreset = "",
+    [int]$FfmpegVideoCrf = 23,
+    [int]$FfmpegVideoCq = 23,
     [string]$SubtitleFont = "BIZ UDPGothic",
     [int]$SubtitleFontSize = 20,
     [int]$SubtitleMarginV = 5,
@@ -40,6 +45,16 @@ if (Test-Path -LiteralPath $ResolvedCacheDir) {
 }
 New-Item -ItemType Directory -Force -Path $ResolvedCacheDir | Out-Null
 
+if ($GpuEncode) {
+    $FfmpegVideoEncoder = "h264_nvenc"
+    if (-not $FfmpegVideoPreset) {
+        $FfmpegVideoPreset = "fast"
+    }
+}
+if (-not $FfmpegVideoEncoder) {
+    $FfmpegVideoEncoder = "libx264"
+}
+
 $env:CACHE_DIR = $ResolvedCacheDir
 $env:DEFAULT_LANG = $DefaultLang
 $env:MAX_DURATION_SECONDS = [string]$MaxDurationSeconds
@@ -48,6 +63,10 @@ $env:CACHE_TTL_SECONDS = [string]$CacheTtlSeconds
 $env:JOB_TIMEOUT_SECONDS = [string]$JobTimeoutSeconds
 $env:HLS_SEGMENT_SECONDS = [string]$HlsSegmentSeconds
 $env:HLS_READY_TIMEOUT_SECONDS = [string]$HlsReadyTimeoutSeconds
+$env:FFMPEG_VIDEO_ENCODER = $FfmpegVideoEncoder
+$env:FFMPEG_VIDEO_PRESET = $FfmpegVideoPreset
+$env:FFMPEG_VIDEO_CRF = [string]$FfmpegVideoCrf
+$env:FFMPEG_VIDEO_CQ = [string]$FfmpegVideoCq
 $env:SUBTITLE_FONT = $SubtitleFont
 $env:SUBTITLE_FONT_SIZE = [string]$SubtitleFontSize
 $env:SUBTITLE_MARGIN_V = [string]$SubtitleMarginV
@@ -85,6 +104,10 @@ $EnvLines = @(
     "JOB_TIMEOUT_SECONDS=$JobTimeoutSeconds",
     "HLS_SEGMENT_SECONDS=$HlsSegmentSeconds",
     "HLS_READY_TIMEOUT_SECONDS=$HlsReadyTimeoutSeconds",
+    "FFMPEG_VIDEO_ENCODER=$FfmpegVideoEncoder",
+    "FFMPEG_VIDEO_PRESET=$FfmpegVideoPreset",
+    "FFMPEG_VIDEO_CRF=$FfmpegVideoCrf",
+    "FFMPEG_VIDEO_CQ=$FfmpegVideoCq",
     "SUBTITLE_FONT=$SubtitleFont",
     "SUBTITLE_FONT_SIZE=$SubtitleFontSize",
     "SUBTITLE_MARGIN_V=$SubtitleMarginV",
@@ -117,6 +140,9 @@ Write-Host "CACHE_DIR=$env:CACHE_DIR"
 Write-Host "SUBTITLE_FONT=$env:SUBTITLE_FONT"
 Write-Host "SUBTITLE_FONT_SIZE=$env:SUBTITLE_FONT_SIZE"
 Write-Host "SUBTITLE_BACK_COLOUR=$env:SUBTITLE_BACK_COLOUR"
+Write-Host "FFMPEG_VIDEO_ENCODER=$env:FFMPEG_VIDEO_ENCODER"
+Write-Host "FFMPEG_VIDEO_PRESET=$env:FFMPEG_VIDEO_PRESET"
+Write-Host "FFMPEG_VIDEO_CQ=$env:FFMPEG_VIDEO_CQ"
 Write-Host ""
 Write-Host "Start the app with:"
 Write-Host "uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers"
