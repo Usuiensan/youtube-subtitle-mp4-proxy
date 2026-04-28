@@ -15,6 +15,8 @@ if not exist ".venv\Scripts\python.exe" (
   if errorlevel 1 goto error
 )
 
+set "PATH=%CD%\.venv\Scripts;%PATH%"
+
 echo [youtube-mp4-proxy] Installing/updating dependencies...
 ".venv\Scripts\python.exe" -m pip install -U pip
 if errorlevel 1 goto error

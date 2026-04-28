@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import shutil
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -57,6 +58,7 @@ class Settings:
     hls_segment_seconds = int(os.getenv("HLS_SEGMENT_SECONDS", "6"))
     hls_ready_timeout_seconds = int(os.getenv("HLS_READY_TIMEOUT_SECONDS", "1800"))
     ytdlp_cookies_file = os.getenv("YTDLP_COOKIES_FILE")
+    ytdlp_bin = os.getenv("YTDLP_BIN")
     ytdlp_proxy = os.getenv("YTDLP_PROXY")
     ytdlp_extra_args = os.getenv("YTDLP_EXTRA_ARGS", "")
 
@@ -129,7 +131,7 @@ def assert_authorized(x_api_key: str | None) -> None:
 
 
 def yt_dlp_base_args() -> list[str]:
-    args = ["yt-dlp", "--ignore-config"]
+    args = [yt_dlp_executable(), "--ignore-config"]
     if settings.ytdlp_cookies_file:
         args.extend(["--cookies", settings.ytdlp_cookies_file])
     if settings.ytdlp_proxy:
@@ -137,6 +139,18 @@ def yt_dlp_base_args() -> list[str]:
     if settings.ytdlp_extra_args:
         args.extend(shlex.split(settings.ytdlp_extra_args))
     return args
+
+
+def yt_dlp_executable() -> str:
+    if settings.ytdlp_bin:
+        return settings.ytdlp_bin
+
+    executable_name = "yt-dlp.exe" if os.name == "nt" else "yt-dlp"
+    venv_executable = Path(sys.executable).parent / executable_name
+    if venv_executable.exists():
+        return str(venv_executable)
+
+    return "yt-dlp"
 
 
 def is_fresh(path: Path) -> bool:
