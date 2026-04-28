@@ -195,6 +195,10 @@ async def run_command(args: list[str], cwd: Path | None = None) -> str:
 
     if process.returncode != 0:
         message = stderr.decode("utf-8", errors="replace").strip()
+        print(
+            f"Command failed: {' '.join(args)}\n{message}",
+            flush=True,
+        )
         raise HTTPException(
             status_code=502,
             detail=message[-1000:] or f"Command failed: {args[0]}",

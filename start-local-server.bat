@@ -21,6 +21,18 @@ if errorlevel 1 goto error
 ".venv\Scripts\python.exe" -m pip install -r requirements.txt "yt-dlp[default]"
 if errorlevel 1 goto error
 
+where deno >nul 2>nul
+if errorlevel 1 (
+  echo [youtube-mp4-proxy] Warning: deno was not found in PATH.
+  echo [youtube-mp4-proxy] YouTube downloads may fail until Deno is installed or YTDLP_EXTRA_ARGS is changed.
+) else (
+  for /f "delims=" %%i in ('deno --version 2^>nul') do (
+    echo [youtube-mp4-proxy] %%i
+    goto deno_done
+  )
+)
+:deno_done
+
 echo.
 echo [youtube-mp4-proxy] Starting server...
 echo [youtube-mp4-proxy] Open http://127.0.0.1:8000/
