@@ -76,6 +76,13 @@ _inflight: dict[str, asyncio.Task[Path]] = {}
 _hls_inflight: dict[str, asyncio.Task[Path]] = {}
 
 
+class CommandError(Exception):
+    def __init__(self, args: list[str], message: str) -> None:
+        super().__init__(message)
+        self.args_list = args
+        self.message = message
+
+
 def cache_key(video_id: str, lang: str) -> str:
     return f"{video_id}_{lang}_{render_profile_id()}"
 
@@ -197,7 +204,11 @@ def cleanup_expired_cache() -> None:
             shutil.rmtree(child, ignore_errors=True)
 
 
-async def run_command(args: list[str], cwd: Path | None = None) -> str:
+async def run_command(
+    args: list[str],
+    cwd: Path | None = None,
+    raise_http: bool = True,
+) -> str:
     process = await asyncio.create_subprocess_exec(
         *args,
         cwd=str(cwd) if cwd else None,
@@ -219,6 +230,8 @@ async def run_command(args: list[str], cwd: Path | None = None) -> str:
             f"Command failed: {' '.join(args)}\n{message}",
             flush=True,
         )
+        if not raise_http:
+            raise CommandError(args, message)
         raise HTTPException(
             status_code=502,
             detail=message[-1000:] or f"Command failed: {args[0]}",
@@ -294,8 +307,8 @@ def ffmpeg_subtitle_arg(path: Path) -> str:
     )
 
 
-def ffmpeg_video_args() -> list[str]:
-    encoder = settings.ffmpeg_video_encoder.strip().lower()
+def ffmpeg_video_args(encoder: str | None = None) -> list[str]:
+    encoder = (encoder or settings.ffmpeg_video_encoder).strip().lower()
     if encoder in {"nvenc", "h264_nvenc"}:
         return [
             "-c:v",
@@ -325,6 +338,63 @@ def ffmpeg_video_args() -> list[str]:
         "-pix_fmt",
         "yuv420p",
     ]
+
+
+def wants_nvenc() -> bool:
+    return settings.ffmpeg_video_encoder.strip().lower() in {"nvenc", "h264_nvenc"}
+
+
+def is_nvenc_driver_error(message: str) -> bool:
+    return (
+        "Driver does not support the required nvenc API version" in message
+        or "The minimum required Nvidia driver for nvenc" in message
+        or "Cannot load nvcuda.dll" in message
+        or "No NVENC capable devices found" in message
+    )
+
+
+async def run_ffmpeg_with_optional_nvenc_fallback(args: list[str]) -> None:
+    try:
+        await run_command(args, raise_http=False)
+        return
+    except CommandError as error:
+        if not wants_nvenc() or not is_nvenc_driver_error(error.message):
+            raise HTTPException(
+                status_code=502,
+                detail=error.message[-1000:] or f"Command failed: {error.args_list[0]}",
+            ) from error
+
+        print(
+            "NVENC is unavailable with the current NVIDIA driver; retrying with libx264.",
+            flush=True,
+        )
+
+    fallback_args: list[str] = []
+    skip_next = False
+    video_arg_values = {
+        "-preset",
+        "-rc",
+        "-cq",
+        "-b:v",
+        "-pix_fmt",
+        "-c:v",
+    }
+    for index, item in enumerate(args):
+        if skip_next:
+            skip_next = False
+            continue
+        if item in video_arg_values:
+            skip_next = index + 1 < len(args)
+            continue
+        fallback_args.append(item)
+
+    output_path = Path(fallback_args[-1])
+    if output_path.exists():
+        output_path.unlink()
+
+    insert_at = fallback_args.index("-c:a")
+    fallback_args[insert_at:insert_at] = ffmpeg_video_args("libx264")
+    await run_command(fallback_args)
 
 
 async def download_sources(video_id: str, lang: str, work_dir: Path) -> tuple[Path, Path]:
@@ -362,7 +432,7 @@ async def download_sources(video_id: str, lang: str, work_dir: Path) -> tuple[Pa
 
 async def burn_subtitles(video: Path, subtitle: Path, destination: Path) -> None:
     tmp_output = destination.with_suffix(".tmp.mp4")
-    await run_command(
+    await run_ffmpeg_with_optional_nvenc_fallback(
         [
             "ffmpeg",
             "-y",
@@ -387,7 +457,7 @@ async def create_hls(video: Path, subtitle: Path, destination_dir: Path) -> None
         if old_file.is_file():
             old_file.unlink()
 
-    await run_command(
+    await run_ffmpeg_with_optional_nvenc_fallback(
         [
             "ffmpeg",
             "-y",
