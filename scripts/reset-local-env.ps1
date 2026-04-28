@@ -15,6 +15,7 @@ param(
     [string]$SubtitlePrimaryColour = "&H00FFFFFF",
     [string]$SubtitleBackColour = "&H40000000",
     [string]$YtdlpExtraArgs = "--js-runtimes deno --remote-components ejs:npm",
+    [string]$YtdlpProxy = "",
     [string]$YtdlpCookiesFile = "",
     [string]$ApiKey = ""
 )
@@ -56,6 +57,12 @@ $env:SUBTITLE_PRIMARY_COLOUR = $SubtitlePrimaryColour
 $env:SUBTITLE_BACK_COLOUR = $SubtitleBackColour
 $env:YTDLP_EXTRA_ARGS = $YtdlpExtraArgs
 
+if ($YtdlpProxy) {
+    $env:YTDLP_PROXY = $YtdlpProxy
+} else {
+    Remove-Item Env:\YTDLP_PROXY -ErrorAction SilentlyContinue
+}
+
 if ($YtdlpCookiesFile) {
     $env:YTDLP_COOKIES_FILE = $YtdlpCookiesFile
 } else {
@@ -68,7 +75,44 @@ if ($ApiKey) {
     Remove-Item Env:\API_KEY -ErrorAction SilentlyContinue
 }
 
-Write-Host "Cache cleared and local environment variables set."
+$EnvFilePath = Join-Path $RepoRoot ".env.local"
+$EnvLines = @(
+    "CACHE_DIR=$ResolvedCacheDir",
+    "DEFAULT_LANG=$DefaultLang",
+    "MAX_DURATION_SECONDS=$MaxDurationSeconds",
+    "MAX_HEIGHT=$MaxHeight",
+    "CACHE_TTL_SECONDS=$CacheTtlSeconds",
+    "JOB_TIMEOUT_SECONDS=$JobTimeoutSeconds",
+    "HLS_SEGMENT_SECONDS=$HlsSegmentSeconds",
+    "HLS_READY_TIMEOUT_SECONDS=$HlsReadyTimeoutSeconds",
+    "SUBTITLE_FONT=$SubtitleFont",
+    "SUBTITLE_FONT_SIZE=$SubtitleFontSize",
+    "SUBTITLE_MARGIN_V=$SubtitleMarginV",
+    "SUBTITLE_MARGIN_L=$SubtitleMarginL",
+    "SUBTITLE_MARGIN_R=$SubtitleMarginR",
+    "SUBTITLE_PRIMARY_COLOUR=$SubtitlePrimaryColour",
+    "SUBTITLE_BACK_COLOUR=$SubtitleBackColour",
+    "YTDLP_EXTRA_ARGS=$YtdlpExtraArgs"
+)
+
+if ($YtdlpProxy) {
+    $EnvLines += "YTDLP_PROXY=$YtdlpProxy"
+}
+if ($YtdlpCookiesFile) {
+    $EnvLines += "YTDLP_COOKIES_FILE=$YtdlpCookiesFile"
+}
+if ($ApiKey) {
+    $EnvLines += "API_KEY=$ApiKey"
+}
+
+[System.IO.File]::WriteAllLines(
+    $EnvFilePath,
+    $EnvLines,
+    [System.Text.UTF8Encoding]::new($false)
+)
+
+Write-Host "Cache cleared and local settings written."
+Write-Host ".env.local=$EnvFilePath"
 Write-Host "CACHE_DIR=$env:CACHE_DIR"
 Write-Host "SUBTITLE_FONT=$env:SUBTITLE_FONT"
 Write-Host "SUBTITLE_FONT_SIZE=$env:SUBTITLE_FONT_SIZE"

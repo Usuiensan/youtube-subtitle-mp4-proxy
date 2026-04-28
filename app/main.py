@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import time
 import uuid
@@ -12,12 +13,30 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
 
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 LANG_RE = re.compile(r"^[A-Za-z0-9_-]{2,12}$")
 KEY_RE = re.compile(r"^[A-Za-z0-9_-]{11}_[A-Za-z0-9_-]{2,12}_[a-f0-9]{8}$")
+ENV_FILE = Path(__file__).resolve().parent.parent / ".env.local"
+
+
+def load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+load_env_file(ENV_FILE)
 
 
 class Settings:
@@ -38,6 +57,8 @@ class Settings:
     hls_segment_seconds = int(os.getenv("HLS_SEGMENT_SECONDS", "6"))
     hls_ready_timeout_seconds = int(os.getenv("HLS_READY_TIMEOUT_SECONDS", "1800"))
     ytdlp_cookies_file = os.getenv("YTDLP_COOKIES_FILE")
+    ytdlp_proxy = os.getenv("YTDLP_PROXY")
+    ytdlp_extra_args = os.getenv("YTDLP_EXTRA_ARGS", "")
 
 
 settings = Settings()
@@ -111,6 +132,10 @@ def yt_dlp_base_args() -> list[str]:
     args = ["yt-dlp", "--ignore-config"]
     if settings.ytdlp_cookies_file:
         args.extend(["--cookies", settings.ytdlp_cookies_file])
+    if settings.ytdlp_proxy:
+        args.extend(["--proxy", settings.ytdlp_proxy])
+    if settings.ytdlp_extra_args:
+        args.extend(shlex.split(settings.ytdlp_extra_args))
     return args
 
 
@@ -515,6 +540,238 @@ def hls_playlist_response(request: Request, key: str, playlist: Path) -> Respons
         media_type="application/vnd.apple.mpegurl",
         headers={"Cache-Control": "no-cache"},
     )
+
+
+@app.get("/", response_class=HTMLResponse)
+async def index() -> str:
+    default_lang = json.dumps(settings.default_lang)
+    return f"""<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YouTube Subtitle URL</title>
+  <style>
+    :root {{
+      color-scheme: light dark;
+      font-family: "Segoe UI", "Yu Gothic", Meiryo, sans-serif;
+      background: #f6f7f8;
+      color: #15171a;
+    }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }}
+    main {{
+      width: min(720px, 100%);
+    }}
+    h1 {{
+      margin: 0 0 18px;
+      font-size: 26px;
+      font-weight: 700;
+    }}
+    form {{
+      display: grid;
+      gap: 14px;
+    }}
+    label {{
+      display: grid;
+      gap: 7px;
+      font-size: 14px;
+      font-weight: 600;
+    }}
+    input, select {{
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 42px;
+      border: 1px solid #c8ced6;
+      border-radius: 8px;
+      padding: 9px 11px;
+      font: inherit;
+      background: #fff;
+      color: inherit;
+    }}
+    .row {{
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 12px;
+    }}
+    .actions {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }}
+    button, a.button {{
+      min-height: 42px;
+      border: 0;
+      border-radius: 8px;
+      padding: 9px 14px;
+      font: inherit;
+      font-weight: 700;
+      color: #fff;
+      background: #1f6feb;
+      text-decoration: none;
+      cursor: pointer;
+    }}
+    button.secondary {{
+      color: #17202a;
+      background: #e7ebf0;
+    }}
+    a.button[aria-disabled="true"] {{
+      pointer-events: none;
+      opacity: .45;
+    }}
+    output {{
+      display: block;
+      min-height: 22px;
+      overflow-wrap: anywhere;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 14px;
+    }}
+    .error {{
+      color: #b42318;
+      font-weight: 600;
+    }}
+    @media (max-width: 560px) {{
+      .row {{
+        grid-template-columns: 1fr;
+      }}
+      h1 {{
+        font-size: 22px;
+      }}
+    }}
+    @media (prefers-color-scheme: dark) {{
+      :root {{
+        background: #101316;
+        color: #f2f4f7;
+      }}
+      input, select {{
+        background: #191d22;
+        border-color: #3a424d;
+      }}
+      button.secondary {{
+        color: #f2f4f7;
+        background: #303842;
+      }}
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>YouTube Subtitle URL</h1>
+    <form id="converter">
+      <label>
+        YouTube URL
+        <input id="youtubeUrl" name="youtubeUrl" type="url" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off" required>
+      </label>
+      <div class="row">
+        <label>
+          Lang
+          <input id="lang" name="lang" value="" maxlength="12" autocomplete="off">
+        </label>
+        <label>
+          Output
+          <select id="mode" name="mode">
+            <option value="youtube-hls">HLS playlist</option>
+            <option value="youtube">MP4</option>
+          </select>
+        </label>
+      </div>
+      <label>
+        Converted URL
+        <output id="result"></output>
+      </label>
+      <div class="actions">
+        <button type="button" id="copyButton" class="secondary">Copy</button>
+        <a id="openLink" class="button" target="_blank" rel="noopener" aria-disabled="true">Open New Tab</a>
+      </div>
+      <output id="message" class="error"></output>
+    </form>
+  </main>
+  <script>
+    const defaultLang = {default_lang};
+    const form = document.getElementById("converter");
+    const input = document.getElementById("youtubeUrl");
+    const lang = document.getElementById("lang");
+    const mode = document.getElementById("mode");
+    const result = document.getElementById("result");
+    const message = document.getElementById("message");
+    const openLink = document.getElementById("openLink");
+    const copyButton = document.getElementById("copyButton");
+
+    lang.value = defaultLang;
+
+    function extractVideoId(value) {{
+      const trimmed = value.trim();
+      if (/^[A-Za-z0-9_-]{{11}}$/.test(trimmed)) return trimmed;
+      let url;
+      try {{
+        url = new URL(trimmed);
+      }} catch {{
+        return "";
+      }}
+      const host = url.hostname.replace(/^www\\./, "");
+      if (host === "youtu.be") {{
+        return url.pathname.split("/").filter(Boolean)[0] || "";
+      }}
+      if (!host.endsWith("youtube.com")) return "";
+      const watchId = url.searchParams.get("v");
+      if (watchId) return watchId;
+      const parts = url.pathname.split("/").filter(Boolean);
+      if (["shorts", "embed", "live"].includes(parts[0])) return parts[1] || "";
+      return "";
+    }}
+
+    function update() {{
+      const videoId = extractVideoId(input.value);
+      const language = (lang.value || defaultLang).trim();
+      if (!input.value.trim()) {{
+        result.textContent = "";
+        message.textContent = "";
+        openLink.removeAttribute("href");
+        openLink.setAttribute("aria-disabled", "true");
+        return;
+      }}
+      if (!/^[A-Za-z0-9_-]{{11}}$/.test(videoId)) {{
+        result.textContent = "";
+        message.textContent = "Invalid YouTube URL";
+        openLink.removeAttribute("href");
+        openLink.setAttribute("aria-disabled", "true");
+        return;
+      }}
+      if (!/^[A-Za-z0-9_-]{{2,12}}$/.test(language)) {{
+        result.textContent = "";
+        message.textContent = "Invalid language";
+        openLink.removeAttribute("href");
+        openLink.setAttribute("aria-disabled", "true");
+        return;
+      }}
+      const url = `${{location.origin}}/${{mode.value}}/${{videoId}}/${{language}}`;
+      result.textContent = url;
+      message.textContent = "";
+      openLink.href = url;
+      openLink.setAttribute("aria-disabled", "false");
+    }}
+
+    input.addEventListener("input", update);
+    lang.addEventListener("input", update);
+    mode.addEventListener("change", update);
+    form.addEventListener("submit", (event) => {{
+      event.preventDefault();
+      update();
+      if (openLink.href) window.open(openLink.href, "_blank", "noopener");
+    }});
+    copyButton.addEventListener("click", async () => {{
+      update();
+      if (result.textContent) await navigator.clipboard.writeText(result.textContent);
+    }});
+  </script>
+</body>
+</html>"""
 
 
 @app.get("/healthz")
