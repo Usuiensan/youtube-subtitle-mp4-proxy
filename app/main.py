@@ -9,17 +9,21 @@ import shlex
 import shutil
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
 
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 LANG_RE = re.compile(r"^[A-Za-z0-9_-]{2,12}$")
 KEY_RE = re.compile(r"^[A-Za-z0-9_-]{11}_[A-Za-z0-9_-]{2,12}_[a-f0-9]{8}$")
+YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,}$")
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env.local"
 
 
@@ -65,6 +69,7 @@ class Settings:
     ytdlp_bin = os.getenv("YTDLP_BIN")
     ytdlp_proxy = os.getenv("YTDLP_PROXY")
     ytdlp_extra_args = os.getenv("YTDLP_EXTRA_ARGS", "")
+    youtube_data_api_key = os.getenv("YOUTUBE_DATA_API_KEY")
 
 
 settings = Settings()
@@ -659,6 +664,191 @@ def hls_playlist_response(request: Request, key: str, playlist: Path) -> Respons
     )
 
 
+def require_youtube_data_api_key() -> str:
+    if not settings.youtube_data_api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="YOUTUBE_DATA_API_KEY is not configured",
+        )
+    return settings.youtube_data_api_key
+
+
+def extract_playlist_id(value: str) -> str:
+    value = value.strip()
+    if YOUTUBE_ID_RE.fullmatch(value):
+        return value
+    parsed = urllib.parse.urlparse(value)
+    query = urllib.parse.parse_qs(parsed.query)
+    playlist_id = query.get("list", [""])[0]
+    if YOUTUBE_ID_RE.fullmatch(playlist_id):
+        return playlist_id
+    raise HTTPException(status_code=400, detail="Invalid YouTube playlist id or URL")
+
+
+def extract_channel_lookup(value: str) -> tuple[str, str]:
+    value = value.strip()
+    if value.startswith("@"):
+        return "forHandle", value
+    if value.startswith("UC") and YOUTUBE_ID_RE.fullmatch(value):
+        return "id", value
+
+    parsed = urllib.parse.urlparse(value)
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 2 and parts[0] == "channel" and YOUTUBE_ID_RE.fullmatch(parts[1]):
+        return "id", parts[1]
+    if parts and parts[0].startswith("@"):
+        return "forHandle", parts[0]
+    if len(parts) >= 2 and parts[0] in {"c", "user"}:
+        return "forUsername", parts[1]
+
+    raise HTTPException(status_code=400, detail="Invalid YouTube channel id, handle, or URL")
+
+
+def youtube_api_get_sync(path: str, params: dict[str, str | int]) -> dict:
+    params = {**params, "key": require_youtube_data_api_key()}
+    url = f"https://www.googleapis.com/youtube/v3/{path}?{urllib.parse.urlencode(params)}"
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace")
+        try:
+            detail = json.loads(body).get("error", {}).get("message", body)
+        except json.JSONDecodeError:
+            detail = body
+        raise HTTPException(status_code=error.code, detail=detail) from error
+    except urllib.error.URLError as error:
+        raise HTTPException(status_code=502, detail=str(error.reason)) from error
+
+
+async def youtube_api_get(path: str, params: dict[str, str | int]) -> dict:
+    return await asyncio.to_thread(youtube_api_get_sync, path, params)
+
+
+async def fetch_playlist_title(playlist_id: str) -> str | None:
+    data = await youtube_api_get(
+        "playlists",
+        {
+            "part": "snippet",
+            "id": playlist_id,
+            "maxResults": 1,
+            "fields": "items(snippet(title))",
+        },
+    )
+    items = data.get("items") or []
+    if not items:
+        return None
+    return items[0].get("snippet", {}).get("title")
+
+
+async def fetch_channel_uploads_playlist(channel: str) -> tuple[str, str]:
+    lookup_key, lookup_value = extract_channel_lookup(channel)
+    data = await youtube_api_get(
+        "channels",
+        {
+            "part": "snippet,contentDetails",
+            lookup_key: lookup_value,
+            "maxResults": 1,
+            "fields": "items(snippet(title),contentDetails(relatedPlaylists(uploads)))",
+        },
+    )
+    items = data.get("items") or []
+    if not items:
+        raise HTTPException(status_code=404, detail="YouTube channel not found")
+    item = items[0]
+    title = item.get("snippet", {}).get("title") or lookup_value
+    uploads = (
+        item.get("contentDetails", {})
+        .get("relatedPlaylists", {})
+        .get("uploads")
+    )
+    if not uploads:
+        raise HTTPException(status_code=404, detail="Channel uploads playlist not found")
+    return uploads, title
+
+
+async def fetch_playlist_tracks(playlist_id: str, max_items: int) -> list[dict[str, str]]:
+    tracks: list[dict[str, str]] = []
+    page_token = ""
+    while len(tracks) < max_items:
+        page_size = min(50, max_items - len(tracks))
+        params: dict[str, str | int] = {
+            "part": "snippet",
+            "playlistId": playlist_id,
+            "maxResults": page_size,
+            "fields": (
+                "nextPageToken,items(snippet(title,resourceId(videoId)))"
+            ),
+        }
+        if page_token:
+            params["pageToken"] = page_token
+
+        data = await youtube_api_get("playlistItems", params)
+        for item in data.get("items") or []:
+            snippet = item.get("snippet", {})
+            video_id = snippet.get("resourceId", {}).get("videoId")
+            if not video_id:
+                continue
+            tracks.append(
+                {
+                    "title": snippet.get("title") or video_id,
+                    "url": f"https://www.youtube.com/watch?v={video_id}",
+                }
+            )
+
+        page_token = data.get("nextPageToken") or ""
+        if not page_token:
+            break
+    return tracks
+
+
+def normalize_yamaplayer_mode(mode: int) -> int:
+    if mode not in {0, 1, 2}:
+        raise HTTPException(status_code=400, detail="mode must be 0, 1, or 2")
+    return mode
+
+
+def normalize_max_items(max_items: int) -> int:
+    if max_items < 1 or max_items > 5000:
+        raise HTTPException(status_code=400, detail="maxItems must be between 1 and 5000")
+    return max_items
+
+
+def yamaplayer_export_response(
+    playlist_name: str,
+    youtube_list_id: str,
+    tracks: list[dict[str, str]],
+    mode: int,
+) -> Response:
+    body = {
+        "playlists": [
+            {
+                "active": True,
+                "name": playlist_name,
+                "youtubeListId": youtube_list_id,
+                "tracks": [
+                    {
+                        "mode": mode,
+                        "title": track["title"],
+                        "url": track["url"],
+                    }
+                    for track in tracks
+                ],
+            }
+        ]
+    }
+    filename = re.sub(r"[^A-Za-z0-9_.-]+", "_", playlist_name).strip("_") or "yamaplayer"
+    return Response(
+        json.dumps(body, ensure_ascii=False, indent=2),
+        media_type="application/json; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}.json"',
+            "Cache-Control": "no-cache",
+        },
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index() -> str:
     default_lang = json.dumps(settings.default_lang)
@@ -667,7 +857,7 @@ async def index() -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>YouTube Subtitle URL</title>
+  <title>YouTube Tools</title>
   <style>
     :root {{
       color-scheme: light dark;
@@ -694,6 +884,23 @@ async def index() -> str:
       display: grid;
       gap: 14px;
     }}
+    .tabs {{
+      display: flex;
+      gap: 8px;
+      margin: 0 0 18px;
+    }}
+    .tabs button {{
+      min-height: 38px;
+      color: #17202a;
+      background: #e7ebf0;
+    }}
+    .tabs button[aria-selected="true"] {{
+      color: #fff;
+      background: #1f6feb;
+    }}
+    .tool[hidden] {{
+      display: none;
+    }}
     label {{
       display: grid;
       gap: 7px;
@@ -714,6 +921,11 @@ async def index() -> str:
     .row {{
       display: grid;
       grid-template-columns: 120px 1fr;
+      gap: 12px;
+    }}
+    .json-row {{
+      display: grid;
+      grid-template-columns: 1fr 120px 140px;
       gap: 12px;
     }}
     .actions {{
@@ -757,6 +969,9 @@ async def index() -> str:
       .row {{
         grid-template-columns: 1fr;
       }}
+      .json-row {{
+        grid-template-columns: 1fr;
+      }}
       h1 {{
         font-size: 22px;
       }}
@@ -779,8 +994,12 @@ async def index() -> str:
 </head>
 <body>
   <main>
-    <h1>YouTube Subtitle URL</h1>
-    <form id="converter">
+    <h1>YouTube Tools</h1>
+    <div class="tabs" role="tablist" aria-label="Tool">
+      <button type="button" id="videoTab" role="tab" aria-controls="converter" aria-selected="true">Video</button>
+      <button type="button" id="jsonTab" role="tab" aria-controls="jsonExporter" aria-selected="false">JSON</button>
+    </div>
+    <form id="converter" class="tool" aria-labelledby="videoTab">
       <label>
         YouTube URL
         <input id="youtubeUrl" name="youtubeUrl" type="url" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off" required>
@@ -808,10 +1027,54 @@ async def index() -> str:
       </div>
       <output id="message" class="error"></output>
     </form>
+    <form id="jsonExporter" class="tool" aria-labelledby="jsonTab" hidden>
+      <label>
+        Channel or Playlist URL
+        <input id="sourceUrl" name="sourceUrl" type="url" placeholder="https://www.youtube.com/@channel or https://www.youtube.com/playlist?list=..." autocomplete="off">
+      </label>
+      <div class="json-row">
+        <label>
+          Source
+          <select id="sourceType" name="sourceType">
+            <option value="auto">Auto</option>
+            <option value="playlist">Playlist</option>
+            <option value="channel">Channel</option>
+          </select>
+        </label>
+        <label>
+          Mode
+          <select id="playerMode" name="playerMode">
+            <option value="0">Unity</option>
+            <option value="1">AVPro</option>
+            <option value="2">Image</option>
+          </select>
+        </label>
+        <label>
+          Max
+          <input id="maxItems" name="maxItems" type="number" min="1" max="5000" step="1" value="500">
+        </label>
+      </div>
+      <label>
+        Name
+        <input id="playlistName" name="playlistName" type="text" placeholder="Optional" autocomplete="off">
+      </label>
+      <label>
+        JSON URL
+        <output id="jsonResult"></output>
+      </label>
+      <div class="actions">
+        <button type="button" id="jsonCopyButton" class="secondary">Copy</button>
+        <a id="downloadJsonLink" class="button" aria-disabled="true">Download JSON</a>
+      </div>
+      <output id="jsonMessage" class="error"></output>
+    </form>
   </main>
   <script>
     const defaultLang = {default_lang};
     const form = document.getElementById("converter");
+    const jsonForm = document.getElementById("jsonExporter");
+    const videoTab = document.getElementById("videoTab");
+    const jsonTab = document.getElementById("jsonTab");
     const input = document.getElementById("youtubeUrl");
     const lang = document.getElementById("lang");
     const mode = document.getElementById("mode");
@@ -819,8 +1082,25 @@ async def index() -> str:
     const message = document.getElementById("message");
     const openLink = document.getElementById("openLink");
     const copyButton = document.getElementById("copyButton");
+    const sourceUrl = document.getElementById("sourceUrl");
+    const sourceType = document.getElementById("sourceType");
+    const playerMode = document.getElementById("playerMode");
+    const maxItems = document.getElementById("maxItems");
+    const playlistName = document.getElementById("playlistName");
+    const jsonResult = document.getElementById("jsonResult");
+    const jsonMessage = document.getElementById("jsonMessage");
+    const downloadJsonLink = document.getElementById("downloadJsonLink");
+    const jsonCopyButton = document.getElementById("jsonCopyButton");
 
     lang.value = defaultLang;
+
+    function selectTool(tool) {{
+      const jsonSelected = tool === "json";
+      form.hidden = jsonSelected;
+      jsonForm.hidden = !jsonSelected;
+      videoTab.setAttribute("aria-selected", String(!jsonSelected));
+      jsonTab.setAttribute("aria-selected", String(jsonSelected));
+    }}
 
     function extractVideoId(value) {{
       const trimmed = value.trim();
@@ -840,6 +1120,23 @@ async def index() -> str:
       if (watchId) return watchId;
       const parts = url.pathname.split("/").filter(Boolean);
       if (["shorts", "embed", "live"].includes(parts[0])) return parts[1] || "";
+      return "";
+    }}
+
+    function detectJsonSource(value) {{
+      const trimmed = value.trim();
+      if (!trimmed) return "";
+      if (/^PL[A-Za-z0-9_-]+$/.test(trimmed) || /^UU[A-Za-z0-9_-]+$/.test(trimmed)) return "playlist";
+      if (/^UC[A-Za-z0-9_-]+$/.test(trimmed) || trimmed.startsWith("@")) return "channel";
+      let url;
+      try {{
+        url = new URL(trimmed);
+      }} catch {{
+        return "";
+      }}
+      const parts = url.pathname.split("/").filter(Boolean);
+      if (url.searchParams.get("list")) return "playlist";
+      if (parts[0] === "channel" || parts[0] === "c" || parts[0] === "user" || (parts[0] || "").startsWith("@")) return "channel";
       return "";
     }}
 
@@ -874,6 +1171,46 @@ async def index() -> str:
       openLink.setAttribute("aria-disabled", "false");
     }}
 
+    function updateJson() {{
+      const value = sourceUrl.value.trim();
+      const selectedType = sourceType.value === "auto" ? detectJsonSource(value) : sourceType.value;
+      const count = Number.parseInt(maxItems.value, 10);
+      const modeValue = playerMode.value;
+      if (!value) {{
+        jsonResult.textContent = "";
+        jsonMessage.textContent = "";
+        downloadJsonLink.removeAttribute("href");
+        downloadJsonLink.setAttribute("aria-disabled", "true");
+        return;
+      }}
+      if (!selectedType) {{
+        jsonResult.textContent = "";
+        jsonMessage.textContent = "Invalid channel or playlist URL";
+        downloadJsonLink.removeAttribute("href");
+        downloadJsonLink.setAttribute("aria-disabled", "true");
+        return;
+      }}
+      if (!Number.isInteger(count) || count < 1 || count > 5000) {{
+        jsonResult.textContent = "";
+        jsonMessage.textContent = "Max must be 1-5000";
+        downloadJsonLink.removeAttribute("href");
+        downloadJsonLink.setAttribute("aria-disabled", "true");
+        return;
+      }}
+      const params = new URLSearchParams();
+      params.set(selectedType === "playlist" ? "list" : "channel", value);
+      params.set("mode", modeValue);
+      params.set("maxItems", String(count));
+      if (playlistName.value.trim()) params.set("name", playlistName.value.trim());
+      const url = `${{location.origin}}/yamaplayer/${{selectedType}}?${{params.toString()}}`;
+      jsonResult.textContent = url;
+      jsonMessage.textContent = "";
+      downloadJsonLink.href = url;
+      downloadJsonLink.setAttribute("aria-disabled", "false");
+    }}
+
+    videoTab.addEventListener("click", () => selectTool("video"));
+    jsonTab.addEventListener("click", () => selectTool("json"));
     input.addEventListener("input", update);
     lang.addEventListener("input", update);
     mode.addEventListener("change", update);
@@ -886,6 +1223,20 @@ async def index() -> str:
       update();
       if (result.textContent) await navigator.clipboard.writeText(result.textContent);
     }});
+    sourceUrl.addEventListener("input", updateJson);
+    sourceType.addEventListener("change", updateJson);
+    playerMode.addEventListener("change", updateJson);
+    maxItems.addEventListener("input", updateJson);
+    playlistName.addEventListener("input", updateJson);
+    jsonForm.addEventListener("submit", (event) => {{
+      event.preventDefault();
+      updateJson();
+      if (downloadJsonLink.href) window.location.href = downloadJsonLink.href;
+    }});
+    jsonCopyButton.addEventListener("click", async () => {{
+      updateJson();
+      if (jsonResult.textContent) await navigator.clipboard.writeText(jsonResult.textContent);
+    }});
   </script>
 </body>
 </html>"""
@@ -894,6 +1245,45 @@ async def index() -> str:
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/yamaplayer/playlist")
+async def yamaplayer_playlist(
+    list_id_or_url: str = Query(alias="list"),
+    name: str | None = None,
+    mode: int = 0,
+    max_items: int = Query(default=500, alias="maxItems"),
+    x_api_key: str | None = Header(default=None),
+) -> Response:
+    assert_authorized(x_api_key)
+    playlist_id = extract_playlist_id(list_id_or_url)
+    normalized_mode = normalize_yamaplayer_mode(mode)
+    normalized_max_items = normalize_max_items(max_items)
+    playlist_name = name or await fetch_playlist_title(playlist_id) or playlist_id
+    tracks = await fetch_playlist_tracks(playlist_id, normalized_max_items)
+    return yamaplayer_export_response(playlist_name, playlist_id, tracks, normalized_mode)
+
+
+@app.get("/yamaplayer/channel")
+async def yamaplayer_channel(
+    channel: str,
+    name: str | None = None,
+    mode: int = 0,
+    max_items: int = Query(default=500, alias="maxItems"),
+    x_api_key: str | None = Header(default=None),
+) -> Response:
+    assert_authorized(x_api_key)
+    normalized_mode = normalize_yamaplayer_mode(mode)
+    normalized_max_items = normalize_max_items(max_items)
+    uploads_playlist_id, channel_title = await fetch_channel_uploads_playlist(channel)
+    playlist_name = name or channel_title
+    tracks = await fetch_playlist_tracks(uploads_playlist_id, normalized_max_items)
+    return yamaplayer_export_response(
+        playlist_name,
+        uploads_playlist_id,
+        tracks,
+        normalized_mode,
+    )
 
 
 @app.get("/youtube/{video_id}")

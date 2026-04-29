@@ -7,6 +7,8 @@ GET /youtube/:videoId
 GET /youtube/:videoId/:lang
 GET /youtube-hls/:videoId
 GET /youtube-hls/:videoId/:lang
+GET /yamaplayer/playlist?list=:playlistIdOrUrl
+GET /yamaplayer/channel?channel=:channelIdOrHandleOrUrl
 ```
 
 例:
@@ -14,6 +16,8 @@ GET /youtube-hls/:videoId/:lang
 ```bash
 curl -L -o out.mp4 http://127.0.0.1:8000/youtube/dQw4w9WgXcQ/ja
 curl -L http://127.0.0.1:8000/youtube-hls/dQw4w9WgXcQ/ja
+curl -L -o playlist.json "http://127.0.0.1:8000/yamaplayer/playlist?list=PLxxxxxxxx"
+curl -L -o channel.json "http://127.0.0.1:8000/yamaplayer/channel?channel=@GoogleDevelopers"
 ```
 
 ## モード
@@ -79,6 +83,69 @@ export SUBTITLE_FONT='BIZ UDGothic'
 ```bash
 curl -H 'X-Api-Key: change-me' -L -o out.mp4 \
   http://127.0.0.1:8000/youtube/dQw4w9WgXcQ/ja
+```
+
+## YamaPlayer JSON 書き出し
+
+YouTube Data API v3 を使って、YouTube のプレイリストまたはチャンネルの投稿一覧を YamaPlayer の JSON インポート形式で返します。環境変数 `YOUTUBE_DATA_API_KEY` が必要です。
+
+```bash
+export YOUTUBE_DATA_API_KEY=your-youtube-data-api-key
+```
+
+プレイリスト:
+
+```bash
+curl -L -o yamaplayer.json \
+  "http://127.0.0.1:8000/yamaplayer/playlist?list=https%3A%2F%2Fwww.youtube.com%2Fplaylist%3Flist%3DPLxxxxxxxx&mode=0&maxItems=500"
+```
+
+チャンネル投稿一覧:
+
+```bash
+curl -L -o yamaplayer.json \
+  "http://127.0.0.1:8000/yamaplayer/channel?channel=@GoogleDevelopers&mode=0&maxItems=500"
+```
+
+出力形式:
+
+```json
+{
+  "playlists": [
+    {
+      "active": true,
+      "name": "Playlist name",
+      "youtubeListId": "PLxxxxxxxx",
+      "tracks": [
+        {
+          "mode": 0,
+          "title": "動画タイトル",
+          "url": "https://www.youtube.com/watch?v=VIDEO_ID"
+        }
+      ]
+    }
+  ]
+}
+```
+
+`mode` は `0` が UnityVideoPlayer、`1` が AVProVideoPlayer、`2` が ImageViewer です。チャンネル指定は `UC...` のチャンネル ID、`@handle`、`https://www.youtube.com/channel/...`、`https://www.youtube.com/@handle` に対応しています。YouTube Data API のクォータは `channels.list`、`playlists.list`、`playlistItems.list` が各 1 unit です。50 件を超える一覧はページごとに `playlistItems.list` を追加で呼びます。
+
+### YouTube Data API キー準備
+
+1. Google Cloud Console でプロジェクトを作成または選択します。
+2. APIs & Services で `YouTube Data API v3` を有効化します。
+3. APIs & Services の Credentials で `API key` を作成します。
+4. 可能なら API key の制限で、利用 API を `YouTube Data API v3` に絞ります。
+5. ローカル起動時に指定します。
+
+```powershell
+.\scripts\reset-local-env.ps1 -YoutubeDataApiKey "AIza..."
+```
+
+または `.env.local` に直接書きます。
+
+```text
+YOUTUBE_DATA_API_KEY=AIza...
 ```
 
 ## GPU エンコード

@@ -22,12 +22,24 @@ param(
     [string]$YtdlpExtraArgs = "--js-runtimes deno --remote-components ejs:npm",
     [string]$YtdlpProxy = "",
     [string]$YtdlpCookiesFile = "",
+    [string]$YoutubeDataApiKey = "",
     [string]$ApiKey = ""
 )
 
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")
+$EnvFilePath = Join-Path $RepoRoot ".env.local"
+
+if (-not $YoutubeDataApiKey -and (Test-Path -LiteralPath $EnvFilePath)) {
+    foreach ($Line in [System.IO.File]::ReadLines($EnvFilePath)) {
+        if ($Line -match '^\s*YOUTUBE_DATA_API_KEY\s*=\s*(.+?)\s*$') {
+            $YoutubeDataApiKey = $Matches[1].Trim().Trim('"').Trim("'")
+            break
+        }
+    }
+}
+
 $ResolvedCacheDir = if ([System.IO.Path]::IsPathRooted($CacheDir)) {
     [System.IO.Path]::GetFullPath($CacheDir)
 } else {
@@ -76,6 +88,12 @@ $env:SUBTITLE_PRIMARY_COLOUR = $SubtitlePrimaryColour
 $env:SUBTITLE_BACK_COLOUR = $SubtitleBackColour
 $env:YTDLP_EXTRA_ARGS = $YtdlpExtraArgs
 
+if ($YoutubeDataApiKey) {
+    $env:YOUTUBE_DATA_API_KEY = $YoutubeDataApiKey
+} else {
+    Remove-Item Env:\YOUTUBE_DATA_API_KEY -ErrorAction SilentlyContinue
+}
+
 if ($YtdlpProxy) {
     $env:YTDLP_PROXY = $YtdlpProxy
 } else {
@@ -94,7 +112,6 @@ if ($ApiKey) {
     Remove-Item Env:\API_KEY -ErrorAction SilentlyContinue
 }
 
-$EnvFilePath = Join-Path $RepoRoot ".env.local"
 $EnvLines = @(
     "CACHE_DIR=$ResolvedCacheDir",
     "DEFAULT_LANG=$DefaultLang",
@@ -124,6 +141,9 @@ if ($YtdlpProxy) {
 if ($YtdlpCookiesFile) {
     $EnvLines += "YTDLP_COOKIES_FILE=$YtdlpCookiesFile"
 }
+if ($YoutubeDataApiKey) {
+    $EnvLines += "YOUTUBE_DATA_API_KEY=$YoutubeDataApiKey"
+}
 if ($ApiKey) {
     $EnvLines += "API_KEY=$ApiKey"
 }
@@ -143,6 +163,9 @@ Write-Host "SUBTITLE_BACK_COLOUR=$env:SUBTITLE_BACK_COLOUR"
 Write-Host "FFMPEG_VIDEO_ENCODER=$env:FFMPEG_VIDEO_ENCODER"
 Write-Host "FFMPEG_VIDEO_PRESET=$env:FFMPEG_VIDEO_PRESET"
 Write-Host "FFMPEG_VIDEO_CQ=$env:FFMPEG_VIDEO_CQ"
+if ($env:YOUTUBE_DATA_API_KEY) {
+    Write-Host "YOUTUBE_DATA_API_KEY=(set)"
+}
 Write-Host ""
 Write-Host "Start the app with:"
 Write-Host "uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers"
