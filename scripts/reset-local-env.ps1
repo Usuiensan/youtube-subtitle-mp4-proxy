@@ -31,8 +31,39 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")
 $EnvFilePath = Join-Path $RepoRoot ".env.local"
 
+function Invoke-FileOperationWithRetry {
+    param(
+        [scriptblock]$Operation,
+        [string]$Path,
+        [string]$Action,
+        [int]$Attempts = 20,
+        [int]$DelayMilliseconds = 250
+    )
+
+    for ($Attempt = 1; $Attempt -le $Attempts; $Attempt++) {
+        try {
+            return & $Operation
+        } catch [System.IO.IOException] {
+            if ($Attempt -eq $Attempts) {
+                throw "Could not $Action '$Path' after $Attempts attempts. Close any process that is using it and try again. Last error: $($_.Exception.Message)"
+            }
+            Start-Sleep -Milliseconds $DelayMilliseconds
+        } catch [System.UnauthorizedAccessException] {
+            if ($Attempt -eq $Attempts) {
+                throw "Could not $Action '$Path' after $Attempts attempts. Close any process that is using it and try again. Last error: $($_.Exception.Message)"
+            }
+            Start-Sleep -Milliseconds $DelayMilliseconds
+        }
+    }
+}
+
 if (-not $YoutubeDataApiKey -and (Test-Path -LiteralPath $EnvFilePath)) {
-    foreach ($Line in [System.IO.File]::ReadLines($EnvFilePath)) {
+    $ExistingEnvLines = Invoke-FileOperationWithRetry `
+        -Path $EnvFilePath `
+        -Action "read" `
+        -Operation { [System.IO.File]::ReadAllLines($EnvFilePath) }
+
+    foreach ($Line in $ExistingEnvLines) {
         if ($Line -match '^\s*YOUTUBE_DATA_API_KEY\s*=\s*(.+?)\s*$') {
             $YoutubeDataApiKey = $Matches[1].Trim().Trim('"').Trim("'")
             break
@@ -148,11 +179,16 @@ if ($ApiKey) {
     $EnvLines += "API_KEY=$ApiKey"
 }
 
-[System.IO.File]::WriteAllLines(
-    $EnvFilePath,
-    $EnvLines,
-    [System.Text.UTF8Encoding]::new($false)
-)
+Invoke-FileOperationWithRetry `
+    -Path $EnvFilePath `
+    -Action "write" `
+    -Operation {
+        [System.IO.File]::WriteAllLines(
+            $EnvFilePath,
+            $EnvLines,
+            [System.Text.UTF8Encoding]::new($false)
+        )
+    } | Out-Null
 
 Write-Host "Cache cleared and local settings written."
 Write-Host ".env.local=$EnvFilePath"
