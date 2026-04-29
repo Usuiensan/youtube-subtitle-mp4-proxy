@@ -809,30 +809,30 @@ def normalize_max_items(max_items: int) -> int:
     return max_items
 
 
-def yamaplayer_export_response(
+def yamaplayer_playlist_entry(
     playlist_name: str,
     youtube_list_id: str,
     tracks: list[dict[str, str]],
     mode: int,
-) -> Response:
-    body = {
-        "playlists": [
+) -> dict:
+    return {
+        "active": True,
+        "name": playlist_name,
+        "youtubeListId": youtube_list_id,
+        "tracks": [
             {
-                "active": True,
-                "name": playlist_name,
-                "youtubeListId": youtube_list_id,
-                "tracks": [
-                    {
-                        "mode": mode,
-                        "title": track["title"],
-                        "url": track["url"],
-                    }
-                    for track in tracks
-                ],
+                "mode": mode,
+                "title": track["title"],
+                "url": track["url"],
             }
-        ]
+            for track in tracks
+        ],
     }
-    filename = re.sub(r"[^A-Za-z0-9_.-]+", "_", playlist_name).strip("_") or "yamaplayer"
+
+
+def yamaplayer_export_response(playlists: list[dict], filename_base: str) -> Response:
+    body = {"playlists": playlists}
+    filename = re.sub(r"[^A-Za-z0-9_.-]+", "_", filename_base).strip("_") or "yamaplayer"
     return Response(
         json.dumps(body, ensure_ascii=False, indent=2),
         media_type="application/json; charset=utf-8",
@@ -841,6 +841,59 @@ def yamaplayer_export_response(
             "Cache-Control": "no-cache",
         },
     )
+
+
+def split_yamaplayer_sources(sources: str) -> list[str]:
+    values = [line.strip() for line in sources.splitlines() if line.strip()]
+    if not values:
+        raise HTTPException(status_code=400, detail="At least one source is required")
+    if len(values) > 100:
+        raise HTTPException(status_code=400, detail="sources must contain 100 items or fewer")
+    return values
+
+
+def detect_yamaplayer_source_type(source: str) -> str:
+    value = source.strip()
+    if not value:
+        return ""
+    if value.startswith("@") or (value.startswith("UC") and YOUTUBE_ID_RE.fullmatch(value)):
+        return "channel"
+    if YOUTUBE_ID_RE.fullmatch(value):
+        return "playlist"
+
+    parsed = urllib.parse.urlparse(value)
+    parts = [part for part in parsed.path.split("/") if part]
+    if urllib.parse.parse_qs(parsed.query).get("list"):
+        return "playlist"
+    if parts and (
+        parts[0] == "channel"
+        or parts[0] in {"c", "user"}
+        or parts[0].startswith("@")
+    ):
+        return "channel"
+    return ""
+
+
+async def build_yamaplayer_playlist(
+    source_type: str,
+    source: str,
+    mode: int,
+    max_items: int,
+    name: str | None = None,
+) -> dict:
+    if source_type == "auto":
+        source_type = detect_yamaplayer_source_type(source)
+    if source_type == "playlist":
+        playlist_id = extract_playlist_id(source)
+        playlist_name = name or await fetch_playlist_title(playlist_id) or playlist_id
+        tracks = await fetch_playlist_tracks(playlist_id, max_items)
+        return yamaplayer_playlist_entry(playlist_name, playlist_id, tracks, mode)
+    if source_type == "channel":
+        uploads_playlist_id, channel_title = await fetch_channel_uploads_playlist(source)
+        playlist_name = name or channel_title
+        tracks = await fetch_playlist_tracks(uploads_playlist_id, max_items)
+        return yamaplayer_playlist_entry(playlist_name, uploads_playlist_id, tracks, mode)
+    raise HTTPException(status_code=400, detail=f"Invalid source type for: {source}")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -901,7 +954,7 @@ async def index() -> str:
       font-size: 14px;
       font-weight: 600;
     }}
-    input, select {{
+    input, select, textarea {{
       box-sizing: border-box;
       width: 100%;
       min-height: 42px;
@@ -911,6 +964,10 @@ async def index() -> str:
       font: inherit;
       background: #fff;
       color: inherit;
+    }}
+    textarea {{
+      min-height: 112px;
+      resize: vertical;
     }}
     .row {{
       display: grid;
@@ -975,7 +1032,7 @@ async def index() -> str:
         background: #101316;
         color: #f2f4f7;
       }}
-      input, select {{
+      input, select, textarea {{
         background: #191d22;
         border-color: #3a424d;
       }}
@@ -1023,8 +1080,8 @@ async def index() -> str:
     </form>
     <form id="jsonExporter" class="tool" aria-labelledby="jsonTab" hidden>
       <label>
-        Channel or Playlist URL
-        <input id="sourceUrl" name="sourceUrl" type="url" placeholder="https://www.youtube.com/@channel or https://www.youtube.com/playlist?list=..." autocomplete="off">
+        Channel or Playlist URLs
+        <textarea id="sourceUrl" name="sourceUrl" placeholder="https://www.youtube.com/@channel&#10;https://www.youtube.com/playlist?list=..." autocomplete="off"></textarea>
       </label>
       <div class="json-row">
         <label>
@@ -1166,20 +1223,21 @@ async def index() -> str:
     }}
 
     function updateJson() {{
-      const value = sourceUrl.value.trim();
-      const selectedType = sourceType.value === "auto" ? detectJsonSource(value) : sourceType.value;
+      const values = sourceUrl.value.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean);
+      const selectedType = sourceType.value;
       const count = Number.parseInt(maxItems.value, 10);
       const modeValue = playerMode.value;
-      if (!value) {{
+      if (values.length === 0) {{
         jsonResult.textContent = "";
         jsonMessage.textContent = "";
         downloadJsonLink.removeAttribute("href");
         downloadJsonLink.setAttribute("aria-disabled", "true");
         return;
       }}
-      if (!selectedType) {{
+      const resolvedTypes = values.map((value) => selectedType === "auto" ? detectJsonSource(value) : selectedType);
+      if (resolvedTypes.some((type) => !type)) {{
         jsonResult.textContent = "";
-        jsonMessage.textContent = "Invalid channel or playlist URL";
+        jsonMessage.textContent = "Invalid channel or playlist URL in list";
         downloadJsonLink.removeAttribute("href");
         downloadJsonLink.setAttribute("aria-disabled", "true");
         return;
@@ -1192,11 +1250,20 @@ async def index() -> str:
         return;
       }}
       const params = new URLSearchParams();
-      params.set(selectedType === "playlist" ? "list" : "channel", value);
       params.set("mode", modeValue);
       params.set("maxItems", String(count));
       if (playlistName.value.trim()) params.set("name", playlistName.value.trim());
-      const url = `${{location.origin}}/yamaplayer/${{selectedType}}?${{params.toString()}}`;
+      let path;
+      if (values.length === 1) {{
+        const type = resolvedTypes[0];
+        params.set(type === "playlist" ? "list" : "channel", values[0]);
+        path = `/yamaplayer/${{type}}`;
+      }} else {{
+        params.set("sourceType", selectedType);
+        params.set("sources", values.join("\\n"));
+        path = "/yamaplayer/batch";
+      }}
+      const url = `${{location.origin}}${{path}}?${{params.toString()}}`;
       jsonResult.textContent = url;
       jsonMessage.textContent = "";
       downloadJsonLink.href = url;
@@ -1248,12 +1315,16 @@ async def yamaplayer_playlist(
     mode: int = 0,
     max_items: int = Query(default=500, alias="maxItems"),
 ) -> Response:
-    playlist_id = extract_playlist_id(list_id_or_url)
     normalized_mode = normalize_yamaplayer_mode(mode)
     normalized_max_items = normalize_max_items(max_items)
-    playlist_name = name or await fetch_playlist_title(playlist_id) or playlist_id
-    tracks = await fetch_playlist_tracks(playlist_id, normalized_max_items)
-    return yamaplayer_export_response(playlist_name, playlist_id, tracks, normalized_mode)
+    playlist = await build_yamaplayer_playlist(
+        "playlist",
+        list_id_or_url,
+        normalized_mode,
+        normalized_max_items,
+        name,
+    )
+    return yamaplayer_export_response([playlist], playlist["name"])
 
 
 @app.get("/yamaplayer/channel")
@@ -1265,15 +1336,39 @@ async def yamaplayer_channel(
 ) -> Response:
     normalized_mode = normalize_yamaplayer_mode(mode)
     normalized_max_items = normalize_max_items(max_items)
-    uploads_playlist_id, channel_title = await fetch_channel_uploads_playlist(channel)
-    playlist_name = name or channel_title
-    tracks = await fetch_playlist_tracks(uploads_playlist_id, normalized_max_items)
-    return yamaplayer_export_response(
-        playlist_name,
-        uploads_playlist_id,
-        tracks,
+    playlist = await build_yamaplayer_playlist(
+        "channel",
+        channel,
         normalized_mode,
+        normalized_max_items,
+        name,
     )
+    return yamaplayer_export_response([playlist], playlist["name"])
+
+
+@app.get("/yamaplayer/batch")
+async def yamaplayer_batch(
+    sources: str,
+    source_type: str = Query(default="auto", alias="sourceType"),
+    name: str | None = None,
+    mode: int = 0,
+    max_items: int = Query(default=500, alias="maxItems"),
+) -> Response:
+    if source_type not in {"auto", "playlist", "channel"}:
+        raise HTTPException(status_code=400, detail="sourceType must be auto, playlist, or channel")
+    normalized_mode = normalize_yamaplayer_mode(mode)
+    normalized_max_items = normalize_max_items(max_items)
+    playlists = [
+        await build_yamaplayer_playlist(
+            source_type,
+            source,
+            normalized_mode,
+            normalized_max_items,
+        )
+        for source in split_yamaplayer_sources(sources)
+    ]
+    filename = name or ("yamaplayer" if len(playlists) != 1 else playlists[0]["name"])
+    return yamaplayer_export_response(playlists, filename)
 
 
 @app.get("/youtube/{video_id}")

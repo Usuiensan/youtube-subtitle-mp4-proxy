@@ -9,6 +9,7 @@ GET /youtube-hls/:videoId
 GET /youtube-hls/:videoId/:lang
 GET /yamaplayer/playlist?list=:playlistIdOrUrl
 GET /yamaplayer/channel?channel=:channelIdOrHandleOrUrl
+GET /yamaplayer/batch?sources=:newlineSeparatedSources
 ```
 
 例:
@@ -18,6 +19,7 @@ curl -L -o out.mp4 http://127.0.0.1:8000/youtube/dQw4w9WgXcQ/ja
 curl -L http://127.0.0.1:8000/youtube-hls/dQw4w9WgXcQ/ja
 curl -L -o playlist.json "http://127.0.0.1:8000/yamaplayer/playlist?list=PLxxxxxxxx"
 curl -L -o channel.json "http://127.0.0.1:8000/yamaplayer/channel?channel=@GoogleDevelopers"
+curl -L -o batch.json "http://127.0.0.1:8000/yamaplayer/batch?sourceType=auto&sources=@GoogleDevelopers%0APLxxxxxxxx"
 ```
 
 ## モード
@@ -100,6 +102,15 @@ curl -L -o yamaplayer.json \
 curl -L -o yamaplayer.json \
   "http://127.0.0.1:8000/yamaplayer/channel?channel=@GoogleDevelopers&mode=0&maxItems=500"
 ```
+
+複数の投稿者・プレイリストを一括:
+
+```bash
+curl -L -o yamaplayer.json \
+  "http://127.0.0.1:8000/yamaplayer/batch?sourceType=auto&sources=@GoogleDevelopers%0Ahttps%3A%2F%2Fwww.youtube.com%2Fplaylist%3Flist%3DPLxxxxxxxx&mode=0&maxItems=500"
+```
+
+トップページの JSON タブでも、`Channel or Playlist URLs` に 1 行 1 件で複数のチャンネル URL、`@handle`、チャンネル ID、プレイリスト URL、プレイリスト ID を貼り付けると、ひとつの JSON にまとめて書き出せます。
 
 出力形式:
 
