@@ -20,6 +20,7 @@ curl -L http://127.0.0.1:8000/youtube-hls/dQw4w9WgXcQ/ja
 curl -L -o playlist.json "http://127.0.0.1:8000/yamaplayer/playlist?list=PLxxxxxxxx"
 curl -L -o channel.json "http://127.0.0.1:8000/yamaplayer/channel?channel=@GoogleDevelopers"
 curl -L -o batch.json "http://127.0.0.1:8000/yamaplayer/batch?sourceType=auto&sources=@GoogleDevelopers%0APLxxxxxxxx"
+curl -L -o batch-mp4.json "http://127.0.0.1:8000/yamaplayer/batch?sourceType=auto&sources=@GoogleDevelopers%0APLxxxxxxxx&urlMode=mp4&lang=ja"
 ```
 
 ## モード
@@ -79,7 +80,7 @@ export DEFAULT_LANG=ja
 export SUBTITLE_FONT='BIZ UDGothic'
 ```
 
-アプリ独自の API キー認証は行いません。Google の API キーが必要なのは、YouTube Data API v3 を使う `/yamaplayer/playlist` と `/yamaplayer/channel` だけです。
+アプリ独自の API キー認証は行いません。Google の API キーが必要なのは、YouTube Data API v3 を使う `/yamaplayer/playlist`、`/yamaplayer/channel`、`/yamaplayer/batch` だけです。
 
 ## YamaPlayer JSON 書き出し
 
@@ -111,6 +112,13 @@ curl -L -o yamaplayer.json \
 ```
 
 トップページの JSON タブでも、`Channel or Playlist URLs` に 1 行 1 件で複数のチャンネル URL、`@handle`、チャンネル ID、プレイリスト URL、プレイリスト ID を貼り付けると、ひとつの JSON にまとめて書き出せます。
+
+JSON 内の動画 URL は `urlMode` で切り替えられます。初期値の `original` は通常の YouTube URL、`mp4` はこのサーバーの字幕焼き込み MP4 URL、`hls` は HLS URL にします。`mp4` / `hls` では `lang=ja` のように字幕言語も指定できます。
+
+```bash
+curl -L -o yamaplayer-mp4.json \
+  "http://127.0.0.1:8000/yamaplayer/batch?sourceType=auto&sources=@GoogleDevelopers%0APLxxxxxxxx&urlMode=mp4&lang=ja&mode=0&maxItems=500"
+```
 
 出力形式:
 

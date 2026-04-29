@@ -138,6 +138,10 @@ def write_meta(key: str, video_id: str, lang: str, info: dict, mode: str) -> Non
 def validate_input(video_id: str, lang: str) -> None:
     if not VIDEO_ID_RE.fullmatch(video_id):
         raise HTTPException(status_code=400, detail="Invalid YouTube video id")
+    validate_lang(lang)
+
+
+def validate_lang(lang: str) -> None:
     if not LANG_RE.fullmatch(lang):
         raise HTTPException(status_code=400, detail="Invalid subtitle language")
 
@@ -786,6 +790,7 @@ async def fetch_playlist_tracks(playlist_id: str, max_items: int) -> list[dict[s
                 continue
             tracks.append(
                 {
+                    "video_id": video_id,
                     "title": snippet.get("title") or video_id,
                     "url": f"https://www.youtube.com/watch?v={video_id}",
                 }
@@ -809,11 +814,34 @@ def normalize_max_items(max_items: int) -> int:
     return max_items
 
 
+def normalize_yamaplayer_url_mode(url_mode: str) -> str:
+    if url_mode not in {"original", "mp4", "hls"}:
+        raise HTTPException(status_code=400, detail="urlMode must be original, mp4, or hls")
+    return url_mode
+
+
+def yamaplayer_track_url(
+    track: dict[str, str],
+    url_mode: str,
+    lang: str,
+    base_url: str,
+) -> str:
+    if url_mode == "original":
+        return track["url"]
+
+    video_id = track["video_id"]
+    route = "youtube-hls" if url_mode == "hls" else "youtube"
+    return f"{base_url}/{route}/{video_id}/{lang}"
+
+
 def yamaplayer_playlist_entry(
     playlist_name: str,
     youtube_list_id: str,
     tracks: list[dict[str, str]],
     mode: int,
+    url_mode: str,
+    lang: str,
+    base_url: str,
 ) -> dict:
     return {
         "active": True,
@@ -823,7 +851,7 @@ def yamaplayer_playlist_entry(
             {
                 "mode": mode,
                 "title": track["title"],
-                "url": track["url"],
+                "url": yamaplayer_track_url(track, url_mode, lang, base_url),
             }
             for track in tracks
         ],
@@ -879,6 +907,9 @@ async def build_yamaplayer_playlist(
     source: str,
     mode: int,
     max_items: int,
+    url_mode: str,
+    lang: str,
+    base_url: str,
     name: str | None = None,
 ) -> dict:
     if source_type == "auto":
@@ -887,12 +918,28 @@ async def build_yamaplayer_playlist(
         playlist_id = extract_playlist_id(source)
         playlist_name = name or await fetch_playlist_title(playlist_id) or playlist_id
         tracks = await fetch_playlist_tracks(playlist_id, max_items)
-        return yamaplayer_playlist_entry(playlist_name, playlist_id, tracks, mode)
+        return yamaplayer_playlist_entry(
+            playlist_name,
+            playlist_id,
+            tracks,
+            mode,
+            url_mode,
+            lang,
+            base_url,
+        )
     if source_type == "channel":
         uploads_playlist_id, channel_title = await fetch_channel_uploads_playlist(source)
         playlist_name = name or channel_title
         tracks = await fetch_playlist_tracks(uploads_playlist_id, max_items)
-        return yamaplayer_playlist_entry(playlist_name, uploads_playlist_id, tracks, mode)
+        return yamaplayer_playlist_entry(
+            playlist_name,
+            uploads_playlist_id,
+            tracks,
+            mode,
+            url_mode,
+            lang,
+            base_url,
+        )
     raise HTTPException(status_code=400, detail=f"Invalid source type for: {source}")
 
 
@@ -976,7 +1023,7 @@ async def index() -> str:
     }}
     .json-row {{
       display: grid;
-      grid-template-columns: 1fr 120px 140px;
+      grid-template-columns: 1fr 120px 120px 100px 120px;
       gap: 12px;
     }}
     .actions {{
@@ -1101,6 +1148,18 @@ async def index() -> str:
           </select>
         </label>
         <label>
+          URL
+          <select id="jsonUrlMode" name="jsonUrlMode">
+            <option value="original">Original</option>
+            <option value="mp4">MP4</option>
+            <option value="hls">HLS</option>
+          </select>
+        </label>
+        <label>
+          Lang
+          <input id="jsonLang" name="jsonLang" value="" maxlength="12" autocomplete="off">
+        </label>
+        <label>
           Max
           <input id="maxItems" name="maxItems" type="number" min="1" max="5000" step="1" value="500">
         </label>
@@ -1136,6 +1195,8 @@ async def index() -> str:
     const sourceUrl = document.getElementById("sourceUrl");
     const sourceType = document.getElementById("sourceType");
     const playerMode = document.getElementById("playerMode");
+    const jsonUrlMode = document.getElementById("jsonUrlMode");
+    const jsonLang = document.getElementById("jsonLang");
     const maxItems = document.getElementById("maxItems");
     const playlistName = document.getElementById("playlistName");
     const jsonResult = document.getElementById("jsonResult");
@@ -1144,6 +1205,7 @@ async def index() -> str:
     const jsonCopyButton = document.getElementById("jsonCopyButton");
 
     lang.value = defaultLang;
+    jsonLang.value = defaultLang;
 
     function selectTool(tool) {{
       const jsonSelected = tool === "json";
@@ -1227,6 +1289,8 @@ async def index() -> str:
       const selectedType = sourceType.value;
       const count = Number.parseInt(maxItems.value, 10);
       const modeValue = playerMode.value;
+      const urlModeValue = jsonUrlMode.value;
+      const language = (jsonLang.value || defaultLang).trim();
       if (values.length === 0) {{
         jsonResult.textContent = "";
         jsonMessage.textContent = "";
@@ -1249,9 +1313,18 @@ async def index() -> str:
         downloadJsonLink.setAttribute("aria-disabled", "true");
         return;
       }}
+      if (!/^[A-Za-z0-9_-]{{2,12}}$/.test(language)) {{
+        jsonResult.textContent = "";
+        jsonMessage.textContent = "Invalid language";
+        downloadJsonLink.removeAttribute("href");
+        downloadJsonLink.setAttribute("aria-disabled", "true");
+        return;
+      }}
       const params = new URLSearchParams();
       params.set("mode", modeValue);
       params.set("maxItems", String(count));
+      params.set("urlMode", urlModeValue);
+      params.set("lang", language);
       if (playlistName.value.trim()) params.set("name", playlistName.value.trim());
       let path;
       if (values.length === 1) {{
@@ -1287,6 +1360,8 @@ async def index() -> str:
     sourceUrl.addEventListener("input", updateJson);
     sourceType.addEventListener("change", updateJson);
     playerMode.addEventListener("change", updateJson);
+    jsonUrlMode.addEventListener("change", updateJson);
+    jsonLang.addEventListener("input", updateJson);
     maxItems.addEventListener("input", updateJson);
     playlistName.addEventListener("input", updateJson);
     jsonForm.addEventListener("submit", (event) => {{
@@ -1310,18 +1385,27 @@ async def healthz() -> dict[str, str]:
 
 @app.get("/yamaplayer/playlist")
 async def yamaplayer_playlist(
+    request: Request,
     list_id_or_url: str = Query(alias="list"),
     name: str | None = None,
     mode: int = 0,
     max_items: int = Query(default=500, alias="maxItems"),
+    url_mode: str = Query(default="original", alias="urlMode"),
+    lang: str | None = None,
 ) -> Response:
     normalized_mode = normalize_yamaplayer_mode(mode)
     normalized_max_items = normalize_max_items(max_items)
+    normalized_url_mode = normalize_yamaplayer_url_mode(url_mode)
+    lang = lang or settings.default_lang
+    validate_lang(lang)
     playlist = await build_yamaplayer_playlist(
         "playlist",
         list_id_or_url,
         normalized_mode,
         normalized_max_items,
+        normalized_url_mode,
+        lang,
+        str(request.base_url).rstrip("/"),
         name,
     )
     return yamaplayer_export_response([playlist], playlist["name"])
@@ -1329,18 +1413,27 @@ async def yamaplayer_playlist(
 
 @app.get("/yamaplayer/channel")
 async def yamaplayer_channel(
+    request: Request,
     channel: str,
     name: str | None = None,
     mode: int = 0,
     max_items: int = Query(default=500, alias="maxItems"),
+    url_mode: str = Query(default="original", alias="urlMode"),
+    lang: str | None = None,
 ) -> Response:
     normalized_mode = normalize_yamaplayer_mode(mode)
     normalized_max_items = normalize_max_items(max_items)
+    normalized_url_mode = normalize_yamaplayer_url_mode(url_mode)
+    lang = lang or settings.default_lang
+    validate_lang(lang)
     playlist = await build_yamaplayer_playlist(
         "channel",
         channel,
         normalized_mode,
         normalized_max_items,
+        normalized_url_mode,
+        lang,
+        str(request.base_url).rstrip("/"),
         name,
     )
     return yamaplayer_export_response([playlist], playlist["name"])
@@ -1348,22 +1441,32 @@ async def yamaplayer_channel(
 
 @app.get("/yamaplayer/batch")
 async def yamaplayer_batch(
+    request: Request,
     sources: str,
     source_type: str = Query(default="auto", alias="sourceType"),
     name: str | None = None,
     mode: int = 0,
     max_items: int = Query(default=500, alias="maxItems"),
+    url_mode: str = Query(default="original", alias="urlMode"),
+    lang: str | None = None,
 ) -> Response:
     if source_type not in {"auto", "playlist", "channel"}:
         raise HTTPException(status_code=400, detail="sourceType must be auto, playlist, or channel")
     normalized_mode = normalize_yamaplayer_mode(mode)
     normalized_max_items = normalize_max_items(max_items)
+    normalized_url_mode = normalize_yamaplayer_url_mode(url_mode)
+    lang = lang or settings.default_lang
+    validate_lang(lang)
+    base_url = str(request.base_url).rstrip("/")
     playlists = [
         await build_yamaplayer_playlist(
             source_type,
             source,
             normalized_mode,
             normalized_max_items,
+            normalized_url_mode,
+            lang,
+            base_url,
         )
         for source in split_yamaplayer_sources(sources)
     ]
