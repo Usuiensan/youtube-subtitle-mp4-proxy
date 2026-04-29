@@ -78,11 +78,16 @@ export API_KEY=change-me
 export SUBTITLE_FONT='BIZ UDGothic'
 ```
 
-`API_KEY` を設定した場合は、リクエストに `X-Api-Key` が必要です。
+`API_KEY` を設定した場合は、リクエストに `X-Api-Key` が必要です。ブラウザ画面から使う場合は、画面上部の `App API key` に同じ値を入れると生成 URL に `apiKey` が付きます。
 
 ```bash
 curl -H 'X-Api-Key: change-me' -L -o out.mp4 \
   http://127.0.0.1:8000/youtube/dQw4w9WgXcQ/ja
+```
+
+```bash
+curl -L -o yamaplayer.json \
+  "http://127.0.0.1:8000/yamaplayer/playlist?list=PLxxxxxxxx&apiKey=change-me"
 ```
 
 ## YamaPlayer JSON 書き出し

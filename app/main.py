@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -143,9 +144,15 @@ def validate_input(video_id: str, lang: str) -> None:
         raise HTTPException(status_code=400, detail="Invalid subtitle language")
 
 
-def assert_authorized(x_api_key: str | None) -> None:
-    if settings.api_key and x_api_key != settings.api_key:
-        raise HTTPException(status_code=401, detail="Invalid API key")
+def assert_authorized(x_api_key: str | None, api_key: str | None = None) -> None:
+    if not settings.api_key:
+        return
+
+    provided_key = x_api_key or api_key
+    if not provided_key:
+        raise HTTPException(status_code=401, detail="App API key is required")
+    if not hmac.compare_digest(provided_key, settings.api_key):
+        raise HTTPException(status_code=401, detail="Invalid app API key")
 
 
 def yt_dlp_base_args() -> list[str]:
@@ -999,6 +1006,10 @@ async def index() -> str:
       <button type="button" id="videoTab" role="tab" aria-controls="converter" aria-selected="true">Video</button>
       <button type="button" id="jsonTab" role="tab" aria-controls="jsonExporter" aria-selected="false">JSON</button>
     </div>
+    <label>
+      App API key
+      <input id="appApiKey" name="appApiKey" type="password" autocomplete="off">
+    </label>
     <form id="converter" class="tool" aria-labelledby="videoTab">
       <label>
         YouTube URL
@@ -1091,8 +1102,10 @@ async def index() -> str:
     const jsonMessage = document.getElementById("jsonMessage");
     const downloadJsonLink = document.getElementById("downloadJsonLink");
     const jsonCopyButton = document.getElementById("jsonCopyButton");
+    const appApiKey = document.getElementById("appApiKey");
 
     lang.value = defaultLang;
+    appApiKey.value = localStorage.getItem("appApiKey") || "";
 
     function selectTool(tool) {{
       const jsonSelected = tool === "json";
@@ -1164,7 +1177,10 @@ async def index() -> str:
         openLink.setAttribute("aria-disabled", "true");
         return;
       }}
-      const url = `${{location.origin}}/${{mode.value}}/${{videoId}}/${{language}}`;
+      const params = new URLSearchParams();
+      if (appApiKey.value.trim()) params.set("apiKey", appApiKey.value.trim());
+      const query = params.toString();
+      const url = `${{location.origin}}/${{mode.value}}/${{videoId}}/${{language}}${{query ? `?${{query}}` : ""}}`;
       result.textContent = url;
       message.textContent = "";
       openLink.href = url;
@@ -1202,6 +1218,7 @@ async def index() -> str:
       params.set("mode", modeValue);
       params.set("maxItems", String(count));
       if (playlistName.value.trim()) params.set("name", playlistName.value.trim());
+      if (appApiKey.value.trim()) params.set("apiKey", appApiKey.value.trim());
       const url = `${{location.origin}}/yamaplayer/${{selectedType}}?${{params.toString()}}`;
       jsonResult.textContent = url;
       jsonMessage.textContent = "";
@@ -1214,6 +1231,11 @@ async def index() -> str:
     input.addEventListener("input", update);
     lang.addEventListener("input", update);
     mode.addEventListener("change", update);
+    appApiKey.addEventListener("input", () => {{
+      localStorage.setItem("appApiKey", appApiKey.value);
+      update();
+      updateJson();
+    }});
     form.addEventListener("submit", (event) => {{
       event.preventDefault();
       update();
@@ -1253,9 +1275,10 @@ async def yamaplayer_playlist(
     name: str | None = None,
     mode: int = 0,
     max_items: int = Query(default=500, alias="maxItems"),
+    api_key: str | None = Query(default=None, alias="apiKey"),
     x_api_key: str | None = Header(default=None),
 ) -> Response:
-    assert_authorized(x_api_key)
+    assert_authorized(x_api_key, api_key)
     playlist_id = extract_playlist_id(list_id_or_url)
     normalized_mode = normalize_yamaplayer_mode(mode)
     normalized_max_items = normalize_max_items(max_items)
@@ -1270,9 +1293,10 @@ async def yamaplayer_channel(
     name: str | None = None,
     mode: int = 0,
     max_items: int = Query(default=500, alias="maxItems"),
+    api_key: str | None = Query(default=None, alias="apiKey"),
     x_api_key: str | None = Header(default=None),
 ) -> Response:
-    assert_authorized(x_api_key)
+    assert_authorized(x_api_key, api_key)
     normalized_mode = normalize_yamaplayer_mode(mode)
     normalized_max_items = normalize_max_items(max_items)
     uploads_playlist_id, channel_title = await fetch_channel_uploads_playlist(channel)
@@ -1292,11 +1316,12 @@ async def youtube(
     video_id: str,
     request: Request,
     lang: str | None = None,
+    api_key: str | None = Query(default=None, alias="apiKey"),
     x_api_key: str | None = Header(default=None),
 ) -> Response:
     lang = lang or settings.default_lang
     validate_input(video_id, lang)
-    assert_authorized(x_api_key)
+    assert_authorized(x_api_key, api_key)
     cleanup_expired_cache()
     path = await get_or_create_mp4(video_id, lang)
     return mp4_response(request, path)
@@ -1308,11 +1333,12 @@ async def youtube_hls(
     video_id: str,
     request: Request,
     lang: str | None = None,
+    api_key: str | None = Query(default=None, alias="apiKey"),
     x_api_key: str | None = Header(default=None),
 ) -> Response:
     lang = lang or settings.default_lang
     validate_input(video_id, lang)
-    assert_authorized(x_api_key)
+    assert_authorized(x_api_key, api_key)
     cleanup_expired_cache()
     key = cache_key(video_id, lang)
     playlist = await get_or_start_hls(video_id, lang)
