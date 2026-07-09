@@ -80,6 +80,48 @@ export DEFAULT_LANG=ja
 export SUBTITLE_FONT='BIZ UDGothic'
 ```
 
+### Discord bot からの準備ジョブ
+
+`/youtube/...` と `/youtube-hls/...` は配信専用です。URL を叩いただけでは変換や HDD から SSD への移動を開始しません。MP4 は SSD 側にあれば SSD から返し、HDD アーカイブにだけある場合も昇格せずそのまま返します。HLS は SSD 側に準備済みでない場合 `404` を返します。
+
+変換または HDD から SSD への昇格は、Bearer token 付きの準備 API から開始します。
+
+```bash
+export DISCORD_PREPARE_TOKEN='change-this-token'
+
+curl -X POST \
+  -H "Authorization: Bearer $DISCORD_PREPARE_TOKEN" \
+  "http://127.0.0.1:8000/prepare/youtube/dQw4w9WgXcQ/ja?mode=mp4&discordUserId=123456789012345678"
+
+curl -H "Authorization: Bearer $DISCORD_PREPARE_TOKEN" \
+  "http://127.0.0.1:8000/prepare/jobs/JOB_ID"
+```
+
+`POST /prepare/youtube/:videoId/:lang?mode=mp4|hls` は、準備済みなら `200 {"status":"ready","url":"..."}` を返します。準備が必要なら `202` と `job_id` / `status_url` を返すので、Discord bot 側で `GET /prepare/jobs/:jobId` をポーリングし、`ready` になってから `url` を投稿します。
+
+`discordUserId` を渡すと、ジョブ状態に `mentions` と `notification.content` が含まれます。bot は `ready` または `failed` になったときに `notification.content` を投稿すれば、変換コマンドを実行したユーザーへメンションできます。同じ動画の準備ジョブが既に動いている場合、後から来た `discordUserId` も同じジョブの通知対象に追加されます。
+
+準備中のレスポンスには、分かる範囲で `eta_seconds` と Unix 秒の `estimated_ready_at` を含めます。HDD から SSD への昇格はアーカイブサイズから概算し、新規変換は動画長を取得できた後に概算を更新します。
+
+Discord bot は FastAPI サーバーとは別プロセスで起動します。同じ `.env.local` を読み、準備 API を HTTP 経由で呼びます。
+
+```powershell
+.\scripts\reset-local-env.ps1 `
+  -DiscordBotToken "YOUR_DISCORD_BOT_TOKEN" `
+  -DiscordPrepareToken "change-this-token"
+
+.\start-local-server.bat
+.\start-discord-bot.bat
+```
+
+bot はスラッシュコマンド `/prepare` を提供します。
+
+```text
+/prepare url:https://www.youtube.com/watch?v=dQw4w9WgXcQ lang:ja mode:MP4
+```
+
+準備開始時は `予想N分 / 終了予想 <t:1783619520:t>` の形式で返信します。ジョブが完了または失敗すると、コマンドを実行したユーザーにメンションして結果を投稿します。
+
 ### SSD/HDD アーカイブキャッシュ
 
 SSD を変換作業と直近キャッシュ、HDD を古い成果物の保管先に分ける場合は、`CACHE_HOT_DIR` と `CACHE_ARCHIVE_DIR` を指定します。`CACHE_HOT_DIR` が未指定なら従来どおり `CACHE_DIR` を使います。
@@ -94,9 +136,9 @@ export CACHE_PROMOTE_ARCHIVE_ON_ACCESS=1
 
 7 日以上前のエントリは削除せず HDD へ移動します。SSD の空き容量が `CACHE_HOT_MIN_FREE_BYTES` を下回る場合は、7 日未満でも古い順に HDD へ移動します。各エントリには変換済み `output.mp4` / HLS に加えて、元動画、字幕、取得内容をまとめた `source.json` を保存します。
 
-HDD 側にある MP4 へアクセスされた場合、可能ならエントリを SSD へ昇格コピーしてから返します。コピーできない場合でも MP4 は HDD から直接返せますが、初回スピンアップ、シーク、多重アクセスでは待ちが出やすくなります。HLS は小さいファイルを連続で読むため、HDD より SSD へ昇格した状態での配信を推奨します。
+準備 API が HDD 側のエントリを見つけた場合は SSD へ昇格コピーします。通常の MP4 配信 URL は HDD からも直接返せるため、一人で観る用途では再準備なしで再生できます。HDD 直配信は初回スピンアップやシークで待ちが出やすいため、複数人に共有する前は Discord bot から準備して SSD へ戻す運用を推奨します。
 
-アプリ独自の API キー認証は行いません。Google の API キーが必要なのは、YouTube Data API v3 を使う `/yamaplayer/playlist`、`/yamaplayer/channel`、`/yamaplayer/batch` だけです。
+Google の API キーが必要なのは、YouTube Data API v3 を使う `/yamaplayer/playlist`、`/yamaplayer/channel`、`/yamaplayer/batch` だけです。
 
 ## YamaPlayer JSON 書き出し
 
@@ -269,6 +311,7 @@ WantedBy=multi-user.target
 
 - [Oracle Always Free VM デプロイ手順](docs/oracle-always-free-deploy.md)
 - [Hetzner Cloud デプロイ手順](docs/hetzner-cloud-deploy.md)
+- [Ubuntu 26.04 LTS + GTX 1050 Ti 運用手順](docs/ubuntu-26.04-gtx1050ti-deploy.md)
 - [字幕デザイン変更手順](docs/subtitle-style-guide.md)
 
 ## 字幕デザイン
