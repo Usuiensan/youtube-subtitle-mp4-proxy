@@ -80,6 +80,22 @@ export DEFAULT_LANG=ja
 export SUBTITLE_FONT='BIZ UDGothic'
 ```
 
+### SSD/HDD アーカイブキャッシュ
+
+SSD を変換作業と直近キャッシュ、HDD を古い成果物の保管先に分ける場合は、`CACHE_HOT_DIR` と `CACHE_ARCHIVE_DIR` を指定します。`CACHE_HOT_DIR` が未指定なら従来どおり `CACHE_DIR` を使います。
+
+```bash
+export CACHE_HOT_DIR=/mnt/ssd/youtube-mp4-hot
+export CACHE_ARCHIVE_DIR=/mnt/hdd/youtube-mp4-archive
+export CACHE_ARCHIVE_AFTER_SECONDS=604800
+export CACHE_HOT_MIN_FREE_BYTES=50000000000
+export CACHE_PROMOTE_ARCHIVE_ON_ACCESS=1
+```
+
+7 日以上前のエントリは削除せず HDD へ移動します。SSD の空き容量が `CACHE_HOT_MIN_FREE_BYTES` を下回る場合は、7 日未満でも古い順に HDD へ移動します。各エントリには変換済み `output.mp4` / HLS に加えて、元動画、字幕、取得内容をまとめた `source.json` を保存します。
+
+HDD 側にある MP4 へアクセスされた場合、可能ならエントリを SSD へ昇格コピーしてから返します。コピーできない場合でも MP4 は HDD から直接返せますが、初回スピンアップ、シーク、多重アクセスでは待ちが出やすくなります。HLS は小さいファイルを連続で読むため、HDD より SSD へ昇格した状態での配信を推奨します。
+
 アプリ独自の API キー認証は行いません。Google の API キーが必要なのは、YouTube Data API v3 を使う `/yamaplayer/playlist`、`/yamaplayer/channel`、`/yamaplayer/batch` だけです。
 
 ## YamaPlayer JSON 書き出し
