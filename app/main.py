@@ -17,7 +17,13 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    StreamingResponse,
+)
 
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -46,6 +52,13 @@ load_env_file(ENV_FILE)
 
 class Settings:
     cache_dir = Path(os.getenv("CACHE_DIR", "/tmp/youtube-mp4-cache"))
+    cache_hot_dir = Path(os.getenv("CACHE_HOT_DIR", os.getenv("CACHE_DIR", "/tmp/youtube-mp4-cache")))
+    cache_archive_dir = (
+        Path(os.environ["CACHE_ARCHIVE_DIR"]) if os.getenv("CACHE_ARCHIVE_DIR") else None
+    )
+    cache_archive_after_seconds = int(os.getenv("CACHE_ARCHIVE_AFTER_SECONDS", "604800"))
+    cache_hot_min_free_bytes = int(os.getenv("CACHE_HOT_MIN_FREE_BYTES", "0"))
+    cache_promote_archive_on_access = os.getenv("CACHE_PROMOTE_ARCHIVE_ON_ACCESS", "1") != "0"
     default_lang = os.getenv("DEFAULT_LANG", "ja")
     max_duration_seconds = int(os.getenv("MAX_DURATION_SECONDS", "1800"))
     max_height = int(os.getenv("MAX_HEIGHT", "720"))
@@ -69,6 +82,7 @@ class Settings:
     ytdlp_proxy = os.getenv("YTDLP_PROXY")
     ytdlp_extra_args = os.getenv("YTDLP_EXTRA_ARGS", "")
     youtube_data_api_key = os.getenv("YOUTUBE_DATA_API_KEY")
+    discord_prepare_token = os.getenv("DISCORD_PREPARE_TOKEN")
 
 
 settings = Settings()
@@ -78,6 +92,9 @@ _global_encode_lock = asyncio.Semaphore(1)
 _inflight_lock = asyncio.Lock()
 _inflight: dict[str, asyncio.Task[Path]] = {}
 _hls_inflight: dict[str, asyncio.Task[Path]] = {}
+_prepare_lock = asyncio.Lock()
+_prepare_jobs: dict[str, dict] = {}
+_prepare_by_key: dict[str, str] = {}
 
 
 class CommandError(Exception):
@@ -98,7 +115,13 @@ def render_profile_id() -> str:
 
 
 def entry_dir(key: str) -> Path:
-    return settings.cache_dir / key
+    return settings.cache_hot_dir / key
+
+
+def archive_entry_dir(key: str) -> Path | None:
+    if settings.cache_archive_dir is None:
+        return None
+    return settings.cache_archive_dir / key
 
 
 def output_path(key: str) -> Path:
@@ -117,7 +140,16 @@ def meta_path(key: str) -> Path:
     return entry_dir(key) / "meta.json"
 
 
+def source_dir(key: str) -> Path:
+    return entry_dir(key) / "source"
+
+
+def source_meta_path(key: str) -> Path:
+    return entry_dir(key) / "source.json"
+
+
 def write_meta(key: str, video_id: str, lang: str, info: dict, mode: str) -> None:
+    meta_path(key).parent.mkdir(parents=True, exist_ok=True)
     meta_path(key).write_text(
         json.dumps(
             {
@@ -133,6 +165,171 @@ def write_meta(key: str, video_id: str, lang: str, info: dict, mode: str) -> Non
         ),
         encoding="utf-8",
     )
+
+
+def write_source_meta(
+    key: str,
+    video_id: str,
+    lang: str,
+    info: dict,
+    video: Path,
+    subtitle: Path,
+) -> None:
+    source_meta_path(key).write_text(
+        json.dumps(
+            {
+                "video_id": video_id,
+                "lang": lang,
+                "title": info.get("title"),
+                "duration": info.get("duration"),
+                "webpage_url": info.get("webpage_url")
+                or f"https://www.youtube.com/watch?v={video_id}",
+                "source_video": str(video.relative_to(entry_dir(key))).replace("\\", "/"),
+                "subtitle": str(subtitle.relative_to(entry_dir(key))).replace("\\", "/"),
+                "downloaded_at": int(time.time()),
+                "yt_dlp": {
+                    "id": info.get("id"),
+                    "extractor": info.get("extractor"),
+                    "format_id": info.get("format_id"),
+                    "ext": info.get("ext"),
+                    "resolution": info.get("resolution"),
+                    "fps": info.get("fps"),
+                },
+            },
+            ensure_ascii=True,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def hot_free_bytes() -> int:
+    settings.cache_hot_dir.mkdir(parents=True, exist_ok=True)
+    return shutil.disk_usage(settings.cache_hot_dir).free
+
+
+def cache_entry_newest_mtime(path: Path) -> float:
+    mp4 = path / "output.mp4"
+    hls_playlist = path / "hls" / "index.m3u8"
+    return max(
+        (p.stat().st_mtime for p in (mp4, hls_playlist) if p.exists()),
+        default=0,
+    )
+
+
+def is_usable_file(path: Path) -> bool:
+    return path.exists() and path.is_file() and path.stat().st_size > 0
+
+
+def hot_output_path(key: str) -> Path | None:
+    path = output_path(key)
+    return path if is_usable_file(path) else None
+
+
+def hot_hls_playlist_path(key: str) -> Path | None:
+    playlist = hls_playlist_path(key)
+    if not is_usable_file(playlist):
+        return None
+    if "#EXT-X-ENDLIST" not in playlist.read_text(encoding="utf-8", errors="ignore"):
+        return None
+    if not any(hls_dir(key).glob("segment_*.ts")):
+        return None
+    return playlist
+
+
+def archive_cache_entry(key: str) -> bool:
+    archive_dir = archive_entry_dir(key)
+    hot_dir = entry_dir(key)
+    if archive_dir is None or not hot_dir.exists():
+        return False
+    archive_dir.parent.mkdir(parents=True, exist_ok=True)
+    tmp_archive_dir = archive_dir.with_name(f".moving-{archive_dir.name}-{uuid.uuid4().hex}")
+    if tmp_archive_dir.exists():
+        shutil.rmtree(tmp_archive_dir, ignore_errors=True)
+    if archive_dir.exists():
+        shutil.rmtree(archive_dir, ignore_errors=True)
+    shutil.copytree(hot_dir, tmp_archive_dir)
+    tmp_archive_dir.replace(archive_dir)
+    shutil.rmtree(hot_dir, ignore_errors=True)
+    return True
+
+
+def promote_archive_entry(key: str) -> bool:
+    archive_dir = archive_entry_dir(key)
+    hot_dir = entry_dir(key)
+    if archive_dir is None or not archive_dir.exists() or hot_dir.exists():
+        return False
+    if not settings.cache_promote_archive_on_access:
+        return False
+    hot_dir.parent.mkdir(parents=True, exist_ok=True)
+    tmp_hot_dir = hot_dir.with_name(f".promote-{hot_dir.name}-{uuid.uuid4().hex}")
+    if tmp_hot_dir.exists():
+        shutil.rmtree(tmp_hot_dir, ignore_errors=True)
+    shutil.copytree(archive_dir, tmp_hot_dir)
+    tmp_hot_dir.replace(hot_dir)
+    return True
+
+
+def prepared_output_path(key: str) -> Path | None:
+    hot = hot_output_path(key)
+    if hot:
+        return hot
+    archive_dir = archive_entry_dir(key)
+    archived = archive_dir / "output.mp4" if archive_dir else None
+    if archived and is_usable_file(archived):
+        if promote_archive_entry(key):
+            return hot_output_path(key)
+    return None
+
+
+def prepared_hls_playlist_path(key: str) -> Path | None:
+    hot = hot_hls_playlist_path(key)
+    if hot:
+        return hot
+    archive_dir = archive_entry_dir(key)
+    if archive_dir is None:
+        return None
+    archived_playlist = archive_dir / "hls" / "index.m3u8"
+    if not is_usable_file(archived_playlist):
+        return None
+    if "#EXT-X-ENDLIST" not in archived_playlist.read_text(encoding="utf-8", errors="ignore"):
+        return None
+    if not any((archive_dir / "hls").glob("segment_*.ts")):
+        return None
+    if promote_archive_entry(key):
+        return hot_hls_playlist_path(key)
+    return None
+
+
+def dir_size_bytes(path: Path) -> int:
+    if path.is_file():
+        return path.stat().st_size
+    total = 0
+    for child in path.rglob("*"):
+        if child.is_file():
+            total += child.stat().st_size
+    return total
+
+
+def archived_entry_size_bytes(key: str) -> int | None:
+    archive_dir = archive_entry_dir(key)
+    if archive_dir is None or not archive_dir.exists():
+        return None
+    return dir_size_bytes(archive_dir)
+
+
+def archived_ready_entry_exists(key: str, mode: str) -> bool:
+    archive_dir = archive_entry_dir(key)
+    if archive_dir is None or not archive_dir.exists():
+        return False
+    if mode == "hls":
+        playlist = archive_dir / "hls" / "index.m3u8"
+        if not is_usable_file(playlist):
+            return False
+        if "#EXT-X-ENDLIST" not in playlist.read_text(encoding="utf-8", errors="ignore"):
+            return False
+        return any((archive_dir / "hls").glob("segment_*.ts"))
+    return is_usable_file(archive_dir / "output.mp4")
 
 
 def validate_input(video_id: str, lang: str) -> None:
@@ -176,12 +373,7 @@ def is_fresh(path: Path) -> bool:
 
 
 def is_hls_fresh(key: str) -> bool:
-    playlist = hls_playlist_path(key)
-    if not is_fresh(playlist):
-        return False
-    if "#EXT-X-ENDLIST" not in playlist.read_text(encoding="utf-8", errors="ignore"):
-        return False
-    return any(hls_dir(key).glob("segment_*.ts"))
+    return hot_hls_playlist_path(key) is not None
 
 
 def is_hls_started(key: str) -> bool:
@@ -192,19 +384,34 @@ def is_hls_started(key: str) -> bool:
 
 
 def cleanup_expired_cache() -> None:
-    settings.cache_dir.mkdir(parents=True, exist_ok=True)
+    settings.cache_hot_dir.mkdir(parents=True, exist_ok=True)
     now = time.time()
-    for child in settings.cache_dir.iterdir():
+    expire_after = (
+        settings.cache_archive_after_seconds
+        if settings.cache_archive_dir is not None
+        else settings.cache_ttl_seconds
+    )
+    candidates: list[tuple[float, str]] = []
+    for child in settings.cache_hot_dir.iterdir():
         if not child.is_dir() or child.name.startswith(".work-"):
             continue
-        mp4 = child / "output.mp4"
-        hls_playlist = child / "hls" / "index.m3u8"
-        newest = max(
-            (p.stat().st_mtime for p in (mp4, hls_playlist) if p.exists()),
-            default=0,
-        )
-        if newest == 0 or now - newest > settings.cache_ttl_seconds:
+        newest = cache_entry_newest_mtime(child)
+        if newest == 0:
             shutil.rmtree(child, ignore_errors=True)
+            continue
+        candidates.append((newest, child.name))
+        if now - newest > expire_after:
+            if not archive_cache_entry(child.name):
+                shutil.rmtree(child, ignore_errors=True)
+
+    if settings.cache_archive_dir is None or settings.cache_hot_min_free_bytes <= 0:
+        return
+
+    for _newest, key in sorted(candidates):
+        if hot_free_bytes() >= settings.cache_hot_min_free_bytes:
+            break
+        if entry_dir(key).exists():
+            archive_cache_entry(key)
 
 
 async def run_command(
@@ -487,21 +694,29 @@ async def create_hls(video: Path, subtitle: Path, destination_dir: Path) -> None
 async def create_mp4(video_id: str, lang: str) -> Path:
     key = cache_key(video_id, lang)
     final_output = output_path(key)
-    if is_fresh(final_output):
-        return final_output
+    prepared = prepared_output_path(key)
+    if prepared:
+        return prepared
 
     async with _global_encode_lock:
-        if is_fresh(final_output):
-            return final_output
+        prepared = prepared_output_path(key)
+        if prepared:
+            return prepared
 
-        work_dir = settings.cache_dir / f".work-{key}-{uuid.uuid4().hex}"
+        work_dir = settings.cache_hot_dir / f".work-{key}-{uuid.uuid4().hex}"
         final_output.parent.mkdir(parents=True, exist_ok=True)
         work_dir.mkdir(parents=True, exist_ok=True)
         try:
             info = await fetch_video_info(video_id)
             assert_duration_allowed(info)
             video, subtitle = await download_sources(video_id, lang, work_dir)
-            await burn_subtitles(video, subtitle, final_output)
+            source_dir(key).mkdir(parents=True, exist_ok=True)
+            saved_video = source_dir(key) / f"input{video.suffix.lower()}"
+            saved_subtitle = source_dir(key) / f"subtitle.{lang}{subtitle.suffix.lower()}"
+            shutil.move(str(video), saved_video)
+            shutil.move(str(subtitle), saved_subtitle)
+            write_source_meta(key, video_id, lang, info, saved_video, saved_subtitle)
+            await burn_subtitles(saved_video, saved_subtitle, final_output)
             write_meta(key, video_id, lang, info, "mp4")
             return final_output
         finally:
@@ -511,22 +726,30 @@ async def create_mp4(video_id: str, lang: str) -> Path:
 async def create_hls_job(video_id: str, lang: str) -> Path:
     key = cache_key(video_id, lang)
     playlist = hls_playlist_path(key)
-    if is_hls_fresh(key):
-        return playlist
+    prepared = prepared_hls_playlist_path(key)
+    if prepared:
+        return prepared
 
     async with _global_encode_lock:
-        if is_hls_fresh(key):
-            return playlist
+        prepared = prepared_hls_playlist_path(key)
+        if prepared:
+            return prepared
 
-        work_dir = settings.cache_dir / f".work-{key}-{uuid.uuid4().hex}"
+        work_dir = settings.cache_hot_dir / f".work-{key}-{uuid.uuid4().hex}"
         playlist.parent.mkdir(parents=True, exist_ok=True)
         work_dir.mkdir(parents=True, exist_ok=True)
         try:
             info = await fetch_video_info(video_id)
             assert_duration_allowed(info)
             video, subtitle = await download_sources(video_id, lang, work_dir)
+            source_dir(key).mkdir(parents=True, exist_ok=True)
+            saved_video = source_dir(key) / f"input{video.suffix.lower()}"
+            saved_subtitle = source_dir(key) / f"subtitle.{lang}{subtitle.suffix.lower()}"
+            shutil.move(str(video), saved_video)
+            shutil.move(str(subtitle), saved_subtitle)
+            write_source_meta(key, video_id, lang, info, saved_video, saved_subtitle)
             write_meta(key, video_id, lang, info, "hls")
-            await create_hls(video, subtitle, playlist.parent)
+            await create_hls(saved_video, saved_subtitle, playlist.parent)
             return playlist
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
@@ -534,8 +757,8 @@ async def create_hls_job(video_id: str, lang: str) -> Path:
 
 async def get_or_create_mp4(video_id: str, lang: str) -> Path:
     key = cache_key(video_id, lang)
-    cached = output_path(key)
-    if is_fresh(cached):
+    cached = prepared_output_path(key)
+    if cached:
         return cached
 
     async with _inflight_lock:
@@ -567,8 +790,9 @@ async def wait_until_hls_ready(key: str, task: asyncio.Task[Path]) -> Path:
 
 async def get_or_start_hls(video_id: str, lang: str) -> Path:
     key = cache_key(video_id, lang)
-    if is_hls_fresh(key):
-        return hls_playlist_path(key)
+    cached = prepared_hls_playlist_path(key)
+    if cached:
+        return cached
 
     async with _inflight_lock:
         task = _hls_inflight.get(key)
@@ -583,6 +807,257 @@ async def get_or_start_hls(video_id: str, lang: str) -> Path:
             async with _inflight_lock:
                 if _hls_inflight.get(key) is task:
                     _hls_inflight.pop(key, None)
+
+
+async def get_or_create_hls(video_id: str, lang: str) -> Path:
+    key = cache_key(video_id, lang)
+    cached = prepared_hls_playlist_path(key)
+    if cached:
+        return cached
+
+    async with _inflight_lock:
+        task = _hls_inflight.get(key)
+        if task is None or task.done():
+            task = asyncio.create_task(create_hls_job(video_id, lang))
+            _hls_inflight[key] = task
+
+    try:
+        return await task
+    finally:
+        if task.done():
+            async with _inflight_lock:
+                if _hls_inflight.get(key) is task:
+                    _hls_inflight.pop(key, None)
+
+
+def require_prepare_auth(request: Request) -> None:
+    if not settings.discord_prepare_token:
+        raise HTTPException(status_code=500, detail="DISCORD_PREPARE_TOKEN is not configured")
+    expected = f"Bearer {settings.discord_prepare_token}"
+    if request.headers.get("authorization") != expected:
+        raise HTTPException(status_code=401, detail="Invalid prepare token")
+
+
+def prepare_key(video_id: str, lang: str, mode: str) -> str:
+    return f"{mode}:{cache_key(video_id, lang)}"
+
+
+def prepared_media_url(request: Request, video_id: str, lang: str, mode: str) -> str:
+    base_url = str(request.base_url).rstrip("/")
+    if mode == "hls":
+        return f"{base_url}/youtube-hls/{video_id}/{lang}"
+    return f"{base_url}/youtube/{video_id}/{lang}"
+
+
+def prepare_status_url(request: Request, job_id: str) -> str:
+    base_url = str(request.base_url).rstrip("/")
+    return f"{base_url}/prepare/jobs/{job_id}"
+
+
+def prepare_ready_path(video_id: str, lang: str, mode: str) -> Path | None:
+    key = cache_key(video_id, lang)
+    if mode == "hls":
+        return hot_hls_playlist_path(key)
+    return hot_output_path(key)
+
+
+def validate_discord_user_id(discord_user_id: str | None) -> str | None:
+    if discord_user_id is None or discord_user_id == "":
+        return None
+    if not re.fullmatch(r"\d{17,20}", discord_user_id):
+        raise HTTPException(status_code=400, detail="Invalid Discord user id")
+    return discord_user_id
+
+
+def discord_mention(discord_user_id: str) -> str:
+    return f"<@{discord_user_id}>"
+
+
+def estimate_archive_prepare_seconds(key: str) -> int | None:
+    size = archived_entry_size_bytes(key)
+    if size is None:
+        return None
+    return max(5, int(size / (30 * 1024 * 1024)) + 5)
+
+
+def estimate_conversion_seconds(duration: int | float | None, mode: str) -> int | None:
+    if not isinstance(duration, (int, float)) or duration <= 0:
+        return None
+    multiplier = 1.3 if mode == "hls" else 1.6
+    return max(30, min(settings.job_timeout_seconds, int(duration * multiplier) + 60))
+
+
+def update_job_eta(job_id: str, eta_seconds: int | None) -> None:
+    if eta_seconds is None:
+        return
+    now = int(time.time())
+    _prepare_jobs[job_id]["eta_seconds"] = eta_seconds
+    _prepare_jobs[job_id]["estimated_ready_at"] = now + eta_seconds
+
+
+def add_job_requester(job: dict, discord_user_id: str | None) -> None:
+    if not discord_user_id:
+        return
+    requesters = job.setdefault("requesters", [])
+    if discord_user_id not in requesters:
+        requesters.append(discord_user_id)
+
+
+def job_mentions(job: dict) -> list[str]:
+    return [discord_mention(user_id) for user_id in job.get("requesters", [])]
+
+
+def job_notification(job: dict) -> dict | None:
+    mentions = job_mentions(job)
+    if not mentions:
+        return None
+    prefix = " ".join(mentions)
+    if job["status"] == "ready":
+        return {
+            "content": f"{prefix} 準備できました: {job['url']}",
+            "mentions": mentions,
+        }
+    if job["status"] == "failed":
+        return {
+            "content": f"{prefix} 準備に失敗しました: {job.get('error', 'unknown error')}",
+            "mentions": mentions,
+        }
+    return None
+
+
+def job_response_body(job_id: str, job: dict, request: Request) -> dict:
+    body = {
+        "status": job["status"],
+        "video_id": job["video_id"],
+        "lang": job["lang"],
+        "mode": job["mode"],
+    }
+    if job.get("title") is not None:
+        body["title"] = job["title"]
+    if job.get("duration") is not None:
+        body["duration"] = job["duration"]
+    if job["status"] in {"queued", "running"}:
+        body["job_id"] = job_id
+        body["status_url"] = prepare_status_url(request, job_id)
+    if job.get("eta_seconds") is not None:
+        body["eta_seconds"] = job["eta_seconds"]
+    if job.get("estimated_ready_at") is not None:
+        body["estimated_ready_at"] = job["estimated_ready_at"]
+    mentions = job_mentions(job)
+    if mentions:
+        body["mentions"] = mentions
+    if job["status"] == "ready":
+        body["url"] = job["url"]
+    if job["status"] == "failed":
+        body["error"] = job.get("error", "Prepare job failed")
+    notification = job_notification(job)
+    if notification:
+        body["notification"] = notification
+    return body
+
+
+async def run_prepare_job(
+    job_id: str,
+    job_key: str,
+    video_id: str,
+    lang: str,
+    mode: str,
+    url: str,
+) -> None:
+    _prepare_jobs[job_id]["status"] = "running"
+    try:
+        cache_id = cache_key(video_id, lang)
+        if archived_ready_entry_exists(cache_id, mode):
+            update_job_eta(job_id, estimate_archive_prepare_seconds(cache_id))
+        else:
+            info = await fetch_video_info(video_id)
+            assert_duration_allowed(info)
+            _prepare_jobs[job_id]["title"] = info.get("title")
+            _prepare_jobs[job_id]["duration"] = info.get("duration")
+            update_job_eta(job_id, estimate_conversion_seconds(info.get("duration"), mode))
+        if mode == "hls":
+            await get_or_create_hls(video_id, lang)
+        else:
+            await get_or_create_mp4(video_id, lang)
+        now = int(time.time())
+        _prepare_jobs[job_id].update(
+            {
+                "status": "ready",
+                "url": url,
+                "eta_seconds": 0,
+                "estimated_ready_at": now,
+                "completed_at": now,
+            }
+        )
+    except Exception as error:
+        now = int(time.time())
+        _prepare_jobs[job_id].update(
+            {
+                "status": "failed",
+                "error": str(getattr(error, "detail", None) or error)[-1000:],
+                "eta_seconds": 0,
+                "estimated_ready_at": now,
+                "completed_at": now,
+            }
+        )
+    finally:
+        if _prepare_by_key.get(job_key) == job_id:
+            _prepare_by_key.pop(job_key, None)
+
+
+async def enqueue_prepare_job(
+    request: Request,
+    video_id: str,
+    lang: str,
+    mode: str,
+    discord_user_id: str | None,
+) -> tuple[int, dict]:
+    ready = prepare_ready_path(video_id, lang, mode)
+    url = prepared_media_url(request, video_id, lang, mode)
+    if ready:
+        job = {
+            "status": "ready",
+            "video_id": video_id,
+            "lang": lang,
+            "mode": mode,
+            "url": url,
+            "requesters": [],
+        }
+        add_job_requester(job, discord_user_id)
+        return 200, job_response_body("", job, request)
+
+    job_key = prepare_key(video_id, lang, mode)
+    async with _prepare_lock:
+        existing_job_id = _prepare_by_key.get(job_key)
+        if existing_job_id:
+            job = _prepare_jobs.get(existing_job_id)
+            if job and job.get("status") in {"queued", "running"}:
+                add_job_requester(job, discord_user_id)
+                return 202, job_response_body(existing_job_id, job, request)
+
+        job_id = uuid.uuid4().hex
+        cache_id = cache_key(video_id, lang)
+        eta_seconds = (
+            estimate_archive_prepare_seconds(cache_id)
+            if archived_ready_entry_exists(cache_id, mode)
+            else None
+        )
+        estimated_ready_at = int(time.time()) + eta_seconds if eta_seconds is not None else None
+        _prepare_by_key[job_key] = job_id
+        _prepare_jobs[job_id] = {
+            "status": "queued",
+            "video_id": video_id,
+            "lang": lang,
+            "mode": mode,
+            "url": url,
+            "created_at": int(time.time()),
+            "eta_seconds": eta_seconds,
+            "estimated_ready_at": estimated_ready_at,
+            "requesters": [],
+        }
+        add_job_requester(_prepare_jobs[job_id], discord_user_id)
+        asyncio.create_task(run_prepare_job(job_id, job_key, video_id, lang, mode, url))
+        return 202, job_response_body(job_id, _prepare_jobs[job_id], request)
 
 
 def parse_range(range_header: str | None, file_size: int) -> tuple[int, int] | None:
@@ -1484,7 +1959,9 @@ async def youtube(
     lang = lang or settings.default_lang
     validate_input(video_id, lang)
     cleanup_expired_cache()
-    path = await get_or_create_mp4(video_id, lang)
+    path = hot_output_path(cache_key(video_id, lang))
+    if path is None:
+        raise HTTPException(status_code=404, detail="MP4 is not prepared")
     return mp4_response(request, path)
 
 
@@ -1499,8 +1976,43 @@ async def youtube_hls(
     validate_input(video_id, lang)
     cleanup_expired_cache()
     key = cache_key(video_id, lang)
-    playlist = await get_or_start_hls(video_id, lang)
+    playlist = hot_hls_playlist_path(key)
+    if playlist is None:
+        raise HTTPException(status_code=404, detail="HLS is not prepared")
     return hls_playlist_response(request, key, playlist)
+
+
+@app.post("/prepare/youtube/{video_id}/{lang}")
+async def prepare_youtube(
+    video_id: str,
+    lang: str,
+    request: Request,
+    mode: str = Query("mp4"),
+    discord_user_id: str | None = Query(None, alias="discordUserId"),
+) -> JSONResponse:
+    require_prepare_auth(request)
+    validate_input(video_id, lang)
+    discord_user_id = validate_discord_user_id(discord_user_id)
+    if mode not in {"mp4", "hls"}:
+        raise HTTPException(status_code=400, detail="mode must be mp4 or hls")
+    cleanup_expired_cache()
+    status_code, body = await enqueue_prepare_job(
+        request,
+        video_id,
+        lang,
+        mode,
+        discord_user_id,
+    )
+    return JSONResponse(body, status_code=status_code)
+
+
+@app.get("/prepare/jobs/{job_id}")
+async def prepare_job_status(job_id: str, request: Request) -> JSONResponse:
+    require_prepare_auth(request)
+    job = _prepare_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Prepare job not found")
+    return JSONResponse(job_response_body(job_id, job, request))
 
 
 @app.get("/hls/{key}/{filename}")

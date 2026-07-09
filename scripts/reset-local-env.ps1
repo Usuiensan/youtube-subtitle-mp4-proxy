@@ -23,6 +23,11 @@ param(
     [string]$YtdlpProxy = "",
     [string]$YtdlpCookiesFile = "",
     [string]$YoutubeDataApiKey = "",
+    [string]$DiscordBotToken = "",
+    [string]$DiscordPrepareToken = "",
+    [string]$YoutubeProxyBaseUrl = "http://127.0.0.1:8000",
+    [int]$DiscordPreparePollSeconds = 10,
+    [int]$DiscordPreparePollTimeoutSeconds = 7200,
     [string]$ApiKey = ""
 )
 
@@ -57,16 +62,24 @@ function Invoke-FileOperationWithRetry {
     }
 }
 
-if (-not $YoutubeDataApiKey -and (Test-Path -LiteralPath $EnvFilePath)) {
+if (
+    (-not $YoutubeDataApiKey -or -not $DiscordBotToken -or -not $DiscordPrepareToken) -and
+    (Test-Path -LiteralPath $EnvFilePath)
+) {
     $ExistingEnvLines = Invoke-FileOperationWithRetry `
         -Path $EnvFilePath `
         -Action "read" `
         -Operation { [System.IO.File]::ReadAllLines($EnvFilePath) }
 
     foreach ($Line in $ExistingEnvLines) {
-        if ($Line -match '^\s*YOUTUBE_DATA_API_KEY\s*=\s*(.+?)\s*$') {
+        if (-not $YoutubeDataApiKey -and $Line -match '^\s*YOUTUBE_DATA_API_KEY\s*=\s*(.+?)\s*$') {
             $YoutubeDataApiKey = $Matches[1].Trim().Trim('"').Trim("'")
-            break
+        } elseif (-not $DiscordBotToken -and $Line -match '^\s*DISCORD_BOT_TOKEN\s*=\s*(.+?)\s*$') {
+            $DiscordBotToken = $Matches[1].Trim().Trim('"').Trim("'")
+        } elseif (-not $DiscordPrepareToken -and $Line -match '^\s*DISCORD_PREPARE_TOKEN\s*=\s*(.+?)\s*$') {
+            $DiscordPrepareToken = $Matches[1].Trim().Trim('"').Trim("'")
+        } elseif ($Line -match '^\s*YOUTUBE_PROXY_BASE_URL\s*=\s*(.+?)\s*$') {
+            $YoutubeProxyBaseUrl = $Matches[1].Trim().Trim('"').Trim("'")
         }
     }
 }
@@ -125,6 +138,22 @@ if ($YoutubeDataApiKey) {
     Remove-Item Env:\YOUTUBE_DATA_API_KEY -ErrorAction SilentlyContinue
 }
 
+if ($DiscordBotToken) {
+    $env:DISCORD_BOT_TOKEN = $DiscordBotToken
+} else {
+    Remove-Item Env:\DISCORD_BOT_TOKEN -ErrorAction SilentlyContinue
+}
+
+if ($DiscordPrepareToken) {
+    $env:DISCORD_PREPARE_TOKEN = $DiscordPrepareToken
+} else {
+    Remove-Item Env:\DISCORD_PREPARE_TOKEN -ErrorAction SilentlyContinue
+}
+
+$env:YOUTUBE_PROXY_BASE_URL = $YoutubeProxyBaseUrl
+$env:DISCORD_PREPARE_POLL_SECONDS = [string]$DiscordPreparePollSeconds
+$env:DISCORD_PREPARE_POLL_TIMEOUT_SECONDS = [string]$DiscordPreparePollTimeoutSeconds
+
 if ($YtdlpProxy) {
     $env:YTDLP_PROXY = $YtdlpProxy
 } else {
@@ -175,6 +204,15 @@ if ($YtdlpCookiesFile) {
 if ($YoutubeDataApiKey) {
     $EnvLines += "YOUTUBE_DATA_API_KEY=$YoutubeDataApiKey"
 }
+if ($DiscordBotToken) {
+    $EnvLines += "DISCORD_BOT_TOKEN=$DiscordBotToken"
+}
+if ($DiscordPrepareToken) {
+    $EnvLines += "DISCORD_PREPARE_TOKEN=$DiscordPrepareToken"
+}
+$EnvLines += "YOUTUBE_PROXY_BASE_URL=$YoutubeProxyBaseUrl"
+$EnvLines += "DISCORD_PREPARE_POLL_SECONDS=$DiscordPreparePollSeconds"
+$EnvLines += "DISCORD_PREPARE_POLL_TIMEOUT_SECONDS=$DiscordPreparePollTimeoutSeconds"
 if ($ApiKey) {
     $EnvLines += "API_KEY=$ApiKey"
 }
@@ -202,6 +240,15 @@ Write-Host "FFMPEG_VIDEO_CQ=$env:FFMPEG_VIDEO_CQ"
 if ($env:YOUTUBE_DATA_API_KEY) {
     Write-Host "YOUTUBE_DATA_API_KEY=(set)"
 }
+if ($env:DISCORD_BOT_TOKEN) {
+    Write-Host "DISCORD_BOT_TOKEN=(set)"
+}
+if ($env:DISCORD_PREPARE_TOKEN) {
+    Write-Host "DISCORD_PREPARE_TOKEN=(set)"
+}
+Write-Host "YOUTUBE_PROXY_BASE_URL=$env:YOUTUBE_PROXY_BASE_URL"
 Write-Host ""
 Write-Host "Start the app with:"
 Write-Host "uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers"
+Write-Host "Start the Discord bot with:"
+Write-Host "python -m bot.main"

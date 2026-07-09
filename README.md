@@ -80,7 +80,65 @@ export DEFAULT_LANG=ja
 export SUBTITLE_FONT='BIZ UDGothic'
 ```
 
-アプリ独自の API キー認証は行いません。Google の API キーが必要なのは、YouTube Data API v3 を使う `/yamaplayer/playlist`、`/yamaplayer/channel`、`/yamaplayer/batch` だけです。
+### Discord bot からの準備ジョブ
+
+`/youtube/...` と `/youtube-hls/...` は配信専用です。準備済みファイルが SSD 側にない場合は `404` を返し、URL を叩いただけでは変換や HDD からの移動を開始しません。
+
+変換または HDD から SSD への昇格は、Bearer token 付きの準備 API から開始します。
+
+```bash
+export DISCORD_PREPARE_TOKEN='change-this-token'
+
+curl -X POST \
+  -H "Authorization: Bearer $DISCORD_PREPARE_TOKEN" \
+  "http://127.0.0.1:8000/prepare/youtube/dQw4w9WgXcQ/ja?mode=mp4&discordUserId=123456789012345678"
+
+curl -H "Authorization: Bearer $DISCORD_PREPARE_TOKEN" \
+  "http://127.0.0.1:8000/prepare/jobs/JOB_ID"
+```
+
+`POST /prepare/youtube/:videoId/:lang?mode=mp4|hls` は、準備済みなら `200 {"status":"ready","url":"..."}` を返します。準備が必要なら `202` と `job_id` / `status_url` を返すので、Discord bot 側で `GET /prepare/jobs/:jobId` をポーリングし、`ready` になってから `url` を投稿します。
+
+`discordUserId` を渡すと、ジョブ状態に `mentions` と `notification.content` が含まれます。bot は `ready` または `failed` になったときに `notification.content` を投稿すれば、変換コマンドを実行したユーザーへメンションできます。同じ動画の準備ジョブが既に動いている場合、後から来た `discordUserId` も同じジョブの通知対象に追加されます。
+
+準備中のレスポンスには、分かる範囲で `eta_seconds` と Unix 秒の `estimated_ready_at` を含めます。HDD から SSD への昇格はアーカイブサイズから概算し、新規変換は動画長を取得できた後に概算を更新します。
+
+Discord bot は FastAPI サーバーとは別プロセスで起動します。同じ `.env.local` を読み、準備 API を HTTP 経由で呼びます。
+
+```powershell
+.\scripts\reset-local-env.ps1 `
+  -DiscordBotToken "YOUR_DISCORD_BOT_TOKEN" `
+  -DiscordPrepareToken "change-this-token"
+
+.\start-local-server.bat
+.\start-discord-bot.bat
+```
+
+bot はスラッシュコマンド `/prepare` を提供します。
+
+```text
+/prepare url:https://www.youtube.com/watch?v=dQw4w9WgXcQ lang:ja mode:MP4
+```
+
+準備開始時は `予想N分 / 終了予想 <t:1783619520:t>` の形式で返信します。ジョブが完了または失敗すると、コマンドを実行したユーザーにメンションして結果を投稿します。
+
+### SSD/HDD アーカイブキャッシュ
+
+SSD を変換作業と直近キャッシュ、HDD を古い成果物の保管先に分ける場合は、`CACHE_HOT_DIR` と `CACHE_ARCHIVE_DIR` を指定します。`CACHE_HOT_DIR` が未指定なら従来どおり `CACHE_DIR` を使います。
+
+```bash
+export CACHE_HOT_DIR=/mnt/ssd/youtube-mp4-hot
+export CACHE_ARCHIVE_DIR=/mnt/hdd/youtube-mp4-archive
+export CACHE_ARCHIVE_AFTER_SECONDS=604800
+export CACHE_HOT_MIN_FREE_BYTES=50000000000
+export CACHE_PROMOTE_ARCHIVE_ON_ACCESS=1
+```
+
+7 日以上前のエントリは削除せず HDD へ移動します。SSD の空き容量が `CACHE_HOT_MIN_FREE_BYTES` を下回る場合は、7 日未満でも古い順に HDD へ移動します。各エントリには変換済み `output.mp4` / HLS に加えて、元動画、字幕、取得内容をまとめた `source.json` を保存します。
+
+準備 API が HDD 側のエントリを見つけた場合は SSD へ昇格コピーします。配信 URL は HDD から直接返さないため、HDD のスピンアップや遅いランダム読み込みは準備処理側に閉じ込められます。
+
+Google の API キーが必要なのは、YouTube Data API v3 を使う `/yamaplayer/playlist`、`/yamaplayer/channel`、`/yamaplayer/batch` だけです。
 
 ## YamaPlayer JSON 書き出し
 
@@ -253,6 +311,7 @@ WantedBy=multi-user.target
 
 - [Oracle Always Free VM デプロイ手順](docs/oracle-always-free-deploy.md)
 - [Hetzner Cloud デプロイ手順](docs/hetzner-cloud-deploy.md)
+- [Ubuntu 26.04 LTS + GTX 1050 Ti 運用手順](docs/ubuntu-26.04-gtx1050ti-deploy.md)
 - [字幕デザイン変更手順](docs/subtitle-style-guide.md)
 
 ## 字幕デザイン
