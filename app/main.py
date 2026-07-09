@@ -46,6 +46,13 @@ load_env_file(ENV_FILE)
 
 class Settings:
     cache_dir = Path(os.getenv("CACHE_DIR", "/tmp/youtube-mp4-cache"))
+    cache_hot_dir = Path(os.getenv("CACHE_HOT_DIR", os.getenv("CACHE_DIR", "/tmp/youtube-mp4-cache")))
+    cache_archive_dir = (
+        Path(os.environ["CACHE_ARCHIVE_DIR"]) if os.getenv("CACHE_ARCHIVE_DIR") else None
+    )
+    cache_archive_after_seconds = int(os.getenv("CACHE_ARCHIVE_AFTER_SECONDS", "604800"))
+    cache_hot_min_free_bytes = int(os.getenv("CACHE_HOT_MIN_FREE_BYTES", "0"))
+    cache_promote_archive_on_access = os.getenv("CACHE_PROMOTE_ARCHIVE_ON_ACCESS", "1") != "0"
     default_lang = os.getenv("DEFAULT_LANG", "ja")
     max_duration_seconds = int(os.getenv("MAX_DURATION_SECONDS", "1800"))
     max_height = int(os.getenv("MAX_HEIGHT", "720"))
@@ -98,7 +105,13 @@ def render_profile_id() -> str:
 
 
 def entry_dir(key: str) -> Path:
-    return settings.cache_dir / key
+    return settings.cache_hot_dir / key
+
+
+def archive_entry_dir(key: str) -> Path | None:
+    if settings.cache_archive_dir is None:
+        return None
+    return settings.cache_archive_dir / key
 
 
 def output_path(key: str) -> Path:
@@ -117,7 +130,16 @@ def meta_path(key: str) -> Path:
     return entry_dir(key) / "meta.json"
 
 
+def source_dir(key: str) -> Path:
+    return entry_dir(key) / "source"
+
+
+def source_meta_path(key: str) -> Path:
+    return entry_dir(key) / "source.json"
+
+
 def write_meta(key: str, video_id: str, lang: str, info: dict, mode: str) -> None:
+    meta_path(key).parent.mkdir(parents=True, exist_ok=True)
     meta_path(key).write_text(
         json.dumps(
             {
@@ -133,6 +155,128 @@ def write_meta(key: str, video_id: str, lang: str, info: dict, mode: str) -> Non
         ),
         encoding="utf-8",
     )
+
+
+def write_source_meta(
+    key: str,
+    video_id: str,
+    lang: str,
+    info: dict,
+    video: Path,
+    subtitle: Path,
+) -> None:
+    source_meta_path(key).write_text(
+        json.dumps(
+            {
+                "video_id": video_id,
+                "lang": lang,
+                "title": info.get("title"),
+                "duration": info.get("duration"),
+                "webpage_url": info.get("webpage_url")
+                or f"https://www.youtube.com/watch?v={video_id}",
+                "source_video": str(video.relative_to(entry_dir(key))).replace("\\", "/"),
+                "subtitle": str(subtitle.relative_to(entry_dir(key))).replace("\\", "/"),
+                "downloaded_at": int(time.time()),
+                "yt_dlp": {
+                    "id": info.get("id"),
+                    "extractor": info.get("extractor"),
+                    "format_id": info.get("format_id"),
+                    "ext": info.get("ext"),
+                    "resolution": info.get("resolution"),
+                    "fps": info.get("fps"),
+                },
+            },
+            ensure_ascii=True,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def hot_free_bytes() -> int:
+    settings.cache_hot_dir.mkdir(parents=True, exist_ok=True)
+    return shutil.disk_usage(settings.cache_hot_dir).free
+
+
+def cache_entry_newest_mtime(path: Path) -> float:
+    mp4 = path / "output.mp4"
+    hls_playlist = path / "hls" / "index.m3u8"
+    return max(
+        (p.stat().st_mtime for p in (mp4, hls_playlist) if p.exists()),
+        default=0,
+    )
+
+
+def archive_cache_entry(key: str) -> bool:
+    archive_dir = archive_entry_dir(key)
+    if archive_dir is None:
+        return False
+    hot_dir = entry_dir(key)
+    if not hot_dir.exists():
+        return False
+    archive_dir.parent.mkdir(parents=True, exist_ok=True)
+    tmp_archive_dir = archive_dir.with_name(f".moving-{archive_dir.name}-{uuid.uuid4().hex}")
+    if tmp_archive_dir.exists():
+        shutil.rmtree(tmp_archive_dir, ignore_errors=True)
+    if archive_dir.exists():
+        shutil.rmtree(archive_dir, ignore_errors=True)
+    shutil.copytree(hot_dir, tmp_archive_dir)
+    tmp_archive_dir.replace(archive_dir)
+    shutil.rmtree(hot_dir, ignore_errors=True)
+    return True
+
+
+def promote_archive_entry(key: str) -> bool:
+    archive_dir = archive_entry_dir(key)
+    hot_dir = entry_dir(key)
+    if archive_dir is None or not archive_dir.exists() or hot_dir.exists():
+        return False
+    if not settings.cache_promote_archive_on_access:
+        return False
+    hot_dir.parent.mkdir(parents=True, exist_ok=True)
+    tmp_hot_dir = hot_dir.with_name(f".promote-{hot_dir.name}-{uuid.uuid4().hex}")
+    if tmp_hot_dir.exists():
+        shutil.rmtree(tmp_hot_dir, ignore_errors=True)
+    shutil.copytree(archive_dir, tmp_hot_dir)
+    tmp_hot_dir.replace(hot_dir)
+    return True
+
+
+def archived_path_if_exists(relative_path: Path) -> Path | None:
+    if settings.cache_archive_dir is None:
+        return None
+    archived = settings.cache_archive_dir / relative_path
+    return archived if archived.exists() else None
+
+
+def cached_output_path(key: str) -> Path | None:
+    hot = output_path(key)
+    if is_usable_file(hot):
+        return hot
+    archived = archived_path_if_exists(Path(key) / "output.mp4")
+    if archived and is_usable_file(archived):
+        if promote_archive_entry(key) and is_usable_file(hot):
+            return hot
+        return archived
+    return None
+
+
+def cached_hls_playlist_path(key: str) -> Path | None:
+    if is_hls_fresh(key):
+        return hls_playlist_path(key)
+    archive_dir = archive_entry_dir(key)
+    if archive_dir is None:
+        return None
+    archived_playlist = archive_dir / "hls" / "index.m3u8"
+    if not archived_playlist.exists():
+        return None
+    if "#EXT-X-ENDLIST" not in archived_playlist.read_text(encoding="utf-8", errors="ignore"):
+        return None
+    if not any((archive_dir / "hls").glob("segment_*.ts")):
+        return None
+    if promote_archive_entry(key) and is_hls_fresh(key):
+        return hls_playlist_path(key)
+    return archived_playlist
 
 
 def validate_input(video_id: str, lang: str) -> None:
@@ -175,9 +319,13 @@ def is_fresh(path: Path) -> bool:
     return time.time() - path.stat().st_mtime < settings.cache_ttl_seconds
 
 
+def is_usable_file(path: Path) -> bool:
+    return path.exists() and path.is_file() and path.stat().st_size > 0
+
+
 def is_hls_fresh(key: str) -> bool:
     playlist = hls_playlist_path(key)
-    if not is_fresh(playlist):
+    if not is_usable_file(playlist):
         return False
     if "#EXT-X-ENDLIST" not in playlist.read_text(encoding="utf-8", errors="ignore"):
         return False
@@ -192,19 +340,34 @@ def is_hls_started(key: str) -> bool:
 
 
 def cleanup_expired_cache() -> None:
-    settings.cache_dir.mkdir(parents=True, exist_ok=True)
+    settings.cache_hot_dir.mkdir(parents=True, exist_ok=True)
     now = time.time()
-    for child in settings.cache_dir.iterdir():
+    expire_after = (
+        settings.cache_archive_after_seconds
+        if settings.cache_archive_dir is not None
+        else settings.cache_ttl_seconds
+    )
+    candidates: list[tuple[float, str]] = []
+    for child in settings.cache_hot_dir.iterdir():
         if not child.is_dir() or child.name.startswith(".work-"):
             continue
-        mp4 = child / "output.mp4"
-        hls_playlist = child / "hls" / "index.m3u8"
-        newest = max(
-            (p.stat().st_mtime for p in (mp4, hls_playlist) if p.exists()),
-            default=0,
-        )
-        if newest == 0 or now - newest > settings.cache_ttl_seconds:
+        newest = cache_entry_newest_mtime(child)
+        if newest == 0:
             shutil.rmtree(child, ignore_errors=True)
+            continue
+        candidates.append((newest, child.name))
+        if now - newest > expire_after:
+            if not archive_cache_entry(child.name):
+                shutil.rmtree(child, ignore_errors=True)
+
+    if settings.cache_archive_dir is None or settings.cache_hot_min_free_bytes <= 0:
+        return
+
+    for _newest, key in sorted(candidates):
+        if hot_free_bytes() >= settings.cache_hot_min_free_bytes:
+            break
+        if entry_dir(key).exists():
+            archive_cache_entry(key)
 
 
 async def run_command(
@@ -487,21 +650,29 @@ async def create_hls(video: Path, subtitle: Path, destination_dir: Path) -> None
 async def create_mp4(video_id: str, lang: str) -> Path:
     key = cache_key(video_id, lang)
     final_output = output_path(key)
-    if is_fresh(final_output):
-        return final_output
+    cached = cached_output_path(key)
+    if cached:
+        return cached
 
     async with _global_encode_lock:
-        if is_fresh(final_output):
-            return final_output
+        cached = cached_output_path(key)
+        if cached:
+            return cached
 
-        work_dir = settings.cache_dir / f".work-{key}-{uuid.uuid4().hex}"
+        work_dir = settings.cache_hot_dir / f".work-{key}-{uuid.uuid4().hex}"
         final_output.parent.mkdir(parents=True, exist_ok=True)
         work_dir.mkdir(parents=True, exist_ok=True)
         try:
             info = await fetch_video_info(video_id)
             assert_duration_allowed(info)
             video, subtitle = await download_sources(video_id, lang, work_dir)
-            await burn_subtitles(video, subtitle, final_output)
+            source_dir(key).mkdir(parents=True, exist_ok=True)
+            saved_video = source_dir(key) / f"input{video.suffix.lower()}"
+            saved_subtitle = source_dir(key) / f"subtitle.{lang}{subtitle.suffix.lower()}"
+            shutil.move(str(video), saved_video)
+            shutil.move(str(subtitle), saved_subtitle)
+            write_source_meta(key, video_id, lang, info, saved_video, saved_subtitle)
+            await burn_subtitles(saved_video, saved_subtitle, final_output)
             write_meta(key, video_id, lang, info, "mp4")
             return final_output
         finally:
@@ -511,22 +682,30 @@ async def create_mp4(video_id: str, lang: str) -> Path:
 async def create_hls_job(video_id: str, lang: str) -> Path:
     key = cache_key(video_id, lang)
     playlist = hls_playlist_path(key)
-    if is_hls_fresh(key):
-        return playlist
+    cached = cached_hls_playlist_path(key)
+    if cached:
+        return cached
 
     async with _global_encode_lock:
-        if is_hls_fresh(key):
-            return playlist
+        cached = cached_hls_playlist_path(key)
+        if cached:
+            return cached
 
-        work_dir = settings.cache_dir / f".work-{key}-{uuid.uuid4().hex}"
+        work_dir = settings.cache_hot_dir / f".work-{key}-{uuid.uuid4().hex}"
         playlist.parent.mkdir(parents=True, exist_ok=True)
         work_dir.mkdir(parents=True, exist_ok=True)
         try:
             info = await fetch_video_info(video_id)
             assert_duration_allowed(info)
             video, subtitle = await download_sources(video_id, lang, work_dir)
+            source_dir(key).mkdir(parents=True, exist_ok=True)
+            saved_video = source_dir(key) / f"input{video.suffix.lower()}"
+            saved_subtitle = source_dir(key) / f"subtitle.{lang}{subtitle.suffix.lower()}"
+            shutil.move(str(video), saved_video)
+            shutil.move(str(subtitle), saved_subtitle)
+            write_source_meta(key, video_id, lang, info, saved_video, saved_subtitle)
             write_meta(key, video_id, lang, info, "hls")
-            await create_hls(video, subtitle, playlist.parent)
+            await create_hls(saved_video, saved_subtitle, playlist.parent)
             return playlist
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
@@ -534,8 +713,8 @@ async def create_hls_job(video_id: str, lang: str) -> Path:
 
 async def get_or_create_mp4(video_id: str, lang: str) -> Path:
     key = cache_key(video_id, lang)
-    cached = output_path(key)
-    if is_fresh(cached):
+    cached = cached_output_path(key)
+    if cached:
         return cached
 
     async with _inflight_lock:
@@ -554,11 +733,11 @@ async def get_or_create_mp4(video_id: str, lang: str) -> Path:
 
 
 async def wait_until_hls_ready(key: str, task: asyncio.Task[Path]) -> Path:
-    playlist = hls_playlist_path(key)
     deadline = time.monotonic() + settings.hls_ready_timeout_seconds
     while time.monotonic() < deadline:
-        if is_hls_started(key):
-            return playlist
+        cached = cached_hls_playlist_path(key)
+        if cached or is_hls_started(key):
+            return cached or hls_playlist_path(key)
         if task.done():
             return await task
         await asyncio.sleep(0.5)
@@ -567,8 +746,9 @@ async def wait_until_hls_ready(key: str, task: asyncio.Task[Path]) -> Path:
 
 async def get_or_start_hls(video_id: str, lang: str) -> Path:
     key = cache_key(video_id, lang)
-    if is_hls_fresh(key):
-        return hls_playlist_path(key)
+    cached = cached_hls_playlist_path(key)
+    if cached:
+        return cached
 
     async with _inflight_lock:
         task = _hls_inflight.get(key)
@@ -1511,6 +1691,10 @@ async def hls_asset(key: str, filename: str) -> Response:
         raise HTTPException(status_code=400, detail="Invalid HLS filename")
 
     path = hls_dir(key) / filename
+    if not path.exists():
+        archived = archived_path_if_exists(Path(key) / "hls" / filename)
+        if archived:
+            path = archived
     if not path.exists():
         raise HTTPException(status_code=404, detail="HLS asset not found")
 
