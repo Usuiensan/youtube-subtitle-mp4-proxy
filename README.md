@@ -82,7 +82,7 @@ export SUBTITLE_FONT='BIZ UDGothic'
 
 ### Discord bot からの準備ジョブ
 
-`/youtube/...` と `/youtube-hls/...` は配信専用です。準備済みファイルが SSD 側にない場合は `404` を返し、URL を叩いただけでは変換や HDD からの移動を開始しません。
+`/youtube/...` と `/youtube-hls/...` は配信専用です。URL を叩いただけでは変換や HDD から SSD への移動を開始しません。MP4 は SSD 側にあれば SSD から返し、HDD アーカイブにだけある場合も昇格せずそのまま返します。HLS は SSD 側に準備済みでない場合 `404` を返します。
 
 変換または HDD から SSD への昇格は、Bearer token 付きの準備 API から開始します。
 
@@ -136,7 +136,7 @@ export CACHE_PROMOTE_ARCHIVE_ON_ACCESS=1
 
 7 日以上前のエントリは削除せず HDD へ移動します。SSD の空き容量が `CACHE_HOT_MIN_FREE_BYTES` を下回る場合は、7 日未満でも古い順に HDD へ移動します。各エントリには変換済み `output.mp4` / HLS に加えて、元動画、字幕、取得内容をまとめた `source.json` を保存します。
 
-準備 API が HDD 側のエントリを見つけた場合は SSD へ昇格コピーします。配信 URL は HDD から直接返さないため、HDD のスピンアップや遅いランダム読み込みは準備処理側に閉じ込められます。
+準備 API が HDD 側のエントリを見つけた場合は SSD へ昇格コピーします。通常の MP4 配信 URL は HDD からも直接返せるため、一人で観る用途では再準備なしで再生できます。HDD 直配信は初回スピンアップやシークで待ちが出やすいため、複数人に共有する前は Discord bot から準備して SSD へ戻す運用を推奨します。
 
 Google の API キーが必要なのは、YouTube Data API v3 を使う `/yamaplayer/playlist`、`/yamaplayer/channel`、`/yamaplayer/batch` だけです。
 

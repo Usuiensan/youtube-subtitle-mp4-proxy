@@ -2,7 +2,7 @@
 
 Ubuntu 26.04 LTS の x86_64 サーバーで、GTX 1050 Ti の NVENC を使って YouTube 字幕焼き込み MP4/HLS プロキシと Discord bot を動かす手順です。
 
-この構成では FastAPI サーバーと Discord bot を別プロセスで起動します。配信 URL を直接叩いても変換は始まらず、Discord bot が準備 API を呼んだときだけ変換または HDD から SSD への昇格を行います。
+この構成では FastAPI サーバーと Discord bot を別プロセスで起動します。配信 URL を直接叩いても変換は始まりません。MP4 は SSD 側にあれば SSD から返し、HDD アーカイブにだけある場合も昇格せずそのまま返します。Discord bot が準備 API を呼んだときだけ、変換または HDD から SSD への昇格を行います。
 
 ## 前提
 
@@ -339,7 +339,7 @@ curl -X POST \
   "http://127.0.0.1:8000/prepare/youtube/dQw4w9WgXcQ/ja?mode=mp4&discordUserId=123456789012345678"
 ```
 
-配信URLは準備が終わるまで `404` です。準備完了後に `200` または Range リクエストなら `206` を返します。
+MP4配信URLは、SSDまたはHDDアーカイブに `output.mp4` があれば `200`、Range リクエストなら `206` を返します。どちらにもなければ `404` です。HLS配信URLはSSD側に準備済みでない場合 `404` です。
 
 ```bash
 curl -I http://127.0.0.1:8000/youtube/dQw4w9WgXcQ/ja

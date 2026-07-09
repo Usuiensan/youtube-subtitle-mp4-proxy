@@ -226,6 +226,12 @@ def hot_output_path(key: str) -> Path | None:
     return path if is_usable_file(path) else None
 
 
+def archived_output_path(key: str) -> Path | None:
+    archive_dir = archive_entry_dir(key)
+    path = archive_dir / "output.mp4" if archive_dir else None
+    return path if path and is_usable_file(path) else None
+
+
 def hot_hls_playlist_path(key: str) -> Path | None:
     playlist = hls_playlist_path(key)
     if not is_usable_file(playlist):
@@ -1958,11 +1964,15 @@ async def youtube(
 ) -> Response:
     lang = lang or settings.default_lang
     validate_input(video_id, lang)
+    key = cache_key(video_id, lang)
+    path = hot_output_path(key)
+    if path is not None:
+        return mp4_response(request, path)
+    path = archived_output_path(key)
+    if path is not None:
+        return mp4_response(request, path)
     cleanup_expired_cache()
-    path = hot_output_path(cache_key(video_id, lang))
-    if path is None:
-        raise HTTPException(status_code=404, detail="MP4 is not prepared")
-    return mp4_response(request, path)
+    raise HTTPException(status_code=404, detail="MP4 is not prepared")
 
 
 @app.get("/youtube-hls/{video_id}")
@@ -1974,12 +1984,12 @@ async def youtube_hls(
 ) -> Response:
     lang = lang or settings.default_lang
     validate_input(video_id, lang)
-    cleanup_expired_cache()
     key = cache_key(video_id, lang)
     playlist = hot_hls_playlist_path(key)
-    if playlist is None:
-        raise HTTPException(status_code=404, detail="HLS is not prepared")
-    return hls_playlist_response(request, key, playlist)
+    if playlist is not None:
+        return hls_playlist_response(request, key, playlist)
+    cleanup_expired_cache()
+    raise HTTPException(status_code=404, detail="HLS is not prepared")
 
 
 @app.post("/prepare/youtube/{video_id}/{lang}")
