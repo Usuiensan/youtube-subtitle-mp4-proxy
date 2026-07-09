@@ -382,3 +382,9 @@ journalctl -u youtube-mp4-discord-bot -n 100 --no-pager
 
 - Ubuntu NVIDIA driver installation: https://help.ubuntu.com/community/NvidiaDriversInstallation
 - NVIDIA Video Encode and Decode Support Matrix: https://developer.nvidia.com/video-encode-decode-support-matrix
+今後の更新は次の3行で統一できます。
+```bash
+cd /opt/youtube-mp4-proxy
+sudo -u youtubeproxy git pull
+sudo systemctl restart youtube-mp4-proxy
+```
