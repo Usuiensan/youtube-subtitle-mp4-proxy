@@ -580,6 +580,104 @@ def estimate_total_seconds(
     return max(15, int(total))
 
 
+def estimate_download_seconds(duration: float, has_sources: bool) -> int:
+    if has_sources:
+        return 0
+    dl_speed = metrics_manager.get_avg("download_speed", 3 * 1024 * 1024)
+    est_size = duration * 1.5 * 1024 * 1024 / 8
+    return max(0, int(est_size / max(dl_speed, 1.0)))
+
+
+def estimate_translate_seconds(duration: float, subtitle_events_count: int | None = None) -> int:
+    tr_speed = metrics_manager.get_avg("translate_speed", 1.0)
+    events = subtitle_events_count if subtitle_events_count is not None else (duration / 2.0)
+    return max(0, int(events / max(tr_speed, 1.0)))
+
+
+def estimate_encode_seconds(duration: float) -> int:
+    enc_ratio = metrics_manager.get_avg("encode_speed_ratio", 3.0)
+    return max(0, int(duration / max(enc_ratio, 0.1)))
+
+
+def job_needs_translation(job: dict) -> bool:
+    return bool(job.get("subtitle_source_lang") and job.get("translation_engine"))
+
+
+def job_has_sources(job: dict) -> bool:
+    cache_id = cache_key(
+        str(job.get("video_id") or ""),
+        str(job.get("lang") or ""),
+        job.get("subtitle_source_lang"),
+        job.get("translation_engine"),
+    )
+    return check_existing_sources(cache_id) is not None
+
+
+def job_stage_estimates(job: dict) -> dict[str, int]:
+    duration = float(job.get("duration") or 0.0)
+    if duration <= 0:
+        return {"download": 60, "translate": 120 if job_needs_translation(job) else 0, "encode": 180}
+    return {
+        "download": estimate_download_seconds(duration, job_has_sources(job)),
+        "translate": estimate_translate_seconds(duration) if job_needs_translation(job) else 0,
+        "encode": estimate_encode_seconds(duration),
+    }
+
+
+def job_sort_key(job_id: str, job: dict) -> tuple[int, str]:
+    return (int(job.get("created_at") or 0), job_id)
+
+
+def active_jobs_ahead(job_id: str) -> list[tuple[str, dict]]:
+    current = _prepare_jobs.get(job_id)
+    if not current:
+        return []
+    current_key = job_sort_key(job_id, current)
+    items: list[tuple[str, dict]] = []
+    for other_id, other_job in _prepare_jobs.items():
+        if other_id == job_id or other_job.get("status") not in {"queued", "running"}:
+            continue
+        if job_sort_key(other_id, other_job) < current_key:
+            items.append((other_id, other_job))
+    return items
+
+
+def job_remaining_pipeline_seconds(job_id: str) -> int | None:
+    job = _prepare_jobs.get(job_id)
+    if not job:
+        return None
+    stages = job_stage_estimates(job)
+    progress = job.get("progress") if isinstance(job.get("progress"), dict) else {}
+    phase = str(progress.get("phase") or "")
+    phase_eta = progress.get("eta_seconds")
+    if isinstance(phase_eta, (int, float)) and phase_eta >= 0:
+        current_phase_remaining = int(phase_eta)
+    else:
+        current_phase_remaining = None
+
+    if job.get("status") == "queued" or not phase:
+        return stages["download"] + stages["translate"] + stages["encode"] + 10
+    if phase == "download":
+        return (current_phase_remaining if current_phase_remaining is not None else stages["download"]) + stages["translate"] + stages["encode"] + 10
+    if phase == "translate":
+        return (current_phase_remaining if current_phase_remaining is not None else stages["translate"]) + stages["encode"] + 10
+    if phase in {"encode", "hls"}:
+        return (current_phase_remaining if current_phase_remaining is not None else stages["encode"]) + 5
+    return stages["download"] + stages["translate"] + stages["encode"] + 10
+
+
+def estimate_job_completion_eta(job_id: str) -> int | None:
+    own_remaining = job_remaining_pipeline_seconds(job_id)
+    if own_remaining is None:
+        return None
+    queue_delay = 0
+    for ahead_id, _ahead_job in active_jobs_ahead(job_id):
+        ahead_remaining = job_remaining_pipeline_seconds(ahead_id)
+        if ahead_remaining is not None:
+            queue_delay += ahead_remaining
+    return max(0, own_remaining + queue_delay)
+
+
 class YtdlpProgressParser:
     def __init__(self):
         self.percent = 0.0
@@ -648,17 +746,17 @@ def update_job_progress(
         "details": details,
         "updated_at": time.time(),
     }
+    overall_eta = estimate_job_completion_eta(job_id)
+    if overall_eta is not None:
+        _prepare_jobs[job_id]["eta_seconds"] = overall_eta
+        _prepare_jobs[job_id]["estimated_ready_at"] = int(time.time()) + overall_eta
 
 
 def queue_counts_for_job(job_id: str) -> dict[str, int]:
     counts = {"download": 0, "translate": 0, "encode": 0}
     phase_order = {"download": 0, "translate": 1, "encode": 2, "hls": 2}
-    for current_id, job in _prepare_jobs.items():
-        if job.get("status") not in {"queued", "running"}:
-            continue
-        if current_id == job_id:
-            continue
-        needs_translation = bool(job.get("subtitle_source_lang") and job.get("translation_engine"))
+    for current_id, job in active_jobs_ahead(job_id):
+        needs_translation = job_needs_translation(job)
         progress = job.get("progress") if isinstance(job.get("progress"), dict) else {}
         phase = str(progress.get("phase") or "")
         if job.get("status") == "queued" or phase not in phase_order:
@@ -2888,6 +2986,8 @@ def estimate_conversion_seconds(duration: int | float | None, mode: str) -> int 
 
 
 def update_job_eta(job_id: str, eta_seconds: int | None) -> None:
+    if eta_seconds is None and job_id in _prepare_jobs:
+        eta_seconds = estimate_job_completion_eta(job_id)
     if eta_seconds is None:
         return
     now = int(time.time())
@@ -3132,6 +3232,7 @@ async def run_prepare_job(
                     needs_translation=True # assume true by default if not cached
                 )
                 update_job_eta(job_id, eta)
+        update_job_eta(job_id, None)
         if mode == "hls":
             await get_or_create_hls(
                 video_id,
@@ -3253,6 +3354,7 @@ async def enqueue_prepare_job(
             if cached_info.get("duration"):
                 _prepare_jobs[job_id]["duration"] = cached_info.get("duration")
         add_job_requester(_prepare_jobs[job_id], discord_user_id)
+        update_job_eta(job_id, None)
         asyncio.create_task(
             run_prepare_job(
                 job_id,
