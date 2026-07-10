@@ -826,8 +826,7 @@ async def webui_key_command(
     await interaction.followup.send(
         (
             "Web UI用の一時キーを発行しました。\n"
-            f"有効期限: {body['expires_on']} の終わりまで (JST)\n"
-            f"Discord表示: <t:{body['expires_at']}:F> まで\n"
+            f"有効期限: <t:{body['expires_at']}:F> まで\n"
             "```text\n"
             f"{body['key']}\n"
             "```"
