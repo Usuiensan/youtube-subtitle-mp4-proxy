@@ -1337,7 +1337,43 @@ async def fetch_video_info(video_id: str) -> dict:
             url,
         ]
     )
-    return json.loads(raw)
+    info = json.loads(raw)
+    await enrich_video_info_titles(info, video_id)
+    return info
+
+
+async def enrich_video_info_titles(info: dict, video_id: str) -> None:
+    if not settings.youtube_data_api_key:
+        return
+    try:
+        data = await youtube_api_get(
+            "videos",
+            {
+                "part": "snippet,localizations",
+                "id": video_id,
+                "maxResults": 1,
+            },
+        )
+    except Exception:
+        return
+    items = data.get("items")
+    if not isinstance(items, list) or not items:
+        return
+    item = items[0] if isinstance(items[0], dict) else {}
+    snippet = item.get("snippet")
+    if isinstance(snippet, dict):
+        localized = snippet.get("localized")
+        if isinstance(localized, dict) and isinstance(localized.get("title"), str):
+            info.setdefault("translated_titles", {})
+            info["translated_titles"]["default"] = localized["title"]
+    localizations = item.get("localizations")
+    if isinstance(localizations, dict):
+        merged = dict(info.get("localizations") or {})
+        for language, localized in localizations.items():
+            if isinstance(localized, dict) and isinstance(localized.get("title"), str):
+                merged[str(language)] = {"title": localized["title"]}
+        if merged:
+            info["localizations"] = merged
 
 
 def assert_duration_allowed(info: dict) -> None:
