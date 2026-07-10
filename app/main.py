@@ -1280,12 +1280,21 @@ async def create_hls(
 
 def get_cached_video_info(key: str) -> dict | None:
     meta_p = source_meta_path(key)
-    if not meta_p.exists():
-        return None
-    try:
-        return json.loads(meta_p.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+    if meta_p.exists():
+        try:
+            return json.loads(meta_p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    archive_dir = archive_entry_dir(key)
+    if archive_dir:
+        archive_meta_p = archive_dir / "source" / "source.json"
+        if archive_meta_p.exists():
+            try:
+                return json.loads(archive_meta_p.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+    return None
 
 
 def check_existing_sources(key: str) -> tuple[Path, Path, dict] | None:
@@ -1293,18 +1302,26 @@ def check_existing_sources(key: str) -> tuple[Path, Path, dict] | None:
     if not source_meta:
         return None
 
+    base_dir = None
+    for d in (entry_dir(key), archive_entry_dir(key)):
+        if d and d.exists():
+            base_dir = d
+            break
+
+    if not base_dir:
+        return None
+
     source_video_rel = source_meta.get("source_video")
     if not source_video_rel:
         return None
-    video_path = entry_dir(key) / source_video_rel
+    video_path = base_dir / source_video_rel
     if not video_path.exists() or video_path.stat().st_size == 0:
         return None
 
     subtitle_meta = source_meta.get("subtitle_meta") or {}
     source_lang = subtitle_meta.get("source_language")
 
-    # If it was translated, original subtitle is at source/subtitle.{source_lang}.original.{ext}
-    s_dir = source_dir(key)
+    s_dir = base_dir / "source"
     if subtitle_meta.get("translated"):
         candidates = list(s_dir.glob(f"subtitle.{source_lang}.original.*"))
         if not candidates:
@@ -1314,11 +1331,12 @@ def check_existing_sources(key: str) -> tuple[Path, Path, dict] | None:
         subtitle_rel = source_meta.get("subtitle")
         if not subtitle_rel:
             return None
-        original_subtitle_path = entry_dir(key) / subtitle_rel
+        original_subtitle_path = base_dir / subtitle_rel
         if not original_subtitle_path.exists() or original_subtitle_path.stat().st_size == 0:
             return None
 
     return video_path, original_subtitle_path, subtitle_meta
+
 
 async def prepare_sources(
     key: str,
@@ -1332,6 +1350,14 @@ async def prepare_sources(
     existing = check_existing_sources(key)
     if existing:
         saved_video, original_subtitle, subtitle_meta = existing
+
+        hot_dir = entry_dir(key)
+        archive_dir = archive_entry_dir(key)
+        if archive_dir and archive_dir.exists() and not hot_dir.exists():
+            shutil.copytree(archive_dir, hot_dir)
+            saved_video = hot_dir / saved_video.relative_to(archive_dir)
+            original_subtitle = hot_dir / original_subtitle.relative_to(archive_dir)
+
         if subtitle_meta.get("translated"):
             subtitle, new_subtitle_meta = await translate_subtitle_if_needed(
                 key=key,
