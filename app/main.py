@@ -1714,7 +1714,7 @@ async def run_prepare_job(
                 _prepare_jobs[job_id]["title"] = info.get("title")
                 _prepare_jobs[job_id]["duration"] = info.get("duration")
                 has_sources = check_existing_sources(cache_id) is not None
-                sub_sel = select_subtitle_language(info, lang)
+                sub_sel = info.get("subtitle_meta") or {}
                 needs_translation = sub_sel.get("translated", False)
                 eta = estimate_total_seconds(
                     duration=float(info.get("duration")),
@@ -1806,11 +1806,8 @@ async def enqueue_prepare_job(
             eta_seconds = estimate_archive_prepare_seconds(cache_id)
         elif cached_info and cached_info.get("duration"):
             has_sources = check_existing_sources(cache_id) is not None
-            try:
-                sub_sel = select_subtitle_language(cached_info, lang)
-                needs_translation = sub_sel.get("translated", False)
-            except Exception:
-                needs_translation = True
+            sub_sel = cached_info.get("subtitle_meta") or {}
+            needs_translation = sub_sel.get("translated", False)
             eta_seconds = estimate_total_seconds(
                 duration=float(cached_info.get("duration")),
                 has_sources=has_sources,
