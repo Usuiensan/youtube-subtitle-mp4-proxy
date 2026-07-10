@@ -81,6 +81,7 @@ class Settings:
     poll_seconds = int(os.getenv("DISCORD_PREPARE_POLL_SECONDS", "10"))
     poll_timeout_seconds = int(os.getenv("DISCORD_PREPARE_POLL_TIMEOUT_SECONDS", "7200"))
     prepare_batch_max_items = int(os.getenv("DISCORD_PREPARE_BATCH_MAX_ITEMS", "5000"))
+    translation_source_langs = os.getenv("TRANSLATION_SOURCE_LANGS", "en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW")
     webui_temp_key_secret = os.getenv("WEBUI_TEMP_KEY_SECRET", os.getenv("DISCORD_PREPARE_TOKEN", ""))
 
 
@@ -537,6 +538,29 @@ def option_label(value: str, limit: int = 100) -> str:
     return value if len(value) <= limit else value[: limit - 1] + "…"
 
 
+def split_lang_priority(value: str) -> list[str]:
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def lang_matches_priority(candidate: str, preferred: str) -> bool:
+    candidate_norm = candidate.lower()
+    preferred_norm = preferred.lower()
+    return candidate_norm == preferred_norm or candidate_norm.split("-")[0] == preferred_norm.split("-")[0]
+
+
+def default_source_language(candidates: list[dict[str, Any]]) -> str | None:
+    languages = [
+        str(candidate.get("language") or "")
+        for candidate in candidates
+        if isinstance(candidate, dict) and candidate.get("language")
+    ]
+    for preferred in split_lang_priority(settings.translation_source_langs):
+        for language in languages:
+            if lang_matches_priority(language, preferred):
+                return language
+    return languages[0] if languages else None
+
+
 class SubtitleChoiceView(discord.ui.View):
     def __init__(
         self,
@@ -558,8 +582,11 @@ class SubtitleChoiceView(discord.ui.View):
         self.translation_engine = "google_cloud"
 
         candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
+        visible_candidates = candidates[:25]
+        selected_source_lang = default_source_language(visible_candidates)
+        self.source_lang = selected_source_lang
         source_options = []
-        for candidate in candidates[:25]:
+        for candidate in visible_candidates:
             if not isinstance(candidate, dict):
                 continue
             language = str(candidate.get("language") or "")
@@ -572,6 +599,7 @@ class SubtitleChoiceView(discord.ui.View):
                     label=option_label(f"{language} / {name}", 100),
                     value=language,
                     description=option_label(name_en, 100) if name_en else None,
+                    default=language == selected_source_lang,
                 )
             )
 
@@ -870,7 +898,7 @@ async def prepare_command(
                         archive_immediately=archive_immediately,
                     )
                     await interaction.followup.send(
-                        f"日本語字幕が見つかりませんでした。\n{title}\n翻訳元字幕を選択してください。翻訳エンジンは一時的に Google翻訳 のみ使用します。",
+                        f"日本語字幕が見つかりませんでした。\n{title}\n翻訳元字幕を選択してください。翻訳エンジンは一時的に Google翻訳 のみ使用できます。",
                         view=view,
                         ephemeral=True,
                     )
