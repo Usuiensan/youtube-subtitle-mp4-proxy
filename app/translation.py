@@ -4,6 +4,7 @@ import html
 import json
 import math
 import re
+import shutil
 import sys
 import time
 from dataclasses import dataclass
@@ -164,6 +165,8 @@ def build_worker_payload(
         "glossary": settings.glossary,
         "source_language": source_language,
         "target_language": target_language,
+        "translation_profile": settings.engine,
+        "model_name": settings.model_name,
         "strict": strict,
         "context_before": context["context_before"],
         "target": [event_to_json(sub) for sub in target],
@@ -219,6 +222,26 @@ def validate_translations(
     return output
 
 
+def discard_successful_attempt(result: dict[str, Any]) -> None:
+    attempt_dir = result.get("_translation_attempt_dir")
+    if isinstance(attempt_dir, str) and attempt_dir:
+        shutil.rmtree(attempt_dir, ignore_errors=True)
+
+
+def mark_failed_attempt(result: dict[str, Any], error: Exception) -> None:
+    attempt_dir = result.get("_translation_attempt_dir")
+    if not isinstance(attempt_dir, str) or not attempt_dir:
+        return
+    try:
+        Path(attempt_dir).mkdir(parents=True, exist_ok=True)
+        (Path(attempt_dir) / "validation-error.txt").write_text(
+            f"{type(error).__name__}: {error}",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
 async def translate_srt_with_local_worker(
     *,
     subtitle_path: Path,
@@ -258,7 +281,12 @@ async def translate_srt_with_local_worker(
                     strict=strict,
                 )
                 result = await run_worker(payload)
-                translated_map = validate_translations(window, result)
+                try:
+                    translated_map = validate_translations(window, result)
+                except Exception as error:
+                    mark_failed_attempt(result, error)
+                    raise
+                discard_successful_attempt(result)
                 break
             except Exception as error:
                 last_error = error
@@ -290,7 +318,12 @@ async def translate_srt_with_local_worker(
                 )
                 try:
                     result = await run_worker(payload)
-                    translated_map.update(validate_translations(part, result))
+                    try:
+                        translated_map.update(validate_translations(part, result))
+                    except Exception as error:
+                        mark_failed_attempt(result, error)
+                        raise
+                    discard_successful_attempt(result)
                 except Exception as error:
                     last_error = error
                     print(
@@ -332,16 +365,6 @@ async def translate_srt_with_local_worker(
 
     save_srt(output_path, translated_subtitles)
     engine = "google_cloud" if fallback_used else settings.engine
-    if translated_subtitles:
-        notice = f"{source_language}>>{target_language} ({engine})"
-        translated_subtitles[0] = srt.Subtitle(
-            index=translated_subtitles[0].index,
-            start=translated_subtitles[0].start,
-            end=translated_subtitles[0].end,
-            content=f"{notice}\n{translated_subtitles[0].content}",
-            proprietary=translated_subtitles[0].proprietary,
-        )
-        save_srt(output_path, translated_subtitles)
     return SubtitleTranslationResult(
         subtitle_path=output_path,
         metadata={

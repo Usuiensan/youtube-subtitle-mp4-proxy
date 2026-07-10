@@ -63,9 +63,9 @@ PREVIOUS_JAPANESE:
 """
 
 
-def call_openai_compatible(prompt: str) -> dict[str, Any]:
+def call_openai_compatible(prompt: str, payload: dict[str, Any]) -> dict[str, Any]:
     endpoint = os.getenv("LOCAL_LLM_ENDPOINT", "http://127.0.0.1:11434/v1/chat/completions")
-    model = os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M")
+    model = str(payload.get("model_name") or os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M"))
     timeout = int(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "300"))
     temperature = float(os.getenv("LOCAL_LLM_TEMPERATURE", "0"))
     max_tokens = int(os.getenv("LOCAL_LLM_MAX_OUTPUT_TOKENS", "2048"))
@@ -111,7 +111,7 @@ def main() -> int:
     with open(args.input, "r", encoding="utf-8") as file:
         payload = json.load(file)
 
-    result = call_openai_compatible(build_prompt(payload))
+    result = call_openai_compatible(build_prompt(payload), payload)
 
     with open(args.output, "w", encoding="utf-8") as file:
         json.dump(result, file, ensure_ascii=False, indent=2)

@@ -103,6 +103,23 @@ class Settings:
     translation_source_langs = os.getenv("TRANSLATION_SOURCE_LANGS", "en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW")
     local_llm_engine = os.getenv("LOCAL_LLM_ENGINE", "openai_compatible")
     local_llm_model = os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M")
+    local_llm_profile_models = {
+        "local_llm": os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M"),
+        "qwen3_1_7b": os.getenv("LOCAL_LLM_MODEL_QWEN3_1_7B", "qwen3:1.7b"),
+        "gemma3_1b": os.getenv("LOCAL_LLM_MODEL_GEMMA3_1B", "gemma3:1b"),
+        "gemma3_4b": os.getenv("LOCAL_LLM_MODEL_GEMMA3_4B", "gemma3:4b"),
+        "nllb200_distilled_600m": os.getenv(
+            "LOCAL_LLM_MODEL_NLLB200_DISTILLED_600M",
+            "facebook/nllb-200-distilled-600M",
+        ),
+    }
+    local_llm_profile_labels = {
+        "local_llm": os.getenv("LOCAL_LLM_LABEL", "Default LLM"),
+        "qwen3_1_7b": "Qwen 3 1.7B",
+        "gemma3_1b": "Gemma 3 1B",
+        "gemma3_4b": "Gemma 3 4B",
+        "nllb200_distilled_600m": "NLLB-200 distilled 600M",
+    }
     local_llm_timeout_seconds = int(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "300"))
     local_llm_target_window_seconds = int(os.getenv("LOCAL_LLM_TARGET_WINDOW_SECONDS", "120"))
     local_llm_target_max_events = int(os.getenv("LOCAL_LLM_TARGET_MAX_EVENTS", "10"))
@@ -114,6 +131,9 @@ class Settings:
     translation_topic = os.getenv("TRANSLATION_TOPIC", "")
     translation_glossary = os.getenv("TRANSLATION_GLOSSARY", "")
     google_cloud_project = os.getenv("GOOGLE_CLOUD_PROJECT", "")
+    translation_failure_dir = Path(
+        os.getenv("TRANSLATION_FAILURE_DIR", str(cache_hot_dir / ".translation-attempts"))
+    )
     system_metrics_enabled = os.getenv("SYSTEM_METRICS_ENABLED", "1") != "0"
     system_metrics_interval_seconds = float(os.getenv("SYSTEM_METRICS_INTERVAL_SECONDS", "5"))
     system_metrics_history_seconds = int(os.getenv("SYSTEM_METRICS_HISTORY_SECONDS", "86400"))
@@ -430,6 +450,45 @@ def append_system_metric(sample: dict) -> None:
             file.write(json.dumps(sample, ensure_ascii=True, separators=(",", ":")) + "\n")
     except Exception as error:
         print(f"Failed to write system metrics: {error}", file=sys.stderr, flush=True)
+
+
+def translation_attempt_dir(work_dir: Path, payload: dict) -> Path:
+    video_id = str(payload.get("video_id") or "unknown")
+    lang = str(payload.get("target_language") or payload.get("lang") or "unknown")
+    stamp = datetime.now(JST).strftime("%Y%m%d-%H%M%S")
+    return settings.translation_failure_dir / f"{stamp}-{video_id}-{lang}-{uuid.uuid4().hex[:8]}"
+
+
+def archive_translation_failure(
+    attempt_dir: Path,
+    payload: dict,
+    *,
+    stdout: str = "",
+    stderr: str = "",
+    returncode: int | None = None,
+    exception: str = "",
+) -> None:
+    try:
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        (attempt_dir / "payload.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        if stdout:
+            (attempt_dir / "stdout.txt").write_text(stdout, encoding="utf-8")
+        if stderr:
+            (attempt_dir / "stderr.txt").write_text(stderr, encoding="utf-8")
+        meta = {
+            "created_at": int(time.time()),
+            "returncode": returncode,
+            "exception": exception,
+        }
+        (attempt_dir / "meta.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as error:
+        print(f"Failed to archive translation failure: {error}", file=sys.stderr, flush=True)
 
 
 def load_system_metrics_history() -> None:
@@ -928,6 +987,9 @@ def candidate_cache_keys(video_id: str, lang: str) -> list[str]:
 
 
 def default_variant_priority(key: str) -> tuple[int, str]:
+    for profile_id in settings.local_llm_profile_models:
+        if f"_{profile_id}_" in key:
+            return (1, key)
     if "_local_llm_" in key:
         return (1, key)
     if "_google_cloud_" in key:
@@ -1145,7 +1207,52 @@ def normalize_translation_engine(value: str | None) -> str:
         return "local_llm"
     if engine in {"google", "google_cloud", "google_translate"}:
         return "google_cloud"
-    raise HTTPException(status_code=400, detail="translationEngine must be local_llm or google_cloud")
+    if engine in settings.local_llm_profile_models:
+        return engine
+    raise HTTPException(status_code=400, detail="translationEngine must be a known translation profile")
+
+
+def translation_profile_options() -> list[dict]:
+    options = [
+        {
+            "value": profile_id,
+            "label": settings.local_llm_profile_labels.get(profile_id, profile_id),
+            "model": model,
+            "default": profile_id == "qwen3_1_7b",
+            "kind": "local",
+        }
+        for profile_id, model in settings.local_llm_profile_models.items()
+    ]
+    options.append(
+        {
+            "value": "google_cloud",
+            "label": "Google翻訳",
+            "model": None,
+            "default": False,
+            "kind": "cloud",
+        }
+    )
+    return options
+
+
+def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
+    normalized = normalize_translation_engine(profile_id)
+    model_name = settings.local_llm_profile_models.get(normalized, settings.local_llm_model)
+    return TranslationSettings(
+        enabled=settings.translation_enabled,
+        target_window_seconds=settings.local_llm_target_window_seconds,
+        target_max_events=settings.local_llm_target_max_events,
+        context_before_seconds=settings.local_llm_context_before_seconds,
+        context_before_max_events=settings.local_llm_context_before_max_events,
+        context_after_seconds=settings.local_llm_context_after_seconds,
+        context_after_max_events=settings.local_llm_context_after_max_events,
+        model_name=model_name,
+        engine=normalized,
+        fallback_engine=settings.translation_fallback_engine,
+        glossary=settings.translation_glossary,
+        topic=settings.translation_topic,
+        google_project=settings.google_cloud_project,
+    )
 
 
 def manual_subtitle_candidates(info: dict, requested_lang: str) -> list[dict]:
@@ -1205,18 +1312,7 @@ def subtitle_choice_body(info: dict, requested_lang: str) -> dict:
         {
             "requires_choice": requested_lang == "ja" and settings.translation_enabled and bool(candidates),
             "candidates": candidates,
-            "translation_engines": [
-                {
-                    "value": "local_llm",
-                    "label": "LLM翻訳",
-                    "default": True,
-                },
-                {
-                    "value": "google_cloud",
-                    "label": "Google翻訳",
-                    "default": False,
-                },
-            ],
+            "translation_engines": translation_profile_options(),
         }
     )
     if requested_lang != "ja" or not settings.translation_enabled:
@@ -1532,9 +1628,11 @@ def subtitle_translation_service_label(subtitle_meta: dict) -> str:
     if engine == "google_cloud":
         return "[translation] Google Cloud"
     if model:
-        return f"[translation] LLM {model}"
-    if requested == "local_llm" or engine in {"local_llm", settings.local_llm_engine}:
-        return f"[translation] LLM {settings.local_llm_model}"
+        label = settings.local_llm_profile_labels.get(engine) or settings.local_llm_profile_labels.get(requested) or "LLM"
+        return f"[translation] {label} {model}"
+    if requested in settings.local_llm_profile_models or engine in settings.local_llm_profile_models:
+        profile_id = requested if requested in settings.local_llm_profile_models else engine
+        return f"[translation] {settings.local_llm_profile_labels.get(profile_id, profile_id)}"
     if engine:
         return f"[translation] {engine}"
     return ""
@@ -1815,30 +1913,14 @@ async def run_ffmpeg_with_optional_nvenc_fallback(
         await run_command(fallback_args)
 
 
-def translation_settings() -> TranslationSettings:
-    return TranslationSettings(
-        enabled=settings.translation_enabled,
-        target_window_seconds=settings.local_llm_target_window_seconds,
-        target_max_events=settings.local_llm_target_max_events,
-        context_before_seconds=settings.local_llm_context_before_seconds,
-        context_before_max_events=settings.local_llm_context_before_max_events,
-        context_after_seconds=settings.local_llm_context_after_seconds,
-        context_after_max_events=settings.local_llm_context_after_max_events,
-        model_name=settings.local_llm_model,
-        engine=settings.local_llm_engine,
-        fallback_engine=settings.translation_fallback_engine,
-        glossary=settings.translation_glossary,
-        topic=settings.translation_topic,
-        google_project=settings.google_cloud_project,
-    )
-
-
 async def run_translation_worker(payload: dict) -> dict:
     work_dir = Path(payload["_work_dir"])
-    input_path = work_dir / f"translation-input-{uuid.uuid4().hex}.json"
-    output_path = work_dir / f"translation-output-{uuid.uuid4().hex}.json"
     clean_payload = {key: value for key, value in payload.items() if key != "_work_dir"}
-    input_path.write_text(json.dumps(clean_payload, ensure_ascii=False), encoding="utf-8")
+    attempt_dir = translation_attempt_dir(work_dir, clean_payload)
+    input_path = attempt_dir / "payload.json"
+    output_path = attempt_dir / "response.json"
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    input_path.write_text(json.dumps(clean_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     process = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -1852,19 +1934,47 @@ async def run_translation_worker(payload: dict) -> dict:
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        _stdout, stderr = await asyncio.wait_for(
+        stdout, stderr = await asyncio.wait_for(
             process.communicate(),
             timeout=settings.local_llm_timeout_seconds,
         )
     except asyncio.TimeoutError as error:
         process.kill()
-        await process.communicate()
+        stdout, stderr = await process.communicate()
+        archive_translation_failure(
+            attempt_dir,
+            clean_payload,
+            stdout=stdout.decode("utf-8", errors="replace"),
+            stderr=stderr.decode("utf-8", errors="replace"),
+            exception="local llm translation timed out",
+        )
         raise RuntimeError("local llm translation timed out") from error
 
     if process.returncode != 0:
         message = stderr.decode("utf-8", errors="replace")
+        archive_translation_failure(
+            attempt_dir,
+            clean_payload,
+            stdout=stdout.decode("utf-8", errors="replace"),
+            stderr=message,
+            returncode=process.returncode,
+            exception=message[-1000:] or "local llm translation failed",
+        )
         raise RuntimeError(message[-1000:] or "local llm translation failed")
-    return json.loads(output_path.read_text(encoding="utf-8"))
+    try:
+        result = json.loads(output_path.read_text(encoding="utf-8"))
+    except Exception as error:
+        archive_translation_failure(
+            attempt_dir,
+            clean_payload,
+            stdout=stdout.decode("utf-8", errors="replace"),
+            stderr=stderr.decode("utf-8", errors="replace"),
+            returncode=process.returncode,
+            exception=str(error),
+        )
+        raise
+    result["_translation_attempt_dir"] = str(attempt_dir)
+    return result
 
 
 async def translate_subtitle_if_needed(
@@ -1881,7 +1991,7 @@ async def translate_subtitle_if_needed(
 
     translated_path = work_dir / f"{subtitle.stem}.ja.translated.srt"
     requested_engine = normalize_translation_engine(selection.get("translation_engine_requested"))
-    selected_settings = translation_settings()
+    selected_settings = translation_settings(requested_engine)
 
     if requested_engine == "google_cloud":
         start_t = time.time()
@@ -1903,15 +2013,6 @@ async def translate_subtitle_if_needed(
                     content=translated_map[str(sub.index)],
                     proprietary=sub.proprietary,
                 )
-            )
-        if translated_subtitles:
-            notice = f"{selection['source_language']}>>{selection['requested_language']} (google_cloud)"
-            translated_subtitles[0] = srt.Subtitle(
-                index=translated_subtitles[0].index,
-                start=translated_subtitles[0].start,
-                end=translated_subtitles[0].end,
-                content=f"{notice}\n{translated_subtitles[0].content}",
-                proprietary=translated_subtitles[0].proprietary,
             )
         save_srt(translated_path, translated_subtitles)
         metrics_manager.record_translate(len(subtitles), time.time() - start_t)
@@ -2167,6 +2268,39 @@ def check_existing_sources(key: str) -> tuple[Path, Path, dict] | None:
             return None
 
     return video_path, original_subtitle_path, subtitle_meta
+
+
+def cached_subtitle_path(key: str) -> Path | None:
+    source_meta = get_cached_video_info(key)
+    if not source_meta:
+        return None
+    for base_dir in (entry_dir(key), archive_entry_dir(key)):
+        if not base_dir or not base_dir.exists():
+            continue
+        subtitle_rel = source_meta.get("subtitle")
+        if not subtitle_rel:
+            continue
+        subtitle_path = base_dir / subtitle_rel
+        if subtitle_path.exists() and subtitle_path.stat().st_size > 0:
+            return subtitle_path
+    return None
+
+
+def subtitle_events_for_key(key: str) -> list[dict]:
+    subtitle_path = cached_subtitle_path(key)
+    if not subtitle_path:
+        raise HTTPException(status_code=404, detail="Subtitle is not prepared")
+    events = []
+    for item in load_srt(subtitle_path):
+        events.append(
+            {
+                "id": str(item.index),
+                "start": item.start.total_seconds(),
+                "end": item.end.total_seconds(),
+                "text": item.content,
+            }
+        )
+    return events
 
 
 async def prepare_sources(
@@ -3449,6 +3583,7 @@ async def enqueue_prepare_batch(
 @app.get("/", response_class=HTMLResponse)
 async def index() -> str:
     default_lang = json.dumps(settings.default_lang)
+    translation_options_json = json.dumps(translation_profile_options(), ensure_ascii=False)
     return f"""<!doctype html>
 <html lang="ja">
 <head>
@@ -3739,6 +3874,40 @@ async def index() -> str:
       padding: calc(12 / 16 * 1rem) calc(16 / 16 * 1rem);
       overflow-wrap: anywhere;
     }}
+    .compare-video {{
+      width: 100%;
+      max-height: 52vh;
+      background: #000;
+    }}
+    .profile-grid, .compare-results {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: calc(12 / 16 * 1rem);
+    }}
+    .profile-grid label {{
+      display: flex;
+      align-items: center;
+      gap: calc(8 / 16 * 1rem);
+      border-left: calc(8 / 16 * 1rem) solid var(--color-blue-900);
+      background: var(--color-gray-50);
+      padding: calc(8 / 16 * 1rem) calc(12 / 16 * 1rem);
+    }}
+    .profile-grid input {{
+      width: auto;
+      min-height: auto;
+    }}
+    .compare-result {{
+      min-height: 128px;
+      border-left: calc(8 / 16 * 1rem) solid var(--color-blue-900);
+      background: var(--color-gray-50);
+      padding: calc(12 / 16 * 1rem) calc(16 / 16 * 1rem);
+      overflow-wrap: anywhere;
+    }}
+    .compare-result strong {{
+      display: block;
+      color: var(--color-gray-900);
+      margin-bottom: calc(8 / 16 * 1rem);
+    }}
     .error {{
       color: var(--color-error);
       font-weight: 600;
@@ -3748,6 +3917,9 @@ async def index() -> str:
         grid-template-columns: 1fr;
       }}
       .json-row {{
+        grid-template-columns: 1fr;
+      }}
+      .profile-grid, .compare-results {{
         grid-template-columns: 1fr;
       }}
       .metric-grid,
@@ -3793,6 +3965,7 @@ async def index() -> str:
         <button type="button" id="videoTab" role="tab" aria-controls="converter" aria-selected="true">動画準備</button>
         <button type="button" id="jsonTab" role="tab" aria-controls="jsonExporter" aria-selected="false">JSON 書き出し</button>
         <button type="button" id="monitorTab" role="tab" aria-controls="monitorPanel" aria-selected="false">監視</button>
+        <button type="button" id="compareTab" role="tab" aria-controls="comparePanel" aria-selected="false">字幕比較</button>
       </div>
     <form id="converter" class="tool" aria-labelledby="videoTab">
       <label>
@@ -3917,16 +4090,44 @@ async def index() -> str:
       <h2>準備ジョブ</h2>
       <div id="monitorJobs" class="job-list"></div>
     </section>
+    <section id="comparePanel" class="tool" aria-labelledby="compareTab" hidden>
+      <form id="compareForm">
+        <label>
+          YouTube URL
+          <input id="compareUrl" name="compareUrl" type="url" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off">
+        </label>
+        <div class="row">
+          <label>
+            翻訳元字幕
+            <input id="compareSourceLang" name="compareSourceLang" value="en-US" maxlength="12" autocomplete="off">
+          </label>
+          <label>
+            翻訳先
+            <input id="compareTargetLang" name="compareTargetLang" value="ja" maxlength="12" autocomplete="off">
+          </label>
+        </div>
+        <div id="compareProfiles" class="profile-grid"></div>
+        <div class="actions">
+          <button type="button" id="comparePrepareButton">比較用に準備</button>
+        </div>
+        <output id="compareStatus"></output>
+      </form>
+      <video id="compareVideo" class="compare-video" controls></video>
+      <div id="compareResults" class="compare-results"></div>
+    </section>
     </section>
   </main>
   <script>
     const defaultLang = {default_lang};
+    const translationOptions = {translation_options_json};
     const form = document.getElementById("converter");
     const jsonForm = document.getElementById("jsonExporter");
     const monitorPanel = document.getElementById("monitorPanel");
+    const comparePanel = document.getElementById("comparePanel");
     const videoTab = document.getElementById("videoTab");
     const jsonTab = document.getElementById("jsonTab");
     const monitorTab = document.getElementById("monitorTab");
+    const compareTab = document.getElementById("compareTab");
     const input = document.getElementById("youtubeUrl");
     const lang = document.getElementById("lang");
     const mode = document.getElementById("mode");
@@ -3955,6 +4156,14 @@ async def index() -> str:
     const metricGpu = document.getElementById("metricGpu");
     const metricDetails = document.getElementById("metricDetails");
     const monitorJobs = document.getElementById("monitorJobs");
+    const compareUrl = document.getElementById("compareUrl");
+    const compareSourceLang = document.getElementById("compareSourceLang");
+    const compareTargetLang = document.getElementById("compareTargetLang");
+    const compareProfiles = document.getElementById("compareProfiles");
+    const comparePrepareButton = document.getElementById("comparePrepareButton");
+    const compareStatus = document.getElementById("compareStatus");
+    const compareVideo = document.getElementById("compareVideo");
+    const compareResults = document.getElementById("compareResults");
 
     lang.value = defaultLang;
     jsonLang.value = defaultLang;
@@ -3963,12 +4172,15 @@ async def index() -> str:
     function selectTool(tool) {{
       const jsonSelected = tool === "json";
       const monitorSelected = tool === "monitor";
-      form.hidden = jsonSelected || monitorSelected;
+      const compareSelected = tool === "compare";
+      form.hidden = jsonSelected || monitorSelected || compareSelected;
       jsonForm.hidden = !jsonSelected;
       monitorPanel.hidden = !monitorSelected;
-      videoTab.setAttribute("aria-selected", String(!jsonSelected && !monitorSelected));
+      comparePanel.hidden = !compareSelected;
+      videoTab.setAttribute("aria-selected", String(!jsonSelected && !monitorSelected && !compareSelected));
       jsonTab.setAttribute("aria-selected", String(jsonSelected));
       monitorTab.setAttribute("aria-selected", String(monitorSelected));
+      compareTab.setAttribute("aria-selected", String(compareSelected));
       if (monitorSelected) updateMonitor();
     }}
 
@@ -4035,6 +4247,33 @@ async def index() -> str:
 
     function prepareMode() {{
       return mode.value === "youtube-hls" ? "hls" : "mp4";
+    }}
+
+    function renderTranslationOptions() {{
+      translationEngine.innerHTML = "";
+      compareProfiles.innerHTML = "";
+      for (const option of translationOptions) {{
+        const selectOption = document.createElement("option");
+        selectOption.value = option.value;
+        selectOption.textContent = option.label || option.value;
+        if (option.default) selectOption.selected = true;
+        translationEngine.appendChild(selectOption);
+
+        if (option.value !== "google_cloud") {{
+          const label = document.createElement("label");
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.value = option.value;
+          checkbox.checked = Boolean(option.default) || option.value === "gemma3_4b";
+          label.appendChild(checkbox);
+          label.append(`${{option.label || option.value}}${{option.model ? ` / ${{option.model}}` : ""}}`);
+          compareProfiles.appendChild(label);
+        }}
+      }}
+    }}
+
+    function selectedCompareProfiles() {{
+      return Array.from(compareProfiles.querySelectorAll("input:checked")).map((input) => input.value);
     }}
 
     function percentText(value) {{
@@ -4267,6 +4506,81 @@ async def index() -> str:
       return body;
     }}
 
+    async function waitForReady(statusUrl, label) {{
+      let latest = null;
+      for (let i = 0; i < 720; i++) {{
+        await new Promise((resolve) => setTimeout(resolve, i === 0 ? 1000 : 5000));
+        const parsed = new URL(statusUrl, location.origin);
+        latest = await apiFetch(parsed.pathname + parsed.search);
+        compareStatus.textContent = `${{label}}: ${{prepareMessage(latest)}}`;
+        if (latest.status === "ready") return latest;
+        if (latest.status === "failed") throw new Error(`${{label}} failed: ${{latest.error || "unknown error"}}`);
+      }}
+      throw new Error(`${{label}} timeout`);
+    }}
+
+    function currentSubtitle(events, time) {{
+      const event = events.find((item) => item.start <= time && time <= item.end);
+      return event ? event.text : "";
+    }}
+
+    function renderCompareResults(profileBodies) {{
+      compareResults.innerHTML = "";
+      const updateTexts = () => {{
+        const time = compareVideo.currentTime || 0;
+        for (const item of profileBodies) {{
+          item.text.textContent = currentSubtitle(item.events, time) || "（この時刻の字幕なし）";
+        }}
+      }};
+      for (const item of profileBodies) {{
+        const box = document.createElement("div");
+        box.className = "compare-result";
+        const title = document.createElement("strong");
+        title.textContent = item.label;
+        const text = document.createElement("div");
+        item.text = text;
+        box.appendChild(title);
+        box.appendChild(text);
+        compareResults.appendChild(box);
+      }}
+      compareVideo.ontimeupdate = updateTexts;
+      compareVideo.onpause = updateTexts;
+      compareVideo.onseeked = updateTexts;
+      updateTexts();
+    }}
+
+    async function prepareCompare() {{
+      const videoId = extractVideoId(compareUrl.value || input.value);
+      const source = compareSourceLang.value.trim();
+      const target = compareTargetLang.value.trim() || "ja";
+      const profiles = selectedCompareProfiles();
+      if (!videoId || !source || profiles.length === 0) {{
+        compareStatus.textContent = "動画URL、翻訳元字幕、比較プロファイルを確認してください。";
+        return;
+      }}
+      comparePrepareButton.disabled = true;
+      try {{
+        const profileBodies = [];
+        for (const profile of profiles) {{
+          const option = translationOptions.find((item) => item.value === profile) || {{ label: profile }};
+          compareStatus.textContent = `${{option.label}} を準備しています。`;
+          let body = await apiFetch(`/prepare/youtube/${{videoId}}/${{target}}/${{encodeURIComponent(source)}}/${{encodeURIComponent(profile)}}?mode=mp4`, {{ method: "POST" }});
+          if (body.status !== "ready" && body.status_url) {{
+            body = await waitForReady(body.status_url, option.label || profile);
+          }}
+          const eventsBody = await apiFetch(`/prepare/youtube/${{videoId}}/${{target}}/${{encodeURIComponent(source)}}/${{encodeURIComponent(profile)}}/subtitle-events`);
+          profileBodies.push({{ label: option.label || profile, events: eventsBody.events || [] }});
+          if (!compareVideo.src && body.url) compareVideo.src = publicUrl(body.url);
+        }}
+        renderCompareResults(profileBodies);
+        compareStatus.textContent = "比較用字幕を読み込みました。動画を一時停止またはシークして確認できます。";
+      }} catch (error) {{
+        compareStatus.textContent = `比較準備エラー: ${{error.message}}`;
+      }} finally {{
+        comparePrepareButton.disabled = false;
+      }}
+    }}
+
     async function pollPrepare(statusUrl) {{
       let latest = null;
       for (let i = 0; i < 720; i++) {{
@@ -4301,6 +4615,16 @@ async def index() -> str:
         option.value = candidate.language;
         option.textContent = `${{candidate.language}} / ${{candidate.name || candidate.name_en || candidate.language}}`;
         subtitleSource.appendChild(option);
+      }}
+      if (Array.isArray(body.translation_engines)) {{
+        translationEngine.innerHTML = "";
+        for (const engine of body.translation_engines) {{
+          const option = document.createElement("option");
+          option.value = engine.value;
+          option.textContent = engine.label || engine.value;
+          if (engine.default) option.selected = true;
+          translationEngine.appendChild(option);
+        }}
       }}
       prepareOptions.hidden = false;
       prepareStatus.textContent = "日本語字幕が見つかりませんでした。翻訳元字幕と翻訳方式を選んで、もう一度 Prepare を押してください。";
@@ -4414,6 +4738,7 @@ async def index() -> str:
     videoTab.addEventListener("click", () => selectTool("video"));
     jsonTab.addEventListener("click", () => selectTool("json"));
     monitorTab.addEventListener("click", () => selectTool("monitor"));
+    compareTab.addEventListener("click", () => selectTool("compare"));
     setInterval(() => {{
       if (!monitorPanel.hidden) updateMonitor();
     }}, 5000);
@@ -4433,6 +4758,7 @@ async def index() -> str:
     }});
     prepareButton.addEventListener("click", prepareCurrentVideo);
     notifyButton.addEventListener("click", requestNotifications);
+    comparePrepareButton.addEventListener("click", prepareCompare);
     sourceUrl.addEventListener("input", updateJson);
     sourceType.addEventListener("change", updateJson);
     playerMode.addEventListener("change", updateJson);
@@ -4449,6 +4775,7 @@ async def index() -> str:
       updateJson();
       if (jsonResult.textContent) await navigator.clipboard.writeText(jsonResult.textContent);
     }});
+    renderTranslationOptions();
   </script>
 </body>
 </html>"""
@@ -4685,6 +5012,30 @@ async def prepare_youtube_subtitles(
     info = await fetch_video_info(video_id)
     assert_duration_allowed(info)
     return JSONResponse(subtitle_choice_body(info, lang))
+
+
+@app.get("/prepare/youtube/{video_id}/{lang}/{source_lang}/{translation_engine}/subtitle-events")
+async def prepared_subtitle_events(
+    video_id: str,
+    lang: str,
+    source_lang: str,
+    translation_engine: str,
+    request: Request,
+) -> JSONResponse:
+    require_prepare_auth(request)
+    validate_input(video_id, lang)
+    normalized_engine = validate_translation_variant(source_lang, translation_engine)
+    key = cache_key(video_id, lang, source_lang, normalized_engine)
+    return JSONResponse(
+        {
+            "video_id": video_id,
+            "lang": lang,
+            "source_lang": source_lang,
+            "translation_engine": normalized_engine,
+            "subtitle": read_subtitle_meta(key),
+            "events": subtitle_events_for_key(key),
+        }
+    )
 
 
 @app.get("/prepare/jobs/{job_id}")

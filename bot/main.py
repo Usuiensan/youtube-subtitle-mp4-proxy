@@ -474,7 +474,7 @@ class SubtitleChoiceView(discord.ui.View):
         self.lang = lang
         self.mode = mode
         self.source_lang: str | None = None
-        self.translation_engine = "local_llm"
+        self.translation_engine = "qwen3_1_7b"
 
         candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
         source_options = []
@@ -494,10 +494,31 @@ class SubtitleChoiceView(discord.ui.View):
                 )
             )
 
-        engine_options = [
-            discord.SelectOption(label="LLM翻訳", value="local_llm", default=True),
-            discord.SelectOption(label="Google翻訳", value="google_cloud"),
-        ]
+        engine_options = []
+        engines = options_body.get("translation_engines")
+        if isinstance(engines, list) and engines:
+            for engine in engines[:25]:
+                if not isinstance(engine, dict) or not engine.get("value"):
+                    continue
+                value = str(engine["value"])
+                engine_options.append(
+                    discord.SelectOption(
+                        label=option_label(str(engine.get("label") or value), 100),
+                        value=value,
+                        description=option_label(str(engine.get("model") or engine.get("kind") or ""), 100) or None,
+                        default=bool(engine.get("default")),
+                    )
+                )
+            default_option = next((option for option in engine_options if option.default), None)
+            self.translation_engine = default_option.value if default_option else engine_options[0].value
+        if not engine_options:
+            engine_options = [
+                discord.SelectOption(label="Qwen 3 1.7B", value="qwen3_1_7b", default=True),
+                discord.SelectOption(label="Gemma 3 1B", value="gemma3_1b"),
+                discord.SelectOption(label="Gemma 3 4B", value="gemma3_4b"),
+                discord.SelectOption(label="NLLB-200 distilled 600M", value="nllb200_distilled_600m"),
+                discord.SelectOption(label="Google翻訳", value="google_cloud"),
+            ]
         self.source_select = discord.ui.Select(
             placeholder="翻訳元字幕を選択",
             min_values=1,
