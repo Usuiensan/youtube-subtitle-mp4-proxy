@@ -87,6 +87,31 @@ if (
     }
 }
 
+if (Test-Path -LiteralPath $EnvFilePath) {
+    $ExistingEnvLines = Invoke-FileOperationWithRetry `
+        -Path $EnvFilePath `
+        -Action "read" `
+        -Operation { [System.IO.File]::ReadAllLines($EnvFilePath) }
+
+    foreach ($Line in $ExistingEnvLines) {
+        if (-not $PSBoundParameters.ContainsKey('SubtitleFont') -and $Line -match '^\s*SUBTITLE_FONT\s*=\s*(.+?)\s*$') {
+            $SubtitleFont = $Matches[1].Trim().Trim('"').Trim("'")
+        } elseif (-not $PSBoundParameters.ContainsKey('SubtitleFontSize') -and $Line -match '^\s*SUBTITLE_FONT_SIZE\s*=\s*(\d+)\s*$') {
+            $SubtitleFontSize = [int]$Matches[1]
+        } elseif (-not $PSBoundParameters.ContainsKey('SubtitleMarginV') -and $Line -match '^\s*SUBTITLE_MARGIN_V\s*=\s*(\d+)\s*$') {
+            $SubtitleMarginV = [int]$Matches[1]
+        } elseif (-not $PSBoundParameters.ContainsKey('SubtitleMarginL') -and $Line -match '^\s*SUBTITLE_MARGIN_L\s*=\s*(\d+)\s*$') {
+            $SubtitleMarginL = [int]$Matches[1]
+        } elseif (-not $PSBoundParameters.ContainsKey('SubtitleMarginR') -and $Line -match '^\s*SUBTITLE_MARGIN_R\s*=\s*(\d+)\s*$') {
+            $SubtitleMarginR = [int]$Matches[1]
+        } elseif (-not $PSBoundParameters.ContainsKey('SubtitlePrimaryColour') -and $Line -match '^\s*SUBTITLE_PRIMARY_COLOUR\s*=\s*(.+?)\s*$') {
+            $SubtitlePrimaryColour = $Matches[1].Trim().Trim('"').Trim("'")
+        } elseif (-not $PSBoundParameters.ContainsKey('SubtitleBackColour') -and $Line -match '^\s*SUBTITLE_BACK_COLOUR\s*=\s*(.+?)\s*$') {
+            $SubtitleBackColour = $Matches[1].Trim().Trim('"').Trim("'")
+        }
+    }
+}
+
 $ResolvedCacheDir = if ([System.IO.Path]::IsPathRooted($CacheDir)) {
     [System.IO.Path]::GetFullPath($CacheDir)
 } else {

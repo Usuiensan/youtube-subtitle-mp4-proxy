@@ -350,6 +350,12 @@ def public_url(url: Any) -> str:
     return url
 
 
+def youtube_watch_url(video_id: Any) -> str:
+    if not isinstance(video_id, str) or not video_id:
+        return ""
+    return f"https://www.youtube.com/watch?v={video_id}"
+
+
 def mention_text(body: dict[str, Any], fallback_user_id: int | None = None) -> str:
     mentions = body.get("mentions")
     if isinstance(mentions, list) and mentions:
@@ -386,7 +392,9 @@ def status_message(body: dict[str, Any], fallback_user_id: int | None = None) ->
         prefix = f"{mention} " if mention else ""
         usage_part = translation_usage_text(body.get("subtitle"))
         archive_part = "\n保存先: HDDアーカイブ" if body.get("archived_immediately") else ""
-        return f"{prefix}準備できました。{title_part}{subtitle_part}{usage_part}{archive_part}\n{public_url(body.get('url'))}"
+        source_url = youtube_watch_url(body.get("video_id"))
+        source_part = f"\n元動画: {source_url}" if source_url else ""
+        return f"{prefix}準備できました。{title_part}{subtitle_part}{usage_part}{archive_part}\n{public_url(body.get('url'))}{source_part}"
     if status == "failed":
         mention = mention_text(body, fallback_user_id)
         prefix = f"{mention} " if mention else ""

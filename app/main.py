@@ -3219,6 +3219,10 @@ def job_mentions(job: dict) -> list[str]:
     return [discord_mention(user_id) for user_id in job.get("requesters", [])]
 
 
+def youtube_watch_url(video_id: str) -> str:
+    return f"https://www.youtube.com/watch?v={video_id}"
+
+
 def job_notification(job: dict) -> dict | None:
     mentions = job_mentions(job)
     if not mentions:
@@ -3226,7 +3230,7 @@ def job_notification(job: dict) -> dict | None:
     prefix = " ".join(mentions)
     if job["status"] == "ready":
         return {
-            "content": f"{prefix} 準備できました: {job['url']}",
+            "content": f"{prefix} 準備できました: {job['url']}\n元動画: {youtube_watch_url(job['video_id'])}",
             "mentions": mentions,
         }
     if job["status"] == "failed":
