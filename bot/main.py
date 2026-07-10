@@ -131,15 +131,31 @@ def http_json(method: str, url: str) -> tuple[int, dict[str, Any]]:
         raise PrepareApiError(502, str(error.reason)) from error
 
 
-async def prepare_video(video_id: str, lang: str, mode: str, discord_user_id: int) -> tuple[int, dict[str, Any]]:
-    query = urllib.parse.urlencode(
-        {
-            "mode": mode,
-            "discordUserId": str(discord_user_id),
-        }
-    )
-    url = f"{settings.youtube_proxy_internal_base_url}/prepare/youtube/{video_id}/{lang}?{query}"
+async def prepare_video(
+    video_id: str,
+    lang: str,
+    mode: str,
+    discord_user_id: int,
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    params = {
+        "mode": mode,
+        "discordUserId": str(discord_user_id),
+    }
+    query = urllib.parse.urlencode(params)
+    variant_path = ""
+    if subtitle_source_lang and translation_engine:
+        variant_path = f"/{urllib.parse.quote(subtitle_source_lang, safe='')}/{urllib.parse.quote(translation_engine, safe='')}"
+    url = f"{settings.youtube_proxy_internal_base_url}/prepare/youtube/{video_id}/{lang}{variant_path}?{query}"
     return await asyncio.to_thread(http_json, "POST", url)
+
+
+async def fetch_subtitle_options(video_id: str, lang: str, mode: str) -> dict[str, Any]:
+    query = urllib.parse.urlencode({"mode": mode})
+    url = f"{settings.youtube_proxy_internal_base_url}/prepare/youtube/{video_id}/{lang}/subtitles?{query}"
+    _status, body = await asyncio.to_thread(http_json, "GET", url)
+    return body
 
 
 async def prepare_batch(source: str, lang: str, mode: str, discord_user_id: int, max_items: int) -> tuple[int, dict[str, Any]]:
@@ -328,6 +344,124 @@ def subtitle_status_text(meta: Any) -> str:
     return ""
 
 
+def option_label(value: str, limit: int = 100) -> str:
+    return value if len(value) <= limit else value[: limit - 1] + "…"
+
+
+class SubtitleChoiceView(discord.ui.View):
+    def __init__(
+        self,
+        *,
+        requester_id: int,
+        video_id: str,
+        lang: str,
+        mode: str,
+        options_body: dict[str, Any],
+    ) -> None:
+        super().__init__(timeout=300)
+        self.requester_id = requester_id
+        self.video_id = video_id
+        self.lang = lang
+        self.mode = mode
+        self.source_lang: str | None = None
+        self.translation_engine = "local_llm"
+
+        candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
+        source_options = []
+        for candidate in candidates[:25]:
+            if not isinstance(candidate, dict):
+                continue
+            language = str(candidate.get("language") or "")
+            if not language:
+                continue
+            name = str(candidate.get("name") or language)
+            name_en = str(candidate.get("name_en") or "")
+            source_options.append(
+                discord.SelectOption(
+                    label=option_label(f"{language} / {name}", 100),
+                    value=language,
+                    description=option_label(name_en, 100) if name_en else None,
+                )
+            )
+
+        engine_options = [
+            discord.SelectOption(label="LLM翻訳", value="local_llm", default=True),
+            discord.SelectOption(label="Google翻訳", value="google_cloud"),
+        ]
+        self.source_select = discord.ui.Select(
+            placeholder="翻訳元字幕を選択",
+            min_values=1,
+            max_values=1,
+            options=source_options,
+        )
+        self.engine_select = discord.ui.Select(
+            placeholder="翻訳エンジンを選択",
+            min_values=1,
+            max_values=1,
+            options=engine_options,
+        )
+        self.source_select.callback = self.on_source_selected
+        self.engine_select.callback = self.on_engine_selected
+        self.add_item(self.source_select)
+        self.add_item(self.engine_select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.requester_id:
+            return True
+        await interaction.response.send_message("この選択はコマンド実行者だけが操作できます。", ephemeral=True)
+        return False
+
+    async def on_source_selected(self, interaction: discord.Interaction) -> None:
+        self.source_lang = self.source_select.values[0]
+        await interaction.response.defer()
+
+    async def on_engine_selected(self, interaction: discord.Interaction) -> None:
+        self.translation_engine = self.engine_select.values[0]
+        await interaction.response.defer()
+
+    @discord.ui.button(label="この設定で準備", style=discord.ButtonStyle.primary)
+    async def start_prepare(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        if not self.source_lang:
+            await interaction.response.send_message("先に翻訳元字幕を選択してください。", ephemeral=True)
+            return
+        await interaction.response.defer(thinking=True)
+        for child in self.children:
+            child.disabled = True
+        if interaction.message is not None:
+            try:
+                await interaction.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+        try:
+            _status, body = await prepare_video(
+                self.video_id,
+                self.lang,
+                self.mode,
+                interaction.user.id,
+                subtitle_source_lang=self.source_lang,
+                translation_engine=self.translation_engine,
+            )
+        except PrepareApiError as error:
+            await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}")
+            return
+
+        await interaction.followup.send(
+            status_message(body, interaction.user.id),
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
+        status_url = body.get("status_url")
+        if body.get("status") in {"queued", "running"} and isinstance(status_url, str):
+            asyncio.create_task(notify_when_done(interaction, status_url))
+
+    @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="準備をキャンセルしました。", view=self)
+        self.stop()
+
+
 async def notify_when_done(
     interaction: discord.Interaction,
     status_url: str,
@@ -464,6 +598,33 @@ async def prepare_command(
             )
         else:
             video_id = extract_video_id(url)
+            if lang == "ja":
+                try:
+                    options_body = await fetch_subtitle_options(video_id, lang, selected_mode)
+                except PrepareApiError as error:
+                    await interaction.followup.send(f"字幕候補取得APIエラー ({error.status_code}): {error.detail}")
+                    return
+                if options_body.get("requires_choice"):
+                    candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
+                    if not candidates:
+                        await interaction.followup.send(str(options_body.get("error") or "翻訳可能な手動字幕がありません。"))
+                        return
+                    title = options_body.get("title") or video_id
+                    view = SubtitleChoiceView(
+                        requester_id=interaction.user.id,
+                        video_id=video_id,
+                        lang=lang,
+                        mode=selected_mode,
+                        options_body=options_body,
+                    )
+                    await interaction.followup.send(
+                        f"日本語字幕が見つかりませんでした。\n{title}\n翻訳元字幕と翻訳エンジンを選択してください。既定は LLM 翻訳です。",
+                        view=view,
+                    )
+                    return
+                if options_body.get("error"):
+                    await interaction.followup.send(str(options_body["error"]))
+                    return
             _status, body = await prepare_video(video_id, lang, selected_mode, interaction.user.id)
     except ValueError:
         try:

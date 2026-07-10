@@ -5,8 +5,10 @@ YouTube の動画 ID を受け取り、字幕を焼き込んだ MP4 を返す自
 ```text
 GET /youtube/:videoId
 GET /youtube/:videoId/:lang
+GET /youtube/:videoId/:targetLang/:sourceLang/:translationEngine
 GET /youtube-hls/:videoId
 GET /youtube-hls/:videoId/:lang
+GET /youtube-hls/:videoId/:targetLang/:sourceLang/:translationEngine
 POST /prepare/youtube-batch/:lang?source=:playlistOrChannelUrl
 GET /yamaplayer/playlist?list=:playlistIdOrUrl
 GET /yamaplayer/channel?channel=:channelIdOrHandleOrUrl
@@ -104,6 +106,18 @@ curl -X POST \
 
 `POST /prepare/youtube/:videoId/:lang?mode=mp4|hls` は、準備済みなら `200 {"status":"ready","url":"..."}` を返します。準備が必要なら `202` と `job_id` / `status_url` を返すので、Discord bot 側で `GET /prepare/jobs/:jobId` をポーリングし、`ready` になってから `url` を投稿します。
 
+`GET /prepare/youtube/:videoId/:lang/subtitles?mode=mp4|hls` は、準備前に字幕候補を確認するための API です。`lang=ja` で日本語字幕がなく、翻訳可能な手動字幕がある場合は `requires_choice: true` と `candidates` を返します。`POST /prepare/youtube/:videoId/:lang` には `subtitleSourceLang=en&translationEngine=local_llm|google_cloud` を渡せます。
+
+翻訳元や翻訳方式を明示する版は、VRChat の動画プレーヤーで query string が落ちる可能性を避けるため path でも指定できます。
+
+```text
+/youtube/:videoId/:targetLang/:sourceLang/:translationEngine
+/youtube-hls/:videoId/:targetLang/:sourceLang/:translationEngine
+POST /prepare/youtube/:videoId/:targetLang/:sourceLang/:translationEngine
+```
+
+例: `/youtube/dQw4w9WgXcQ/ja/en/google_cloud`。従来の `/youtube/:videoId/:lang` は「細かい版を指定しない既定版」を返します。複数版を並行保持したい場合は、Discord bot の字幕選択 UI から明示版を準備すると、その明示パスの URL が返ります。
+
 `POST /prepare/youtube-batch/:lang?source=:playlistOrChannelUrl&sourceType=auto&mode=mp4|hls&maxItems=5000` は、YouTube Data API v3 でプレイリストまたはチャンネル投稿一覧を展開し、含まれる動画をすべて準備ジョブへ投入します。返却される `batch_id` / `status_url` は `GET /prepare/batches/:batchId` でポーリングできます。`source` はプレイリスト URL/ID、`@handle`、`https://www.youtube.com/@handle`、`https://www.youtube.com/channel/...` に対応します。
 
 `discordUserId` を渡すと、ジョブ状態に `mentions` と `notification.content` が含まれます。bot は `ready` または `failed` になったときに `notification.content` を投稿すれば、変換コマンドを実行したユーザーへメンションできます。同じ動画の準備ジョブが既に動いている場合、後から来た `discordUserId` も同じジョブの通知対象に追加されます。
@@ -130,6 +144,8 @@ bot はスラッシュコマンド `/prepare` を提供します。
 
 `url` にプレイリスト URL やチャンネル URL を渡した場合は、YouTube Data API v3 で一覧を展開して一括準備します。`max_items` の既定値は `DISCORD_PREPARE_BATCH_MAX_ITEMS`、未設定時は 5000 件です。
 
+単体動画で `lang:ja` を指定し、日本語字幕が存在しない場合は、準備を始める前に翻訳元字幕と言語エンジンを選ぶ UI を表示します。翻訳エンジンは LLM 翻訳が既定で、必要に応じて Google 翻訳を選べます。
+
 準備開始時は `予想N分 / 終了予想 <t:1783619520:t>` の形式で返信します。ジョブが完了または失敗すると、コマンドを実行したユーザーにメンションして結果を投稿します。一括準備では完了時に先頭 10 件の配信 URL と残り件数を投稿します。
 
 ### SSD/HDD アーカイブキャッシュ
@@ -154,7 +170,7 @@ Google の API キーが必要なのは、YouTube Data API v3 を使う `/prepar
 
 ### 日本語字幕がない動画の翻訳
 
-`TRANSLATION_ENABLED=1` の場合、要求言語が `ja` で日本語の手動字幕がない動画は、動画情報の字幕一覧から外国語の手動字幕を選び、日本語へ翻訳してから焼き込みます。選択順は、動画の原言語、英語、韓国語、中国語、`TRANSLATION_SOURCE_LANGS` の順です。
+`TRANSLATION_ENABLED=1` の場合、要求言語が `ja` で日本語の手動字幕がない動画は、Discord bot の単体 `/prepare` では翻訳元字幕をユーザーが選び、日本語へ翻訳してから焼き込みます。API から `subtitleSourceLang` を指定しない場合や一括準備では、動画の原言語、英語、韓国語、中国語、`TRANSLATION_SOURCE_LANGS` の順で自動選択します。
 
 翻訳は FastAPI プロセス内にモデルをロードせず、字幕windowごとに `app.translation_worker` を別プロセスで起動します。worker終了後にffmpeg/NVENCを開始するため、GTX 1050 Ti 4GB環境でもローカルLLM翻訳とNVENCを同時実行しません。ローカルLLMが失敗したwindowだけ Google Cloud Translation API へフォールバックします。初期実装のGoogle fallbackは字幕イベントごとに1 APIリクエストを行います。
 

@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 from typing import AsyncIterator
 
+import srt
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import (
     FileResponse,
@@ -26,12 +27,18 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
-from app.translation import TranslationSettings, translate_srt_with_local_worker, load_srt
+from app.translation import (
+    TranslationSettings,
+    google_translate_events,
+    load_srt,
+    save_srt,
+    translate_srt_with_local_worker,
+)
 
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 LANG_RE = re.compile(r"^[A-Za-z0-9_-]{2,12}$")
-KEY_RE = re.compile(r"^[A-Za-z0-9_-]{11}_[A-Za-z0-9_-]{2,12}_[a-f0-9]{8}$")
+KEY_RE = re.compile(r"^[A-Za-z0-9_-]{11}(?:_[A-Za-z0-9_-]{2,32})+_[a-f0-9]{8}$")
 YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,}$")
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env.local"
 
@@ -281,7 +288,26 @@ class CommandError(Exception):
         self.message = message
 
 
-def cache_key(video_id: str, lang: str) -> str:
+def variant_id(
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
+) -> str:
+    if not subtitle_source_lang and not translation_engine:
+        return ""
+    source = (subtitle_source_lang or "auto").lower()
+    engine = normalize_translation_engine(translation_engine) if translation_engine else "auto"
+    return f"{source}_{engine}"
+
+
+def cache_key(
+    video_id: str,
+    lang: str,
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
+) -> str:
+    variant = variant_id(subtitle_source_lang, translation_engine)
+    if variant:
+        return f"{video_id}_{lang}_{variant}_{render_profile_id()}"
     return f"{video_id}_{lang}_{render_profile_id()}"
 
 
@@ -420,6 +446,12 @@ def write_source_meta(
         ),
         encoding="utf-8",
     )
+
+
+def move_replace(source: Path, destination: Path) -> None:
+    if destination.exists():
+        destination.unlink()
+    shutil.move(str(source), destination)
 
 
 def hot_free_bytes() -> int:
@@ -564,6 +596,45 @@ def archived_ready_entry_exists(key: str, mode: str) -> bool:
     return is_usable_file(archive_dir / "output.mp4")
 
 
+def candidate_cache_keys(video_id: str, lang: str) -> list[str]:
+    profile = render_profile_id()
+    names: set[str] = set()
+    for base in (settings.cache_hot_dir, settings.cache_archive_dir):
+        if base is None or not base.exists():
+            continue
+        for child in base.glob(f"{video_id}_{lang}_*_{profile}"):
+            if child.is_dir():
+                names.add(child.name)
+    return sorted(names)
+
+
+def default_variant_priority(key: str) -> tuple[int, str]:
+    if "_local_llm_" in key:
+        return (1, key)
+    if "_google_cloud_" in key:
+        return (2, key)
+    return (3, key)
+
+
+def default_serving_key(video_id: str, lang: str, mode: str) -> str:
+    exact = cache_key(video_id, lang)
+    if mode == "hls":
+        if hot_hls_playlist_path(exact):
+            return exact
+    elif hot_output_path(exact) or archived_output_path(exact):
+        return exact
+
+    for key in sorted(candidate_cache_keys(video_id, lang), key=default_variant_priority):
+        if key == exact:
+            continue
+        if mode == "hls":
+            if hot_hls_playlist_path(key):
+                return key
+        elif hot_output_path(key) or archived_output_path(key):
+            return key
+    return exact
+
+
 def validate_input(video_id: str, lang: str) -> None:
     if not VIDEO_ID_RE.fullmatch(video_id):
         raise HTTPException(status_code=400, detail="Invalid YouTube video id")
@@ -573,6 +644,11 @@ def validate_input(video_id: str, lang: str) -> None:
 def validate_lang(lang: str) -> None:
     if not LANG_RE.fullmatch(lang):
         raise HTTPException(status_code=400, detail="Invalid subtitle language")
+
+
+def validate_translation_variant(source_lang: str, translation_engine: str) -> str:
+    validate_lang(source_lang)
+    return normalize_translation_engine(translation_engine)
 
 
 def yt_dlp_base_args() -> list[str]:
@@ -744,7 +820,99 @@ def configured_translation_source_langs() -> list[str]:
     return [lang.strip() for lang in settings.translation_source_langs.split(",") if lang.strip()]
 
 
-def select_subtitle_language(info: dict, requested_lang: str) -> dict:
+def normalize_translation_engine(value: str | None) -> str:
+    engine = (value or settings.local_llm_engine or "local_llm").strip().lower()
+    if engine in {"llm", "local", "local_llm", "openai_compatible"}:
+        return "local_llm"
+    if engine in {"google", "google_cloud", "google_translate"}:
+        return "google_cloud"
+    raise HTTPException(status_code=400, detail="translationEngine must be local_llm or google_cloud")
+
+
+def manual_subtitle_candidates(info: dict, requested_lang: str) -> list[dict]:
+    manual_subtitles = info.get("subtitles") or {}
+    if not isinstance(manual_subtitles, dict):
+        manual_subtitles = {}
+
+    candidates = []
+    seen: set[str] = set()
+    for lang in manual_subtitles.keys():
+        if normalize_lang(lang) == normalize_lang(requested_lang):
+            continue
+        normalized = lang.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        candidates.append(
+            {
+                "language": lang,
+                "name": get_lang_name_ja(lang),
+                "name_en": get_lang_name_en(lang),
+                "source_kind": "manual",
+            }
+        )
+    return candidates
+
+
+def subtitle_choice_body(info: dict, requested_lang: str) -> dict:
+    manual_subtitles = info.get("subtitles") or {}
+    if not isinstance(manual_subtitles, dict):
+        manual_subtitles = {}
+
+    requested = subtitle_lang_available(manual_subtitles, requested_lang)
+    body = {
+        "video_id": info.get("id"),
+        "title": info.get("title"),
+        "duration": info.get("duration"),
+        "requested_language": requested_lang,
+        "translation_enabled": settings.translation_enabled,
+    }
+    if requested:
+        body.update(
+            {
+                "requires_choice": False,
+                "selection": {
+                    "requested_language": requested_lang,
+                    "source_language": requested,
+                    "translated": False,
+                    "source_kind": "manual",
+                },
+            }
+        )
+        return body
+
+    candidates = manual_subtitle_candidates(info, requested_lang)
+    body.update(
+        {
+            "requires_choice": requested_lang == "ja" and settings.translation_enabled and bool(candidates),
+            "candidates": candidates,
+            "translation_engines": [
+                {
+                    "value": "local_llm",
+                    "label": "LLM翻訳",
+                    "default": True,
+                },
+                {
+                    "value": "google_cloud",
+                    "label": "Google翻訳",
+                    "default": False,
+                },
+            ],
+        }
+    )
+    if requested_lang != "ja" or not settings.translation_enabled:
+        body["error"] = f"No subtitle found for language: {requested_lang}"
+    elif not candidates:
+        body["error"] = "No translatable manual subtitle found"
+    return body
+
+
+def select_subtitle_language(
+    info: dict,
+    requested_lang: str,
+    source_lang: str | None = None,
+    translation_engine: str | None = None,
+) -> dict:
     manual_subtitles = info.get("subtitles") or {}
     if not isinstance(manual_subtitles, dict):
         manual_subtitles = {}
@@ -760,6 +928,18 @@ def select_subtitle_language(info: dict, requested_lang: str) -> dict:
 
     if requested_lang != "ja" or not settings.translation_enabled:
         raise HTTPException(status_code=422, detail=f"No subtitle found for language: {requested_lang}")
+
+    if source_lang:
+        selected = subtitle_lang_available(manual_subtitles, source_lang)
+        if not selected:
+            raise HTTPException(status_code=422, detail=f"No subtitle found for source language: {source_lang}")
+        return {
+            "requested_language": requested_lang,
+            "source_language": selected,
+            "translated": True,
+            "source_kind": "manual",
+            "translation_engine_requested": normalize_translation_engine(translation_engine),
+        }
 
     priorities: list[str] = []
     video_language = info.get("language")
@@ -781,6 +961,7 @@ def select_subtitle_language(info: dict, requested_lang: str) -> dict:
                 "source_language": selected,
                 "translated": True,
                 "source_kind": "manual",
+                "translation_engine_requested": normalize_translation_engine(translation_engine),
             }
 
     raise HTTPException(status_code=422, detail="No translatable manual subtitle found")
@@ -1008,15 +1189,15 @@ def get_subtitle_overlay_label(subtitle_meta: dict) -> str:
         src_en = get_lang_name_en(source_lang)
         req_en = get_lang_name_en(requested_lang)
         line1 = f"[字幕]{src_ja} → {req_ja}"
-        line2 = f"[SUB]{src_en} → {req_en}"
+        line2 = f"[subs]{src_en} → {req_en}"
         return f"{line1}\n{line2}"
     elif requested_lang:
         req_ja = get_lang_name_ja(requested_lang)
         req_en = get_lang_name_en(requested_lang)
         line1 = f"[字幕]{req_ja}"
-        line2 = f"[SUB]{req_en}"
+        line2 = f"[subs]{req_en}"
         return f"{line1}\n{line2}"
-    return "[SUB]"
+    return "[subs]"
 
 
 def find_japanese_font_file() -> str | None:
@@ -1354,6 +1535,51 @@ async def translate_subtitle_if_needed(
         return subtitle, selection
 
     translated_path = work_dir / f"{subtitle.stem}.ja.translated.srt"
+    requested_engine = normalize_translation_engine(selection.get("translation_engine_requested"))
+    selected_settings = translation_settings()
+
+    if requested_engine == "google_cloud":
+        start_t = time.time()
+        subtitles = load_srt(subtitle)
+        if job_id:
+            update_job_progress(job_id, "translate", 0.0, details="Google翻訳中...")
+        translated_map = google_translate_events(
+            subtitles,
+            selection["requested_language"],
+            selected_settings,
+        )
+        translated_subtitles = []
+        for sub in subtitles:
+            translated_subtitles.append(
+                srt.Subtitle(
+                    index=sub.index,
+                    start=sub.start,
+                    end=sub.end,
+                    content=translated_map[str(sub.index)],
+                    proprietary=sub.proprietary,
+                )
+            )
+        if translated_subtitles:
+            notice = f"{selection['source_language']}>>{selection['requested_language']} (google_cloud)"
+            translated_subtitles[0] = srt.Subtitle(
+                index=translated_subtitles[0].index,
+                start=translated_subtitles[0].start,
+                end=translated_subtitles[0].end,
+                content=f"{notice}\n{translated_subtitles[0].content}",
+                proprietary=translated_subtitles[0].proprietary,
+            )
+        save_srt(translated_path, translated_subtitles)
+        metrics_manager.record_translate(len(subtitles), time.time() - start_t)
+        if job_id:
+            update_job_progress(job_id, "translate", 100.0, details="Google翻訳完了")
+        metadata = {
+            **selection,
+            "translation_engine": "google_cloud",
+            "translation_model": None,
+            "translation_fallback_used": False,
+            "translation_created_at": int(time.time()),
+        }
+        return translated_path, metadata
 
     async def worker(payload: dict) -> dict:
         payload["_work_dir"] = str(work_dir)
@@ -1382,7 +1608,7 @@ async def translate_subtitle_if_needed(
         video_title=str(info.get("title") or ""),
         source_language=selection["source_language"],
         target_language=selection["requested_language"],
-        settings=translation_settings(),
+        settings=selected_settings,
         run_worker=worker,
         on_progress=on_prog,
     )
@@ -1403,9 +1629,16 @@ async def download_sources(
     work_dir: Path,
     info: dict,
     job_id: str | None = None,
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
 ) -> tuple[Path, Path, Path, dict]:
     url = f"https://www.youtube.com/watch?v={video_id}"
-    subtitle_selection = select_subtitle_language(info, lang)
+    subtitle_selection = select_subtitle_language(
+        info,
+        lang,
+        source_lang=subtitle_source_lang,
+        translation_engine=translation_engine,
+    )
     source_lang = subtitle_selection["source_language"]
     format_selector = (
         f"bv*[height<={settings.max_height}]+ba/"
@@ -1444,7 +1677,7 @@ async def download_sources(
     metrics_manager.record_download(video.stat().st_size, end_t - start_t)
     
     subtitle, subtitle_meta = await translate_subtitle_if_needed(
-        key=cache_key(video_id, lang),
+        key=cache_key(video_id, lang, subtitle_source_lang, translation_engine),
         subtitle=original_subtitle,
         info=info,
         selection=subtitle_selection,
@@ -1599,10 +1832,22 @@ async def prepare_sources(
     info: dict,
     job_id: str | None = None,
     duration_seconds: float | None = None,
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
 ) -> tuple[Path, Path, dict]:
     existing = check_existing_sources(key)
+    if existing and subtitle_source_lang:
+        _saved_video, _original_subtitle, existing_subtitle_meta = existing
+        existing_source_lang = existing_subtitle_meta.get("source_language")
+        if normalize_lang(existing_source_lang) != normalize_lang(subtitle_source_lang):
+            existing = None
     if existing:
         saved_video, original_subtitle, subtitle_meta = existing
+        if translation_engine and subtitle_meta.get("translated"):
+            subtitle_meta = {
+                **subtitle_meta,
+                "translation_engine_requested": normalize_translation_engine(translation_engine),
+            }
 
         hot_dir = entry_dir(key)
         archive_dir = archive_entry_dir(key)
@@ -1621,7 +1866,7 @@ async def prepare_sources(
                 job_id=job_id,
             )
             saved_subtitle = source_dir(key) / f"subtitle.{lang}.translated{subtitle.suffix.lower()}"
-            shutil.move(str(subtitle), saved_subtitle)
+            move_replace(subtitle, saved_subtitle)
             translation_meta_path(key).write_text(
                 json.dumps(new_subtitle_meta, ensure_ascii=True, indent=2),
                 encoding="utf-8",
@@ -1635,7 +1880,13 @@ async def prepare_sources(
 
     # Normal download path
     video, original_subtitle, subtitle, subtitle_meta = await download_sources(
-        video_id, lang, work_dir, info, job_id=job_id
+        video_id,
+        lang,
+        work_dir,
+        info,
+        job_id=job_id,
+        subtitle_source_lang=subtitle_source_lang,
+        translation_engine=translation_engine,
     )
     source_dir(key).mkdir(parents=True, exist_ok=True)
     saved_video = source_dir(key) / f"input{video.suffix.lower()}"
@@ -1646,10 +1897,10 @@ async def prepare_sources(
         if subtitle_meta.get("translated")
         else source_dir(key) / f"subtitle.{lang}{subtitle.suffix.lower()}"
     )
-    shutil.move(str(video), saved_video)
+    move_replace(video, saved_video)
     if original_subtitle != subtitle:
-        shutil.move(str(original_subtitle), saved_original_subtitle)
-    shutil.move(str(subtitle), saved_subtitle)
+        move_replace(original_subtitle, saved_original_subtitle)
+    move_replace(subtitle, saved_subtitle)
     if subtitle_meta.get("translated"):
         translation_meta_path(key).write_text(
             json.dumps(subtitle_meta, ensure_ascii=True, indent=2),
@@ -1659,8 +1910,14 @@ async def prepare_sources(
     return saved_video, saved_subtitle, subtitle_meta
 
 
-async def create_mp4(video_id: str, lang: str, job_id: str | None = None) -> Path:
-    key = cache_key(video_id, lang)
+async def create_mp4(
+    video_id: str,
+    lang: str,
+    job_id: str | None = None,
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
+) -> Path:
+    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
     final_output = output_path(key)
     prepared = prepared_output_path(key)
     if prepared:
@@ -1679,7 +1936,15 @@ async def create_mp4(video_id: str, lang: str, job_id: str | None = None) -> Pat
             assert_duration_allowed(info)
             duration = float(info.get("duration") or 0.0)
             saved_video, saved_subtitle, subtitle_meta = await prepare_sources(
-                key, video_id, lang, work_dir, info, job_id=job_id, duration_seconds=duration
+                key,
+                video_id,
+                lang,
+                work_dir,
+                info,
+                job_id=job_id,
+                duration_seconds=duration,
+                subtitle_source_lang=subtitle_source_lang,
+                translation_engine=translation_engine,
             )
             await burn_subtitles(
                 saved_video,
@@ -1695,8 +1960,14 @@ async def create_mp4(video_id: str, lang: str, job_id: str | None = None) -> Pat
             shutil.rmtree(work_dir, ignore_errors=True)
 
 
-async def create_hls_job(video_id: str, lang: str, job_id: str | None = None) -> Path:
-    key = cache_key(video_id, lang)
+async def create_hls_job(
+    video_id: str,
+    lang: str,
+    job_id: str | None = None,
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
+) -> Path:
+    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
     playlist = hls_playlist_path(key)
     prepared = prepared_hls_playlist_path(key)
     if prepared:
@@ -1715,7 +1986,15 @@ async def create_hls_job(video_id: str, lang: str, job_id: str | None = None) ->
             assert_duration_allowed(info)
             duration = float(info.get("duration") or 0.0)
             saved_video, saved_subtitle, subtitle_meta = await prepare_sources(
-                key, video_id, lang, work_dir, info, job_id=job_id, duration_seconds=duration
+                key,
+                video_id,
+                lang,
+                work_dir,
+                info,
+                job_id=job_id,
+                duration_seconds=duration,
+                subtitle_source_lang=subtitle_source_lang,
+                translation_engine=translation_engine,
             )
             write_meta(key, video_id, lang, info, "hls")
             await create_hls(
@@ -1731,8 +2010,14 @@ async def create_hls_job(video_id: str, lang: str, job_id: str | None = None) ->
             shutil.rmtree(work_dir, ignore_errors=True)
 
 
-async def get_or_create_mp4(video_id: str, lang: str, job_id: str | None = None) -> Path:
-    key = cache_key(video_id, lang)
+async def get_or_create_mp4(
+    video_id: str,
+    lang: str,
+    job_id: str | None = None,
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
+) -> Path:
+    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
     cached = prepared_output_path(key)
     if cached:
         return cached
@@ -1740,7 +2025,15 @@ async def get_or_create_mp4(video_id: str, lang: str, job_id: str | None = None)
     async with _inflight_lock:
         task = _inflight.get(key)
         if task is None or task.done():
-            task = asyncio.create_task(create_mp4(video_id, lang, job_id=job_id))
+            task = asyncio.create_task(
+                create_mp4(
+                    video_id,
+                    lang,
+                    job_id=job_id,
+                    subtitle_source_lang=subtitle_source_lang,
+                    translation_engine=translation_engine,
+                )
+            )
             _inflight[key] = task
 
     try:
@@ -1764,8 +2057,14 @@ async def wait_until_hls_ready(key: str, task: asyncio.Task[Path]) -> Path:
     raise HTTPException(status_code=504, detail="HLS playlist was not ready in time")
 
 
-async def get_or_start_hls(video_id: str, lang: str, job_id: str | None = None) -> Path:
-    key = cache_key(video_id, lang)
+async def get_or_start_hls(
+    video_id: str,
+    lang: str,
+    job_id: str | None = None,
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
+) -> Path:
+    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
     cached = prepared_hls_playlist_path(key)
     if cached:
         return cached
@@ -1773,7 +2072,15 @@ async def get_or_start_hls(video_id: str, lang: str, job_id: str | None = None) 
     async with _inflight_lock:
         task = _hls_inflight.get(key)
         if task is None or task.done():
-            task = asyncio.create_task(create_hls_job(video_id, lang, job_id=job_id))
+            task = asyncio.create_task(
+                create_hls_job(
+                    video_id,
+                    lang,
+                    job_id=job_id,
+                    subtitle_source_lang=subtitle_source_lang,
+                    translation_engine=translation_engine,
+                )
+            )
             _hls_inflight[key] = task
 
     try:
@@ -1785,8 +2092,14 @@ async def get_or_start_hls(video_id: str, lang: str, job_id: str | None = None) 
                     _hls_inflight.pop(key, None)
 
 
-async def get_or_create_hls(video_id: str, lang: str, job_id: str | None = None) -> Path:
-    key = cache_key(video_id, lang)
+async def get_or_create_hls(
+    video_id: str,
+    lang: str,
+    job_id: str | None = None,
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
+) -> Path:
+    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
     cached = prepared_hls_playlist_path(key)
     if cached:
         return cached
@@ -1794,7 +2107,15 @@ async def get_or_create_hls(video_id: str, lang: str, job_id: str | None = None)
     async with _inflight_lock:
         task = _hls_inflight.get(key)
         if task is None or task.done():
-            task = asyncio.create_task(create_hls_job(video_id, lang, job_id=job_id))
+            task = asyncio.create_task(
+                create_hls_job(
+                    video_id,
+                    lang,
+                    job_id=job_id,
+                    subtitle_source_lang=subtitle_source_lang,
+                    translation_engine=translation_engine,
+                )
+            )
             _hls_inflight[key] = task
 
     try:
@@ -1815,15 +2136,34 @@ def require_prepare_auth(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Invalid prepare token")
 
 
-def prepare_key(video_id: str, lang: str, mode: str) -> str:
-    return f"{mode}:{cache_key(video_id, lang)}"
+def prepare_key(
+    video_id: str,
+    lang: str,
+    mode: str,
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
+) -> str:
+    option_key = ""
+    if subtitle_source_lang or translation_engine:
+        option_key = f":src={subtitle_source_lang or ''}:engine={translation_engine or ''}"
+    return f"{mode}:{cache_key(video_id, lang)}{option_key}"
 
 
-def prepared_media_url(request: Request, video_id: str, lang: str, mode: str) -> str:
+def prepared_media_url(
+    request: Request,
+    video_id: str,
+    lang: str,
+    mode: str,
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
+) -> str:
     base_url = settings.youtube_proxy_base_url or str(request.base_url).rstrip("/")
+    suffix = ""
+    if subtitle_source_lang or translation_engine:
+        suffix = f"/{subtitle_source_lang or 'auto'}/{normalize_translation_engine(translation_engine)}"
     if mode == "hls":
-        return f"{base_url}/youtube-hls/{video_id}/{lang}"
-    return f"{base_url}/youtube/{video_id}/{lang}"
+        return f"{base_url}/youtube-hls/{video_id}/{lang}{suffix}"
+    return f"{base_url}/youtube/{video_id}/{lang}{suffix}"
 
 
 def prepare_status_url(request: Request, job_id: str) -> str:
@@ -1836,8 +2176,14 @@ def prepare_batch_status_url(request: Request, batch_id: str) -> str:
     return f"{base_url}/prepare/batches/{batch_id}"
 
 
-def prepare_ready_path(video_id: str, lang: str, mode: str) -> Path | None:
-    key = cache_key(video_id, lang)
+def prepare_ready_path(
+    video_id: str,
+    lang: str,
+    mode: str,
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
+) -> Path | None:
+    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
     if mode == "hls":
         return hot_hls_playlist_path(key)
     return hot_output_path(key)
@@ -2076,10 +2422,12 @@ async def run_prepare_job(
     lang: str,
     mode: str,
     url: str,
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
 ) -> None:
     _prepare_jobs[job_id]["status"] = "running"
     try:
-        cache_id = cache_key(video_id, lang)
+        cache_id = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
         if archived_ready_entry_exists(cache_id, mode):
             update_job_eta(job_id, estimate_archive_prepare_seconds(cache_id))
         else:
@@ -2109,9 +2457,21 @@ async def run_prepare_job(
                 )
                 update_job_eta(job_id, eta)
         if mode == "hls":
-            await get_or_create_hls(video_id, lang, job_id=job_id)
+            await get_or_create_hls(
+                video_id,
+                lang,
+                job_id=job_id,
+                subtitle_source_lang=subtitle_source_lang,
+                translation_engine=translation_engine,
+            )
         else:
-            await get_or_create_mp4(video_id, lang, job_id=job_id)
+            await get_or_create_mp4(
+                video_id,
+                lang,
+                job_id=job_id,
+                subtitle_source_lang=subtitle_source_lang,
+                translation_engine=translation_engine,
+            )
         now = int(time.time())
         subtitle_meta = read_subtitle_meta(cache_id)
         _prepare_jobs[job_id].update(
@@ -2147,11 +2507,17 @@ async def enqueue_prepare_job(
     lang: str,
     mode: str,
     discord_user_id: str | None,
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
 ) -> tuple[int, dict]:
-    ready = prepare_ready_path(video_id, lang, mode)
-    url = prepared_media_url(request, video_id, lang, mode)
+    if subtitle_source_lang:
+        if not LANG_RE.fullmatch(subtitle_source_lang):
+            raise HTTPException(status_code=400, detail="Invalid subtitle source language")
+    normalized_engine = normalize_translation_engine(translation_engine) if translation_engine else None
+    ready = prepare_ready_path(video_id, lang, mode, subtitle_source_lang, normalized_engine)
+    url = prepared_media_url(request, video_id, lang, mode, subtitle_source_lang, normalized_engine)
     if ready:
-        cache_id = cache_key(video_id, lang)
+        cache_id = cache_key(video_id, lang, subtitle_source_lang, normalized_engine)
         job = {
             "status": "ready",
             "video_id": video_id,
@@ -2164,7 +2530,7 @@ async def enqueue_prepare_job(
         add_job_requester(job, discord_user_id)
         return 200, job_response_body("", job, request)
 
-    job_key = prepare_key(video_id, lang, mode)
+    job_key = prepare_key(video_id, lang, mode, subtitle_source_lang, normalized_engine)
     async with _prepare_lock:
         prune_prepare_jobs()
         existing_job_id = _prepare_by_key.get(job_key)
@@ -2175,7 +2541,7 @@ async def enqueue_prepare_job(
                 return 202, job_response_body(existing_job_id, job, request)
 
         job_id = uuid.uuid4().hex
-        cache_id = cache_key(video_id, lang)
+        cache_id = cache_key(video_id, lang, subtitle_source_lang, normalized_engine)
         cached_info = get_cached_video_info(cache_id)
         if archived_ready_entry_exists(cache_id, mode):
             eta_seconds = estimate_archive_prepare_seconds(cache_id)
@@ -2202,6 +2568,8 @@ async def enqueue_prepare_job(
             "eta_seconds": eta_seconds,
             "estimated_ready_at": estimated_ready_at,
             "requesters": [],
+            "subtitle_source_lang": subtitle_source_lang,
+            "translation_engine": normalized_engine,
         }
         if cached_info:
             if cached_info.get("title"):
@@ -2209,7 +2577,18 @@ async def enqueue_prepare_job(
             if cached_info.get("duration"):
                 _prepare_jobs[job_id]["duration"] = cached_info.get("duration")
         add_job_requester(_prepare_jobs[job_id], discord_user_id)
-        asyncio.create_task(run_prepare_job(job_id, job_key, video_id, lang, mode, url))
+        asyncio.create_task(
+            run_prepare_job(
+                job_id,
+                job_key,
+                video_id,
+                lang,
+                mode,
+                url,
+                subtitle_source_lang=subtitle_source_lang,
+                translation_engine=normalized_engine,
+            )
+        )
         return 202, job_response_body(job_id, _prepare_jobs[job_id], request)
 
 
@@ -3191,14 +3570,25 @@ async def yamaplayer_batch(
 
 @app.get("/youtube/{video_id}")
 @app.get("/youtube/{video_id}/{lang}")
+@app.get("/youtube/{video_id}/{lang}/{source_lang}/{translation_engine}")
 async def youtube(
     video_id: str,
     request: Request,
     lang: str | None = None,
+    source_lang: str | None = None,
+    translation_engine: str | None = None,
 ) -> Response:
     lang = lang or settings.default_lang
     validate_input(video_id, lang)
-    key = cache_key(video_id, lang)
+    normalized_engine = None
+    if source_lang is not None or translation_engine is not None:
+        if source_lang is None or translation_engine is None:
+            raise HTTPException(status_code=400, detail="source language and translation engine must both be specified")
+        normalized_engine = validate_translation_variant(source_lang, translation_engine)
+    if source_lang is None and normalized_engine is None:
+        key = default_serving_key(video_id, lang, "mp4")
+    else:
+        key = cache_key(video_id, lang, source_lang, normalized_engine)
     path = hot_output_path(key)
     if path is not None:
         return mp4_response(request, path)
@@ -3211,14 +3601,25 @@ async def youtube(
 
 @app.get("/youtube-hls/{video_id}")
 @app.get("/youtube-hls/{video_id}/{lang}")
+@app.get("/youtube-hls/{video_id}/{lang}/{source_lang}/{translation_engine}")
 async def youtube_hls(
     video_id: str,
     request: Request,
     lang: str | None = None,
+    source_lang: str | None = None,
+    translation_engine: str | None = None,
 ) -> Response:
     lang = lang or settings.default_lang
     validate_input(video_id, lang)
-    key = cache_key(video_id, lang)
+    normalized_engine = None
+    if source_lang is not None or translation_engine is not None:
+        if source_lang is None or translation_engine is None:
+            raise HTTPException(status_code=400, detail="source language and translation engine must both be specified")
+        normalized_engine = validate_translation_variant(source_lang, translation_engine)
+    if source_lang is None and normalized_engine is None:
+        key = default_serving_key(video_id, lang, "hls")
+    else:
+        key = cache_key(video_id, lang, source_lang, normalized_engine)
     playlist = hot_hls_playlist_path(key)
     if playlist is not None:
         return hls_playlist_response(request, key, playlist)
@@ -3227,15 +3628,27 @@ async def youtube_hls(
 
 
 @app.post("/prepare/youtube/{video_id}/{lang}")
+@app.post("/prepare/youtube/{video_id}/{lang}/{path_source_lang}/{path_translation_engine}")
 async def prepare_youtube(
     video_id: str,
     lang: str,
     request: Request,
+    path_source_lang: str | None = None,
+    path_translation_engine: str | None = None,
     mode: str = Query("mp4"),
     discord_user_id: str | None = Query(None, alias="discordUserId"),
+    subtitle_source_lang: str | None = Query(None, alias="subtitleSourceLang"),
+    translation_engine: str | None = Query(None, alias="translationEngine"),
 ) -> JSONResponse:
     require_prepare_auth(request)
     validate_input(video_id, lang)
+    if path_source_lang or path_translation_engine:
+        if subtitle_source_lang or translation_engine:
+            raise HTTPException(status_code=400, detail="Specify translation variant in path or query, not both")
+        if path_source_lang is None or path_translation_engine is None:
+            raise HTTPException(status_code=400, detail="source language and translation engine must both be specified")
+        subtitle_source_lang = path_source_lang
+        translation_engine = path_translation_engine
     discord_user_id = validate_discord_user_id(discord_user_id)
     if mode not in {"mp4", "hls"}:
         raise HTTPException(status_code=400, detail="mode must be mp4 or hls")
@@ -3246,8 +3659,35 @@ async def prepare_youtube(
         lang,
         mode,
         discord_user_id,
+        subtitle_source_lang=subtitle_source_lang,
+        translation_engine=translation_engine,
     )
     return JSONResponse(body, status_code=status_code)
+
+
+@app.get("/prepare/youtube/{video_id}/{lang}/subtitles")
+async def prepare_youtube_subtitles(
+    video_id: str,
+    lang: str,
+    request: Request,
+    mode: str = Query("mp4"),
+) -> JSONResponse:
+    require_prepare_auth(request)
+    validate_input(video_id, lang)
+    if mode not in {"mp4", "hls"}:
+        raise HTTPException(status_code=400, detail="mode must be mp4 or hls")
+    if prepare_ready_path(video_id, lang, mode):
+        return JSONResponse(
+            {
+                "video_id": video_id,
+                "requested_language": lang,
+                "requires_choice": False,
+                "prepared": True,
+            }
+        )
+    info = await fetch_video_info(video_id)
+    assert_duration_allowed(info)
+    return JSONResponse(subtitle_choice_body(info, lang))
 
 
 @app.get("/prepare/jobs/{job_id}")
@@ -3391,15 +3831,23 @@ async def clear_all_youtube(
 
 
 @app.post("/prepare/youtube/{video_id}/{lang}/clear")
+@app.post("/prepare/youtube/{video_id}/{lang}/{path_source_lang}/{path_translation_engine}/clear")
 async def clear_youtube(
     video_id: str,
     lang: str,
     request: Request,
+    path_source_lang: str | None = None,
+    path_translation_engine: str | None = None,
 ) -> JSONResponse:
     require_prepare_auth(request)
     validate_input(video_id, lang)
+    normalized_engine = None
+    if path_source_lang or path_translation_engine:
+        if path_source_lang is None or path_translation_engine is None:
+            raise HTTPException(status_code=400, detail="source language and translation engine must both be specified")
+        normalized_engine = validate_translation_variant(path_source_lang, path_translation_engine)
 
-    key = cache_key(video_id, lang)
+    key = cache_key(video_id, lang, path_source_lang, normalized_engine)
 
     # Cancel any active conversion tasks for this key
     async with _inflight_lock:
@@ -3413,7 +3861,7 @@ async def clear_youtube(
     # Cancel/remove any queued/running prepare jobs for this key
     async with _prepare_lock:
         for mode in ("mp4", "hls"):
-            job_key = prepare_key(video_id, lang, mode)
+            job_key = prepare_key(video_id, lang, mode, path_source_lang, normalized_engine)
             job_id = _prepare_by_key.pop(job_key, None)
             if job_id:
                 _prepare_jobs.pop(job_id, None)
