@@ -165,6 +165,24 @@ def looks_like_playlist_or_channel(value: str) -> bool:
     return bool(parts and (parts[0] in {"channel", "c", "user"} or parts[0].startswith("@")))
 
 
+def split_manual_video_values(value: str) -> list[str]:
+    return [part for part in re.split(r"[\s,]+", value.strip()) if part]
+
+
+def looks_like_manual_video_list(value: str) -> bool:
+    parts = split_manual_video_values(value)
+    if len(parts) <= 1:
+        return False
+    valid_count = 0
+    for part in parts:
+        try:
+            extract_video_id(part)
+            valid_count += 1
+        except ValueError:
+            continue
+    return valid_count >= 2
+
+
 def http_json(method: str, url: str) -> tuple[int, dict[str, Any]]:
     request = urllib.request.Request(
         url,
@@ -226,11 +244,12 @@ async def prepare_batch(
     discord_user_id: int,
     max_items: int,
     archive_immediately: bool = False,
+    source_type: str = "auto",
 ) -> tuple[int, dict[str, Any]]:
     query = urllib.parse.urlencode(
         {
             "source": source,
-            "sourceType": "auto",
+            "sourceType": source_type,
             "mode": mode,
             "maxItems": str(max_items),
             "discordUserId": str(discord_user_id),
@@ -838,7 +857,7 @@ client = YoutubeProxyBot()
 
 @client.tree.command(name="prepare", description="YouTube動画を変換またはSSDへ準備します")
 @app_commands.describe(
-    url="YouTube URL、動画ID、playlist URL、channel URL",
+    url="YouTube URL、動画ID、複数URL/ID、playlist URL、channel URL",
     lang="字幕言語",
     mode="出力形式",
     max_items="playlist/channel URL の最大準備件数",
@@ -874,7 +893,8 @@ async def prepare_command(
         return
 
     try:
-        if looks_like_playlist_or_channel(url):
+        if looks_like_manual_video_list(url) or looks_like_playlist_or_channel(url):
+            batch_source_type = "videos" if looks_like_manual_video_list(url) else "auto"
             _status, body = await prepare_batch(
                 url,
                 lang,
@@ -882,6 +902,7 @@ async def prepare_command(
                 interaction.user.id,
                 selected_max_items,
                 archive_immediately,
+                source_type=batch_source_type,
             )
         else:
             video_id = extract_video_id(url)
@@ -905,8 +926,20 @@ async def prepare_command(
                         options_body=options_body,
                         archive_immediately=archive_immediately,
                     )
+                    if options_body.get("requires_google_confirmation"):
+                        reason = str(options_body.get("llm_unavailable_reason") or "RTX3060 LLMが利用できません。")
+                        prompt = (
+                            f"日本語字幕が見つかりませんでした。\n{title}\n"
+                            f"現在LLM翻訳が利用できません。\n理由: {reason}\n"
+                            "Google翻訳で準備してよろしいですか。"
+                        )
+                    else:
+                        prompt = (
+                            f"日本語字幕が見つかりませんでした。\n{title}\n"
+                            "翻訳元字幕と翻訳エンジンを選択してください。"
+                        )
                     await interaction.followup.send(
-                        f"日本語字幕が見つかりませんでした。\n{title}\n翻訳元字幕を選択してください。翻訳エンジンは一時的に Google翻訳 のみ使用できます。",
+                        prompt,
                         view=view,
                         ephemeral=True,
                     )
@@ -930,6 +963,7 @@ async def prepare_command(
                 interaction.user.id,
                 selected_max_items,
                 archive_immediately,
+                source_type="videos" if looks_like_manual_video_list(url) else "auto",
             )
         except PrepareApiError as error:
             await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}", ephemeral=True)

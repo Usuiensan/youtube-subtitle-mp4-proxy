@@ -137,13 +137,18 @@ class Settings:
         "nllb200_distilled_600m": "NLLB-200 distilled 600M",
     }
     local_llm_timeout_seconds = int(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "300"))
+    remote_llm_endpoint = os.getenv("REMOTE_LLM_ENDPOINT", os.getenv("LOCAL_LLM_ENDPOINT", "")).strip()
+    remote_llm_health_url = os.getenv("REMOTE_LLM_HEALTH_URL", "").strip()
+    remote_llm_api_key = os.getenv("REMOTE_LLM_API_KEY", os.getenv("LOCAL_LLM_API_KEY", "")).strip()
+    remote_llm_model = os.getenv("REMOTE_LLM_MODEL", os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M")).strip()
+    remote_llm_health_timeout_seconds = float(os.getenv("REMOTE_LLM_HEALTH_TIMEOUT_SECONDS", "2.5"))
     local_llm_target_window_seconds = int(os.getenv("LOCAL_LLM_TARGET_WINDOW_SECONDS", "120"))
     local_llm_target_max_events = int(os.getenv("LOCAL_LLM_TARGET_MAX_EVENTS", "10"))
     local_llm_context_before_seconds = int(os.getenv("LOCAL_LLM_CONTEXT_BEFORE_SECONDS", os.getenv("LOCAL_LLM_CONTEXT_SECONDS", "120")))
     local_llm_context_before_max_events = int(os.getenv("LOCAL_LLM_CONTEXT_BEFORE_MAX_EVENTS", "25"))
     local_llm_context_after_seconds = int(os.getenv("LOCAL_LLM_CONTEXT_AFTER_SECONDS", os.getenv("LOCAL_LLM_CONTEXT_SECONDS", "120")))
     local_llm_context_after_max_events = int(os.getenv("LOCAL_LLM_CONTEXT_AFTER_MAX_EVENTS", "25"))
-    translation_fallback_engine = os.getenv("TRANSLATION_FALLBACK_ENGINE", "google_cloud")
+    translation_fallback_engine = os.getenv("TRANSLATION_FALLBACK_ENGINE", "")
     translation_topic = os.getenv("TRANSLATION_TOPIC", "")
     translation_glossary = os.getenv("TRANSLATION_GLOSSARY", "")
     google_cloud_project = os.getenv("GOOGLE_CLOUD_PROJECT", "")
@@ -152,7 +157,7 @@ class Settings:
     gemini_flash_input_price_per_million = float(os.getenv("GEMINI_FLASH_INPUT_PRICE_PER_MILLION", "0.30"))
     gemini_flash_output_price_per_million = float(os.getenv("GEMINI_FLASH_OUTPUT_PRICE_PER_MILLION", "2.50"))
     usd_to_jpy_rate = float(os.getenv("USD_TO_JPY_RATE", "160.0"))
-    translation_provider = os.getenv("TRANSLATION_PROVIDER", "local_llm").strip().lower()
+    translation_provider = os.getenv("TRANSLATION_PROVIDER", "remote_llm").strip().lower()
     nllb_model = os.getenv("NLLB_MODEL", "facebook/nllb-200-distilled-600M")
     nllb_device = os.getenv("NLLB_DEVICE", "auto")
     nllb_batch_size = int(os.getenv("NLLB_BATCH_SIZE", "16"))
@@ -907,6 +912,89 @@ def read_subtitle_meta(key: str) -> dict:
     return {}
 
 
+def read_json_file(path: Path) -> dict:
+    try:
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+    return {}
+
+
+def prepared_variant_from_meta(subtitle_meta: dict) -> tuple[str | None, str | None]:
+    if not subtitle_meta.get("translated"):
+        return None, None
+    source_lang = subtitle_meta.get("source_language")
+    engine = subtitle_meta.get("translation_engine_requested") or subtitle_meta.get("translation_engine")
+    if isinstance(source_lang, str) and source_lang and isinstance(engine, str) and engine:
+        return source_lang, normalize_translation_engine(engine)
+    return None, None
+
+
+def prepared_cache_entry_body(request: Request, key: str, base_dir: Path, storage: str) -> dict | None:
+    source_meta = read_json_file(base_dir / "source.json")
+    meta = read_json_file(base_dir / "meta.json")
+    merged = {**meta, **source_meta}
+    video_id = merged.get("video_id")
+    lang = merged.get("lang")
+    if not isinstance(video_id, str) or not VIDEO_ID_RE.fullmatch(video_id):
+        return None
+    if not isinstance(lang, str) or not LANG_RE.fullmatch(lang):
+        return None
+
+    subtitle_meta = read_subtitle_meta(key)
+    source_lang, translation_engine = prepared_variant_from_meta(subtitle_meta)
+    outputs = []
+    if is_usable_file(base_dir / "output.mp4"):
+        outputs.append(
+            {
+                "mode": "mp4",
+                "url": prepared_media_url(request, video_id, lang, "mp4", source_lang, translation_engine),
+            }
+        )
+    playlist = base_dir / "hls" / "index.m3u8"
+    if is_usable_file(playlist) and "#EXT-X-ENDLIST" in playlist.read_text(encoding="utf-8", errors="ignore"):
+        outputs.append(
+            {
+                "mode": "hls",
+                "url": prepared_media_url(request, video_id, lang, "hls", source_lang, translation_engine),
+            }
+        )
+    if not outputs:
+        return None
+
+    return {
+        "key": key,
+        "storage": storage,
+        "video_id": video_id,
+        "title": merged.get("title") or video_id,
+        "title_variants": merged.get("title_variants") if isinstance(merged.get("title_variants"), list) else [],
+        "lang": lang,
+        "source_url": merged.get("webpage_url") or youtube_watch_url(video_id),
+        "subtitle": subtitle_meta,
+        "outputs": outputs,
+        "updated_at": int(cache_entry_newest_mtime(base_dir) or base_dir.stat().st_mtime),
+    }
+
+
+def list_prepared_cache_entries(request: Request) -> list[dict]:
+    items: dict[str, dict] = {}
+    for storage, root in (("hot", settings.cache_hot_dir), ("archive", settings.cache_archive_dir)):
+        if root is None or not root.exists():
+            continue
+        for child in root.iterdir():
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            body = prepared_cache_entry_body(request, child.name, child, storage)
+            if body is None:
+                continue
+            existing = items.get(child.name)
+            if existing is None or existing.get("storage") != "hot":
+                items[child.name] = body
+    return sorted(items.values(), key=lambda item: int(item.get("updated_at") or 0), reverse=True)
+
+
 def extract_title_variants(info: dict) -> list[dict[str, str]]:
     variants: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -1116,7 +1204,7 @@ def prepared_hls_playlist_path(key: str) -> Path | None:
         return None
     if promote_archive_entry(key):
         return hot_hls_playlist_path(key)
-    return None
+    return archived_playlist
 
 
 def dir_size_bytes(path: Path) -> int:
@@ -1417,8 +1505,10 @@ def configured_translation_source_langs() -> list[str]:
 
 def normalize_translation_engine(value: str | None) -> str:
     engine = (value or settings.local_llm_engine or "local_llm").strip().lower()
-    if engine in {"llm", "local", "local_llm", "openai_compatible", "ollama"}:
-        return "local_llm"
+    if engine in {"llm", "remote", "remote_llm"}:
+        return "remote_llm"
+    if engine in {"local", "local_llm", "openai_compatible", "ollama"}:
+        return "remote_llm"
     if engine in {"google", "google_cloud", "google_translate"}:
         return "google_cloud"
     if engine in {"nllb", "nllb200_distilled_600m"}:
@@ -1433,23 +1523,13 @@ def normalize_translation_engine(value: str | None) -> str:
 def translation_profile_options() -> list[dict]:
     options = [
         {
-            "value": profile_id,
-            "label": settings.local_llm_profile_labels.get(profile_id, profile_id),
-            "model": model,
-            "default": profile_id == settings.translation_provider,
-            "kind": "local",
+            "value": "remote_llm",
+            "label": "RTX3060 LLM",
+            "model": settings.remote_llm_model,
+            "default": settings.translation_provider in {"remote_llm", "local_llm"},
+            "kind": "remote",
         }
-        for profile_id, model in settings.local_llm_profile_models.items()
     ]
-    options.append(
-        {
-            "value": "nllb",
-            "label": "NLLB-200 distilled 600M",
-            "model": settings.nllb_model,
-            "default": settings.translation_provider == "nllb",
-            "kind": "nllb",
-        }
-    )
     options.append(
         {
             "value": "google_cloud",
@@ -1462,15 +1542,46 @@ def translation_profile_options() -> list[dict]:
     return options
 
 
+async def remote_llm_available() -> tuple[bool, str | None]:
+    if not settings.remote_llm_endpoint:
+        return False, "REMOTE_LLM_ENDPOINT is not configured"
+    health_url = settings.remote_llm_health_url
+    if not health_url:
+        parsed = urllib.parse.urlparse(settings.remote_llm_endpoint)
+        if parsed.path.rstrip("/").endswith("/v1/chat/completions"):
+            health_path = "/v1/models"
+        else:
+            base_path = parsed.path.rsplit("/", 1)[0].rstrip("/")
+            health_path = f"{base_path}/models" if base_path else "/v1/models"
+        health_url = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, health_path, "", "", ""))
+
+    def check() -> tuple[bool, str | None]:
+        headers = {"Accept": "application/json"}
+        if settings.remote_llm_api_key:
+            headers["Authorization"] = f"Bearer {settings.remote_llm_api_key}"
+        request = urllib.request.Request(health_url, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=settings.remote_llm_health_timeout_seconds) as response:
+                if 200 <= response.status < 300:
+                    return True, None
+                return False, f"remote LLM health returned HTTP {response.status}"
+        except Exception as error:
+            return False, str(error)
+
+    return await asyncio.to_thread(check)
+
+
 def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
     normalized = normalize_translation_engine(profile_id)
-    if normalized == "nllb":
+    if normalized == "remote_llm":
+        model_name = settings.remote_llm_model
+    elif normalized == "nllb":
         model_name = settings.nllb_model
     elif normalized == "opus_mt_en_jap":
         model_name = settings.opus_mt_model
     else:
         model_name = settings.local_llm_profile_models.get(normalized, settings.local_llm_model)
-    provider_name = "gemini_api" if normalized == "gemini_2_5_flash" else settings.local_llm_engine
+    provider_name = "openai_compatible" if normalized == "remote_llm" else ("gemini_api" if normalized == "gemini_2_5_flash" else settings.local_llm_engine)
     return TranslationSettings(
         enabled=settings.translation_enabled,
         target_window_seconds=settings.local_llm_target_window_seconds,
@@ -1595,6 +1706,24 @@ def subtitle_choice_body(info: dict, requested_lang: str) -> dict:
         body["error"] = f"No subtitle found for language: {requested_lang}"
     elif not candidates:
         body["error"] = "No translatable manual subtitle found"
+    return body
+
+
+def restrict_translation_engines(body: dict, *, llm_available: bool, llm_error: str | None) -> dict:
+    engines = body.get("translation_engines")
+    if not isinstance(engines, list):
+        return body
+    if llm_available:
+        body["translation_engines"] = engines
+        body["llm_available"] = True
+        return body
+    body["translation_engines"] = [
+        engine for engine in engines
+        if isinstance(engine, dict) and engine.get("value") == "google_cloud"
+    ]
+    body["llm_available"] = False
+    body["llm_unavailable_reason"] = llm_error or "remote LLM is unavailable"
+    body["requires_google_confirmation"] = True
     return body
 
 
@@ -2485,8 +2614,19 @@ async def translate_subtitle_if_needed(
             OpusMtTranslationProvider.unload()
         return translated_path, metadata
 
+    if requested_engine == "remote_llm":
+        llm_available, llm_error = await remote_llm_available()
+        if not llm_available:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Remote LLM is unavailable. Ask the user before using google_cloud. reason={llm_error}",
+            )
+
     async def worker(payload: dict) -> dict:
         payload["_work_dir"] = str(work_dir)
+        payload["llm_endpoint"] = settings.remote_llm_endpoint
+        payload["llm_api_key"] = settings.remote_llm_api_key
+        payload["llm_timeout_seconds"] = settings.local_llm_timeout_seconds
         return await run_translation_worker(payload)
 
     on_prog = None
@@ -3850,6 +3990,51 @@ async def fetch_playlist_tracks(playlist_id: str, max_items: int) -> list[dict[s
     return tracks
 
 
+def extract_video_id_from_value(value: str) -> str | None:
+    value = value.strip().strip("<>")
+    if VIDEO_ID_RE.fullmatch(value):
+        return value
+    try:
+        parsed = parse_youtube_url(value)
+    except HTTPException:
+        return None
+    host = parsed.netloc.lower().replace("www.", "")
+    if host == "youtu.be":
+        candidate = parsed.path.strip("/").split("/")[0]
+        return candidate if VIDEO_ID_RE.fullmatch(candidate) else None
+    query = urllib.parse.parse_qs(parsed.query)
+    candidate = query.get("v", [""])[0]
+    if VIDEO_ID_RE.fullmatch(candidate):
+        return candidate
+    parts = [part for part in parsed.path.split("/") if part]
+    for marker in ("shorts", "embed", "live"):
+        if marker in parts:
+            index = parts.index(marker)
+            if index + 1 < len(parts) and VIDEO_ID_RE.fullmatch(parts[index + 1]):
+                return parts[index + 1]
+    return None
+
+
+def manual_video_tracks(source: str, max_items: int) -> list[dict[str, str]]:
+    tracks: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for token in re.split(r"[\s,]+", source):
+        video_id = extract_video_id_from_value(token)
+        if not video_id or video_id in seen:
+            continue
+        seen.add(video_id)
+        tracks.append(
+            {
+                "video_id": video_id,
+                "title": video_id,
+                "url": f"https://www.youtube.com/watch?v={video_id}",
+            }
+        )
+        if len(tracks) >= max_items:
+            break
+    return tracks
+
+
 def normalize_yamaplayer_mode(mode: int) -> int:
     if mode not in {0, 1, 2}:
         raise HTTPException(status_code=400, detail="mode must be 0, 1, or 2")
@@ -3988,12 +4173,26 @@ async def build_yamaplayer_playlist(
             lang,
             base_url,
         )
+    if source_type == "videos":
+        tracks = manual_video_tracks(source, max_items)
+        return yamaplayer_playlist_entry(
+            name or "手動動画リスト",
+            "manual",
+            tracks,
+            mode,
+            url_mode,
+            lang,
+            base_url,
+        )
     raise HTTPException(status_code=400, detail=f"Invalid source type for: {source}")
 
 
 async def expand_prepare_source(source_type: str, source: str, max_items: int) -> tuple[str, str, str, list[dict[str, str]]]:
     if source_type == "auto":
-        source_type = detect_yamaplayer_source_type(source)
+        try:
+            source_type = detect_yamaplayer_source_type(source)
+        except HTTPException:
+            source_type = "videos"
     if source_type == "playlist":
         playlist_id = extract_playlist_id(source)
         playlist_name = await fetch_playlist_title(playlist_id) or playlist_id
@@ -4003,7 +4202,10 @@ async def expand_prepare_source(source_type: str, source: str, max_items: int) -
         uploads_playlist_id, channel_title = await fetch_channel_uploads_playlist(source)
         tracks = await fetch_playlist_tracks(uploads_playlist_id, max_items)
         return source_type, uploads_playlist_id, channel_title, tracks
-    raise HTTPException(status_code=400, detail="sourceType must be auto, playlist, or channel")
+    if source_type == "videos":
+        tracks = manual_video_tracks(source, max_items)
+        return source_type, "manual", "手動動画リスト", tracks
+    raise HTTPException(status_code=400, detail="sourceType must be auto, playlist, channel, or videos")
 
 
 async def enqueue_prepare_batch(
@@ -4459,13 +4661,14 @@ async def index() -> str:
       <div class="tabs" role="tablist" aria-label="Tool">
         <button type="button" id="videoTab" role="tab" aria-controls="converter" aria-selected="true">動画準備</button>
         <button type="button" id="jsonTab" role="tab" aria-controls="jsonExporter" aria-selected="false">JSON 書き出し</button>
+        <button type="button" id="preparedTab" role="tab" aria-controls="preparedPanel" aria-selected="false">準備済み</button>
         <button type="button" id="monitorTab" role="tab" aria-controls="monitorPanel" aria-selected="false">監視</button>
         <button type="button" id="compareTab" role="tab" aria-controls="comparePanel" aria-selected="false">字幕比較</button>
       </div>
     <form id="converter" class="tool" aria-labelledby="videoTab">
       <label>
-        YouTube URL
-        <input id="youtubeUrl" name="youtubeUrl" type="url" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off" required>
+        YouTube URL / 動画ID
+        <textarea id="youtubeUrl" name="youtubeUrl" placeholder="https://www.youtube.com/watch?v=...&#10;dQw4w9WgXcQ" autocomplete="off" required></textarea>
       </label>
       <div class="row">
         <label>
@@ -4492,7 +4695,7 @@ async def index() -> str:
         <label>
           Translation
           <select id="translationEngine" name="translationEngine">
-            <option value="local_llm">LLM</option>
+            <option value="remote_llm">RTX3060 LLM</option>
             <option value="google_cloud">Google</option>
           </select>
         </label>
@@ -4518,6 +4721,7 @@ async def index() -> str:
           Source
           <select id="sourceType" name="sourceType">
             <option value="auto">Auto</option>
+            <option value="videos">Videos</option>
             <option value="playlist">Playlist</option>
             <option value="channel">Channel</option>
           </select>
@@ -4561,6 +4765,13 @@ async def index() -> str:
       </div>
       <output id="jsonMessage" class="error"></output>
     </form>
+    <section id="preparedPanel" class="tool" aria-labelledby="preparedTab" hidden>
+      <div class="actions">
+        <button type="button" id="preparedRefreshButton">一覧を更新</button>
+      </div>
+      <output id="preparedMessage"></output>
+      <div id="preparedList" class="job-list"></div>
+    </section>
     <section id="monitorPanel" class="tool" aria-labelledby="monitorTab" hidden>
       <div class="metric-grid">
         <div class="metric-card card-cpu"><strong>CPU</strong><span id="metricCpu">--</span></div>
@@ -4621,6 +4832,7 @@ async def index() -> str:
     const comparePanel = document.getElementById("comparePanel");
     const videoTab = document.getElementById("videoTab");
     const jsonTab = document.getElementById("jsonTab");
+    const preparedTab = document.getElementById("preparedTab");
     const monitorTab = document.getElementById("monitorTab");
     const compareTab = document.getElementById("compareTab");
     const input = document.getElementById("youtubeUrl");
@@ -4646,6 +4858,10 @@ async def index() -> str:
     const jsonMessage = document.getElementById("jsonMessage");
     const downloadJsonLink = document.getElementById("downloadJsonLink");
     const jsonCopyButton = document.getElementById("jsonCopyButton");
+    const preparedPanel = document.getElementById("preparedPanel");
+    const preparedRefreshButton = document.getElementById("preparedRefreshButton");
+    const preparedMessage = document.getElementById("preparedMessage");
+    const preparedList = document.getElementById("preparedList");
     const metricCpu = document.getElementById("metricCpu");
     const metricMemory = document.getElementById("metricMemory");
     const metricGpu = document.getElementById("metricGpu");
@@ -4666,16 +4882,20 @@ async def index() -> str:
 
     function selectTool(tool) {{
       const jsonSelected = tool === "json";
+      const preparedSelected = tool === "prepared";
       const monitorSelected = tool === "monitor";
       const compareSelected = tool === "compare";
-      form.hidden = jsonSelected || monitorSelected || compareSelected;
+      form.hidden = jsonSelected || preparedSelected || monitorSelected || compareSelected;
       jsonForm.hidden = !jsonSelected;
+      preparedPanel.hidden = !preparedSelected;
       monitorPanel.hidden = !monitorSelected;
       comparePanel.hidden = !compareSelected;
-      videoTab.setAttribute("aria-selected", String(!jsonSelected && !monitorSelected && !compareSelected));
+      videoTab.setAttribute("aria-selected", String(!jsonSelected && !preparedSelected && !monitorSelected && !compareSelected));
       jsonTab.setAttribute("aria-selected", String(jsonSelected));
+      preparedTab.setAttribute("aria-selected", String(preparedSelected));
       monitorTab.setAttribute("aria-selected", String(monitorSelected));
       compareTab.setAttribute("aria-selected", String(compareSelected));
+      if (preparedSelected) loadPreparedList();
       if (monitorSelected) updateMonitor();
     }}
 
@@ -4700,6 +4920,23 @@ async def index() -> str:
       return "";
     }}
 
+    function splitVideoValues(value) {{
+      return value.split(/[\\s,]+/).map((part) => part.trim()).filter(Boolean);
+    }}
+
+    function manualVideoIds(value) {{
+      const ids = [];
+      const seen = new Set();
+      for (const part of splitVideoValues(value)) {{
+        const id = extractVideoId(part);
+        if (id && !seen.has(id)) {{
+          seen.add(id);
+          ids.push(id);
+        }}
+      }}
+      return ids;
+    }}
+
     function detectJsonSource(value) {{
       const trimmed = value.trim();
       if (!trimmed) return "";
@@ -4718,11 +4955,17 @@ async def index() -> str:
     }}
 
     function update() {{
-      const videoId = extractVideoId(input.value);
+      const videoIds = manualVideoIds(input.value);
+      const videoId = videoIds[0] || "";
       const language = (lang.value || defaultLang).trim();
       if (!input.value.trim()) {{
         result.textContent = "";
         message.textContent = "";
+        return;
+      }}
+      if (videoIds.length > 1) {{
+        result.textContent = "";
+        message.textContent = `${{videoIds.length}} 件の動画を一括準備します。`;
         return;
       }}
       if (!/^[A-Za-z0-9_-]{{11}}$/.test(videoId)) {{
@@ -5001,6 +5244,81 @@ async def index() -> str:
       return body;
     }}
 
+    function subtitleSummary(meta) {{
+      if (!meta || typeof meta !== "object") return "字幕: 不明";
+      if (meta.translated) {{
+        const source = meta.source_language || "auto";
+        const engine = meta.translation_engine_requested || meta.translation_engine || "unknown";
+        return `字幕: ${{source}} → ${{meta.requested_language || "ja"}} / ${{engine}}`;
+      }}
+      return `字幕: ${{meta.source_language || meta.requested_language || "manual"}}`;
+    }}
+
+    async function copyPreparedUrl(url, button) {{
+      await navigator.clipboard.writeText(url);
+      const original = button.textContent;
+      button.textContent = "コピー済み";
+      setTimeout(() => {{
+        button.textContent = original;
+      }}, 1200);
+    }}
+
+    function renderPreparedList(items) {{
+      preparedList.innerHTML = "";
+      if (!items.length) {{
+        preparedList.textContent = "準備済み動画はありません。";
+        return;
+      }}
+      for (const item of items) {{
+        const row = document.createElement("div");
+        row.className = "job-item";
+
+        const title = document.createElement("strong");
+        title.textContent = item.title || item.video_id;
+        row.appendChild(title);
+
+        const meta = document.createElement("div");
+        meta.textContent = `${{item.video_id}} / 言語: ${{item.lang}} / ${{subtitleSummary(item.subtitle)}} / 保存: ${{item.storage}}`;
+        row.appendChild(meta);
+
+        const source = document.createElement("div");
+        source.textContent = `元動画: ${{item.source_url || ""}}`;
+        row.appendChild(source);
+
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        for (const output of item.outputs || []) {{
+          const url = publicUrl(output.url);
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "secondary";
+          button.textContent = `${{String(output.mode || "").toUpperCase()}} URLをコピー`;
+          button.addEventListener("click", () => copyPreparedUrl(url, button));
+          actions.appendChild(button);
+        }}
+        const sourceButton = document.createElement("button");
+        sourceButton.type = "button";
+        sourceButton.className = "secondary";
+        sourceButton.textContent = "元動画URLをコピー";
+        sourceButton.addEventListener("click", () => copyPreparedUrl(item.source_url || "", sourceButton));
+        actions.appendChild(sourceButton);
+        row.appendChild(actions);
+
+        preparedList.appendChild(row);
+      }}
+    }}
+
+    async function loadPreparedList() {{
+      preparedMessage.textContent = "準備済み一覧を読み込み中...";
+      try {{
+        const body = await apiFetch("/prepared");
+        renderPreparedList(Array.isArray(body.items) ? body.items : []);
+        preparedMessage.textContent = `${{body.count || 0}} 件`;
+      }} catch (error) {{
+        preparedMessage.textContent = `一覧APIエラー: ${{error.message}}`;
+      }}
+    }}
+
     async function waitForReady(statusUrl, label) {{
       let latest = null;
       for (let i = 0; i < 720; i++) {{
@@ -5129,7 +5447,8 @@ async def index() -> str:
     async function prepareCurrentVideo() {{
       stopEtaTimer();
       update();
-      const videoId = extractVideoId(input.value);
+      const videoIds = manualVideoIds(input.value);
+      const videoId = videoIds[0] || "";
       const language = (lang.value || defaultLang).trim();
       const token = prepareToken.value.trim();
       const selectedMode = prepareMode();
@@ -5137,12 +5456,24 @@ async def index() -> str:
         prepareStatus.textContent = "Prepare token を入力してください。";
         return;
       }}
-      if (!/^[A-Za-z0-9_-]{{11}}$/.test(videoId) || !/^[A-Za-z0-9_-]{{2,12}}$/.test(language)) {{
+      if ((!videoIds.length || !/^[A-Za-z0-9_-]{{11}}$/.test(videoId)) || !/^[A-Za-z0-9_-]{{2,12}}$/.test(language)) {{
         prepareStatus.textContent = "YouTube URLと言語を確認してください。";
         return;
       }}
       prepareButton.disabled = true;
       try {{
+        if (videoIds.length > 1) {{
+          const params = new URLSearchParams({{
+            source: videoIds.join("\\n"),
+            sourceType: "videos",
+            mode: selectedMode,
+            maxItems: String(videoIds.length),
+          }});
+          const body = await apiFetch(`/prepare/youtube-batch/${{language}}?${{params.toString()}}`, {{ method: "POST" }});
+          setPrepareStatus(body);
+          if (body.status_url) await pollPrepare(body.status_url);
+          return;
+        }}
         let path = `/prepare/youtube/${{videoId}}/${{language}}`;
         if (language === "ja" && prepareOptions.hidden) {{
           const needsChoice = await loadSubtitleChoices(videoId, language, selectedMode);
@@ -5232,6 +5563,7 @@ async def index() -> str:
 
     videoTab.addEventListener("click", () => selectTool("video"));
     jsonTab.addEventListener("click", () => selectTool("json"));
+    preparedTab.addEventListener("click", () => selectTool("prepared"));
     monitorTab.addEventListener("click", () => selectTool("monitor"));
     compareTab.addEventListener("click", () => selectTool("compare"));
     setInterval(() => {{
@@ -5270,6 +5602,7 @@ async def index() -> str:
       updateJson();
       if (jsonResult.textContent) await navigator.clipboard.writeText(jsonResult.textContent);
     }});
+    preparedRefreshButton.addEventListener("click", loadPreparedList);
     renderTranslationOptions();
   </script>
 </body>
@@ -5279,6 +5612,13 @@ async def index() -> str:
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/prepared")
+async def prepared_list(request: Request) -> JSONResponse:
+    require_prepare_auth(request)
+    items = list_prepared_cache_entries(request)
+    return JSONResponse({"count": len(items), "items": items})
 
 
 @app.get("/monitor/system")
@@ -5363,8 +5703,8 @@ async def yamaplayer_batch(
     url_mode: str = Query(default="original", alias="urlMode"),
     lang: str | None = None,
 ) -> Response:
-    if source_type not in {"auto", "playlist", "channel"}:
-        raise HTTPException(status_code=400, detail="sourceType must be auto, playlist, or channel")
+    if source_type not in {"auto", "playlist", "channel", "videos"}:
+        raise HTTPException(status_code=400, detail="sourceType must be auto, playlist, channel, or videos")
     normalized_mode = normalize_yamaplayer_mode(mode)
     normalized_max_items = normalize_max_items(max_items)
     normalized_url_mode = normalize_yamaplayer_url_mode(url_mode)
@@ -5439,7 +5779,7 @@ async def youtube_hls(
         key = default_serving_key(video_id, lang, "hls")
     else:
         key = cache_key(video_id, lang, source_lang, normalized_engine)
-    playlist = hot_hls_playlist_path(key)
+    playlist = prepared_hls_playlist_path(key)
     if playlist is not None:
         return hls_playlist_response(request, key, playlist)
     await cleanup_expired_cache_async()
@@ -5510,7 +5850,11 @@ async def prepare_youtube_subtitles(
         )
     info = await fetch_video_info(video_id)
     assert_duration_allowed(info)
-    return JSONResponse(subtitle_choice_body(info, lang))
+    body = subtitle_choice_body(info, lang)
+    if body.get("requires_choice"):
+        llm_available, llm_error = await remote_llm_available()
+        body = restrict_translation_engines(body, llm_available=llm_available, llm_error=llm_error)
+    return JSONResponse(body)
 
 
 @app.get("/prepare/youtube/{video_id}/{lang}/{source_lang}/{translation_engine}/subtitle-events")
@@ -5571,8 +5915,8 @@ async def prepare_youtube_batch(
         raise HTTPException(status_code=400, detail="mode must be mp4 or hls")
     if archive_immediately and mode != "mp4":
         raise HTTPException(status_code=400, detail="archiveImmediately is supported only for mp4")
-    if source_type not in {"auto", "playlist", "channel"}:
-        raise HTTPException(status_code=400, detail="sourceType must be auto, playlist, or channel")
+    if source_type not in {"auto", "playlist", "channel", "videos"}:
+        raise HTTPException(status_code=400, detail="sourceType must be auto, playlist, channel, or videos")
     max_items = normalize_max_items(max_items)
     discord_user_id = validate_discord_user_id(discord_user_id)
     await cleanup_expired_cache_async()
@@ -5802,7 +6146,11 @@ async def hls_asset(key: str, filename: str) -> Response:
 
     path = hls_dir(key) / filename
     if not path.exists():
-        raise HTTPException(status_code=404, detail="HLS asset not found")
+        archive_dir = archive_entry_dir(key)
+        archive_path = archive_dir / "hls" / filename if archive_dir else None
+        if archive_path is None or not archive_path.exists():
+            raise HTTPException(status_code=404, detail="HLS asset not found")
+        path = archive_path
 
     if filename.endswith(".m3u8"):
         return FileResponse(

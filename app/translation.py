@@ -365,17 +365,11 @@ async def translate_srt_with_local_worker(
                     break
 
         if translated_map is None:
-            fallback_used = True
-            print(
-                (
-                    "local LLM translation fell back to Google Cloud: "
-                    f"window={index + 1}/{total_windows} source={source_language} "
-                    f"target={target_language} last_error={type(last_error).__name__ if last_error else 'unknown'}: {last_error}"
-                ),
-                file=sys.stderr,
-                flush=True,
+            raise TranslationError(
+                "remote LLM translation failed; Google fallback is disabled. "
+                f"window={index + 1}/{total_windows} source={source_language} "
+                f"target={target_language} last_error={type(last_error).__name__ if last_error else 'unknown'}: {last_error}"
             )
-            translated_map = google_translate_events(window, target_language, settings)
 
         for sub in window:
             translated_subtitles.append(

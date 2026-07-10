@@ -12,14 +12,21 @@ from typing import Any
 
 
 def translate_single_text_openai(text: str, payload: dict[str, Any]) -> tuple[str, dict[str, int]]:
-    endpoint = os.getenv("LOCAL_LLM_ENDPOINT", "http://127.0.0.1:11434/v1/chat/completions")
+    endpoint = str(
+        payload.get("llm_endpoint")
+        or os.getenv("REMOTE_LLM_ENDPOINT")
+        or os.getenv("LOCAL_LLM_ENDPOINT")
+        or ""
+    )
+    if not endpoint:
+        raise RuntimeError("REMOTE_LLM_ENDPOINT is not configured")
     model = str(payload.get("model_name") or os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M"))
-    timeout = int(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "300"))
+    timeout = int(payload.get("llm_timeout_seconds") or os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "300"))
     temperature = float(os.getenv("LOCAL_LLM_TEMPERATURE", "0"))
     max_tokens = int(os.getenv("LOCAL_LLM_MAX_OUTPUT_TOKENS", "2048"))
-    api_key = os.getenv("LOCAL_LLM_API_KEY", "")
+    api_key = str(payload.get("llm_api_key") or os.getenv("REMOTE_LLM_API_KEY") or os.getenv("LOCAL_LLM_API_KEY", ""))
 
-    prompt = f"この字幕の一部を翻訳せよ。訳文以外は一文字も入れるな\n\n{text}"
+    prompt = str(payload.get("prompt") or f"これを訳せ（字幕１つだけ）\n\n{text}")
 
     body = json.dumps(
         {
@@ -124,6 +131,55 @@ def translate_single_text_gemini(text: str, payload: dict[str, Any]) -> tuple[st
     return translated_text, usage_dict
 
 
+def format_context_lines(items: list[dict[str, Any]], *, include_translation: bool = False) -> str:
+    lines: list[str] = []
+    for item in items[-5:]:
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        if include_translation:
+            translated = str(item.get("translated_text") or item.get("ja") or "").strip()
+            suffix = f" / {translated}" if translated else ""
+            lines.append(f"- {text}{suffix}")
+        else:
+            lines.append(f"- {text}")
+    return "\n".join(lines) if lines else "なし"
+
+
+def build_single_subtitle_prompt(item: dict[str, Any], payload: dict[str, Any]) -> str:
+    previous_japanese = payload.get("previous_japanese")
+    translated_by_id = {}
+    if isinstance(previous_japanese, list):
+        translated_by_id = {
+            str(prev.get("id")): str(prev.get("text") or "")
+            for prev in previous_japanese
+            if isinstance(prev, dict)
+        }
+    before = []
+    context_before = payload.get("context_before")
+    if isinstance(context_before, list):
+        for entry in context_before[-5:]:
+            if isinstance(entry, dict):
+                copy = dict(entry)
+                copy["translated_text"] = translated_by_id.get(str(entry.get("id")), "")
+                before.append(copy)
+
+    after = []
+    context_after = payload.get("context_after")
+    if isinstance(context_after, list):
+        after = [entry for entry in context_after[:5] if isinstance(entry, dict)]
+
+    title = str(payload.get("video_title") or "").strip() or "不明"
+    text = str(item.get("text") or "")
+    return (
+        f"動画タイトル（原語で）\n{title}\n\n"
+        f"前5つの字幕（原語）（日本語）\n{format_context_lines(before, include_translation=True)}\n\n"
+        f"これを訳せ（字幕１つだけ）\n{text}\n\n"
+        f"後5つの字幕（原語）\n{format_context_lines(after)}\n\n"
+        "出力は日本語訳だけ。説明、引用符、番号、前後の字幕の訳は出さない。"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
@@ -147,11 +203,12 @@ def main() -> int:
         text = item.get("text", "")
         if not text or not text.strip():
             return {"id": item.get("id"), "text": text}, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-        
+        item_payload = dict(payload)
+        item_payload["prompt"] = build_single_subtitle_prompt(item, payload)
         if provider == "gemini_api":
-            translated_text, usage = translate_single_text_gemini(text, payload)
+            translated_text, usage = translate_single_text_gemini(text, item_payload)
         else:
-            translated_text, usage = translate_single_text_openai(text, payload)
+            translated_text, usage = translate_single_text_openai(text, item_payload)
         
         return {"id": item.get("id"), "text": translated_text}, usage
 

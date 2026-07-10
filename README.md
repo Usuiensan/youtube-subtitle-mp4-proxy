@@ -145,6 +145,7 @@ bot はスラッシュコマンド `/prepare` を提供します。
 ```
 
 `url` にプレイリスト URL やチャンネル URL を渡した場合は、YouTube Data API v3 で一覧を展開して一括準備します。`max_items` の既定値は `DISCORD_PREPARE_BATCH_MAX_ITEMS`、未設定時は 5000 件です。
+`url` に動画URLまたは動画IDを複数入れた場合も、手動動画リストとして一括準備できます。区切りは改行、空白、カンマに対応します。Web UI の動画準備欄も同じ形式を受け付け、複数件の場合は `/prepare/youtube-batch` に `sourceType=videos` で送信します。
 
 単体動画で `lang:ja` を指定し、日本語字幕が存在しない場合は、準備を始める前に翻訳元字幕と言語エンジンを選ぶ UI を表示します。翻訳エンジンは一時的に Google 翻訳のみ使用できます。翻訳元字幕は `TRANSLATION_SOURCE_LANGS` の優先順で初期選択され、未設定時は英語系字幕を優先します。
 
@@ -155,6 +156,8 @@ bot はスラッシュコマンド `/prepare` を提供します。
 `/webui-key days:N` は Web UI 一次利用者向けの一時キーを ephemeral で返します。キー形式は `YYYY-MM-DD-署名` で、先頭の日付を見ると有効期限が分かります。有効期限はその日付の終わりまで、タイムゾーンは JST です。一時キーは準備・状態確認には使えますが、削除系 API と `/reset-eta` には使えません。`WEBUI_TEMP_KEY_SECRET` を FastAPI と Discord bot の両方で同じ値にしてください。未設定時は `DISCORD_PREPARE_TOKEN` を使いますが、運用では別値を推奨します。
 
 トップページの Monitor タブでは、CPU、メモリ、NVIDIA GPU、SSD/HDD空き容量、実行中の準備ジョブ進捗を確認できます。履歴は `SYSTEM_METRICS_FILE` に JSONL で保存され、ブラウザは `GET /monitor/system?seconds=21600` を5秒ごとに読み直してグラフを更新します。Linux では CPU/メモリを `/proc` から、GPUを `nvidia-smi` から取得します。
+
+トップページの「準備済み」タブでは、SSD/HDDに残っている準備済み動画を一覧表示します。各行に動画タイトル、動画ID、字幕言語、翻訳元/翻訳エンジン、保存先、MP4/HLS URL、元YouTube URLを表示し、ボタンでURLをクリップボードへコピーできます。一覧取得には準備キーまたはWeb UI一時キーが必要です。
 
 ```bash
 export SYSTEM_METRICS_ENABLED=1
@@ -187,33 +190,16 @@ Google の API キーが必要なのは、YouTube Data API v3 を使う `/prepar
 
 `TRANSLATION_ENABLED=1` の場合、要求言語が `ja` で日本語の手動字幕がない動画は、Discord bot の単体 `/prepare` では翻訳元字幕をユーザーが選び、日本語へ翻訳してから焼き込みます。API から `subtitleSourceLang` を指定しない場合や一括準備では、動画の原言語、英語、韓国語、中国語、`TRANSLATION_SOURCE_LANGS` の順で自動選択します。
 
-翻訳は FastAPI プロセス内にモデルをロードせず、字幕windowごとに `app.translation_worker` を別プロセスで起動します。worker終了後にffmpeg/NVENCを開始するため、GTX 1050 Ti 4GB環境でもローカルLLM翻訳とNVENCを同時実行しません。ローカルLLMが失敗したwindowだけ Google Cloud Translation API へフォールバックします。初期実装のGoogle fallbackは字幕イベントごとに1 APIリクエストを行います。
+LLM 翻訳は GTX 1050 Ti サーバー上では実行せず、RTX 3060 を搭載した別PCの OpenAI 互換 API に送ります。準備前に `REMOTE_LLM_HEALTH_URL` を確認し、応答がない、または余裕なしとして失敗する場合は、Discord bot がユーザーに Google 翻訳で進めてよいか確認します。LLM 失敗時に Google Cloud Translation API へ自動フォールバックする動作は行いません。
 
 ```bash
 export TRANSLATION_ENABLED=1
 export TRANSLATION_SOURCE_LANGS=en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW
-export LOCAL_LLM_ENGINE=openai_compatible
-export LOCAL_LLM_ENDPOINT=http://127.0.0.1:11434/v1/chat/completions
-export LOCAL_LLM_MODEL=qwen2.5:3b-instruct-q4_K_M
-export LOCAL_LLM_MODEL_GEMINI_2_5_FLASH=gemini-2.5-flash
-export LOCAL_LLM_MODEL_OPUS_MT_EN_JAP=Helsinki-NLP/opus-mt-en-jap
-export LOCAL_LLM_MODEL_QWEN3_1_7B=qwen3:1.7b
-export LOCAL_LLM_MODEL_GEMMA3_1B=gemma3:1b
-export LOCAL_LLM_MODEL_GEMMA3_4B=gemma3:4b
-export LOCAL_LLM_MODEL_NLLB200_DISTILLED_600M=facebook/nllb-200-distilled-600M
-export GEMINI_API_KEY=your-gemini-api-key
-export GEMINI_MODEL=gemini-2.5-flash
-export GEMINI_BILLING_MODE=free_tier
-export GEMINI_FLASH_INPUT_PRICE_PER_MILLION=0.30
-export GEMINI_FLASH_OUTPUT_PRICE_PER_MILLION=2.50
-export USD_TO_JPY_RATE=160.0
-export OPUS_MT_MODEL=Helsinki-NLP/opus-mt-en-jap
-export OPUS_MT_DEVICE=auto
-export OPUS_MT_BATCH_SIZE=16
-export OPUS_MT_MAX_INPUT_TOKENS=512
-export OPUS_MT_MAX_NEW_TOKENS=128
-export OPUS_MT_NUM_BEAMS=1
-export OPUS_MT_KEEP_LOADED=1
+export TRANSLATION_PROVIDER=remote_llm
+export REMOTE_LLM_ENDPOINT=http://rtx3060-pc:11434/v1/chat/completions
+export REMOTE_LLM_HEALTH_URL=http://rtx3060-pc:11434/v1/models
+export REMOTE_LLM_MODEL=qwen2.5:3b-instruct-q4_K_M
+export REMOTE_LLM_API_KEY=
 export LOCAL_LLM_TIMEOUT_SECONDS=300
 export LOCAL_LLM_TARGET_WINDOW_SECONDS=120
 export LOCAL_LLM_TARGET_MAX_EVENTS=10
@@ -222,14 +208,14 @@ export LOCAL_LLM_CONTEXT_BEFORE_MAX_EVENTS=25
 export LOCAL_LLM_CONTEXT_AFTER_SECONDS=120
 export LOCAL_LLM_CONTEXT_AFTER_MAX_EVENTS=25
 export LOCAL_LLM_TEMPERATURE=0
-export TRANSLATION_FALLBACK_ENGINE=google_cloud
+export TRANSLATION_FALLBACK_ENGINE=
 export GOOGLE_APPLICATION_CREDENTIALS=/etc/youtube-mp4-google-credentials.json
 export GOOGLE_CLOUD_PROJECT=your-google-cloud-project-id
 ```
 
 翻訳済み字幕は `source/subtitle.ja.translated.srt`、元字幕は `source/subtitle.SOURCE.original.srt`、翻訳メタデータは `source/translation.json` に保存します。翻訳設定とモデル名はキャッシュキーへ含まれるため、モデルやwindow設定を変えた場合に古いMP4を誤再利用しません。
 
-翻訳プロファイルの複数運用は一時停止しています。翻訳は当面 `google_cloud` のみに固定し、Gemini / Opus MT / NLLB / ローカル LLM は準備 API から使えないようにしています。
+通常の選択肢は `remote_llm` と `google_cloud` です。`remote_llm` は RTX 3060 側が利用可能な場合だけ使い、利用不可なら Discord で Google 翻訳の確認を出します。GTX 1050 Ti サーバーでローカル LLM / NLLB / Opus MT を走らせる運用は行いません。
 
 ### NLLB-200 distilled 600M
 
