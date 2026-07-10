@@ -124,6 +124,16 @@ async def prepare_video(video_id: str, lang: str, mode: str, discord_user_id: in
     return await asyncio.to_thread(http_json, "POST", url)
 
 
+async def clear_video(video_id: str, lang: str) -> tuple[int, dict[str, Any]]:
+    url = f"{settings.youtube_proxy_internal_base_url}/prepare/youtube/{video_id}/{lang}/clear"
+    return await asyncio.to_thread(http_json, "POST", url)
+
+
+async def clear_all_videos() -> tuple[int, dict[str, Any]]:
+    url = f"{settings.youtube_proxy_internal_base_url}/prepare/youtube/clear-all"
+    return await asyncio.to_thread(http_json, "POST", url)
+
+
 async def fetch_job(status_url: str) -> dict[str, Any]:
     public_base = settings.youtube_proxy_base_url
     internal_base = settings.youtube_proxy_internal_base_url
@@ -336,6 +346,60 @@ async def prepare_command(
     status_url = body.get("status_url")
     if body.get("status") in {"queued", "running"} and isinstance(status_url, str):
         asyncio.create_task(notify_when_done(interaction, status_url))
+
+
+@client.tree.command(name="clear", description="既存の再エンコードされた動画及び翻訳済みテキストファイルを削除して初期化します")
+@app_commands.describe(
+    url="YouTube URLまたは動画ID",
+    lang="字幕言語",
+)
+async def clear_command(
+    interaction: discord.Interaction,
+    url: str,
+    lang: str = "ja",
+) -> None:
+    await interaction.response.defer(thinking=True)
+
+    if not settings.discord_prepare_token:
+        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。")
+        return
+
+    try:
+        video_id = extract_video_id(url)
+    except ValueError as error:
+        await interaction.followup.send(str(error))
+        return
+
+    try:
+        _status, body = await clear_video(video_id, lang)
+    except PrepareApiError as error:
+        await interaction.followup.send(f"初期化APIエラー ({error.status_code}): {error.detail}")
+        return
+
+    await interaction.followup.send(
+        body.get("message", "初期化しました。"),
+    )
+
+
+@client.tree.command(name="clear-all", description="すべての動画の再エンコードされた動画及び翻訳済みテキストファイルを削除して初期化します")
+async def clear_all_command(
+    interaction: discord.Interaction,
+) -> None:
+    await interaction.response.defer(thinking=True)
+
+    if not settings.discord_prepare_token:
+        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。")
+        return
+
+    try:
+        _status, body = await clear_all_videos()
+    except PrepareApiError as error:
+        await interaction.followup.send(f"初期化APIエラー ({error.status_code}): {error.detail}")
+        return
+
+    await interaction.followup.send(
+        body.get("message", "すべての動画を初期化しました。"),
+    )
 
 
 def main() -> None:

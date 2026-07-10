@@ -926,6 +926,98 @@ async def create_hls(video: Path, subtitle: Path, destination_dir: Path) -> None
     )
 
 
+def check_existing_sources(key: str) -> tuple[Path, Path, dict] | None:
+    meta_p = source_meta_path(key)
+    if not meta_p.exists():
+        return None
+    try:
+        source_meta = json.loads(meta_p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    source_video_rel = source_meta.get("source_video")
+    if not source_video_rel:
+        return None
+    video_path = entry_dir(key) / source_video_rel
+    if not video_path.exists() or video_path.stat().st_size == 0:
+        return None
+
+    subtitle_meta = source_meta.get("subtitle_meta") or {}
+    source_lang = subtitle_meta.get("source_language")
+
+    # If it was translated, original subtitle is at source/subtitle.{source_lang}.original.{ext}
+    s_dir = source_dir(key)
+    if subtitle_meta.get("translated"):
+        candidates = list(s_dir.glob(f"subtitle.{source_lang}.original.*"))
+        if not candidates:
+            return None
+        original_subtitle_path = candidates[0]
+    else:
+        subtitle_rel = source_meta.get("subtitle")
+        if not subtitle_rel:
+            return None
+        original_subtitle_path = entry_dir(key) / subtitle_rel
+        if not original_subtitle_path.exists() or original_subtitle_path.stat().st_size == 0:
+            return None
+
+    return video_path, original_subtitle_path, subtitle_meta
+
+
+async def prepare_sources(
+    key: str,
+    video_id: str,
+    lang: str,
+    work_dir: Path,
+    info: dict,
+) -> tuple[Path, Path, dict]:
+    existing = check_existing_sources(key)
+    if existing:
+        saved_video, original_subtitle, subtitle_meta = existing
+        if subtitle_meta.get("translated"):
+            subtitle, new_subtitle_meta = await translate_subtitle_if_needed(
+                key=key,
+                subtitle=original_subtitle,
+                info=info,
+                selection=subtitle_meta,
+                work_dir=work_dir,
+            )
+            saved_subtitle = source_dir(key) / f"subtitle.{lang}.translated{subtitle.suffix.lower()}"
+            shutil.move(str(subtitle), saved_subtitle)
+            translation_meta_path(key).write_text(
+                json.dumps(new_subtitle_meta, ensure_ascii=True, indent=2),
+                encoding="utf-8",
+            )
+        else:
+            saved_subtitle = original_subtitle
+            new_subtitle_meta = subtitle_meta
+
+        write_source_meta(key, video_id, lang, info, saved_video, saved_subtitle, new_subtitle_meta)
+        return saved_video, saved_subtitle, new_subtitle_meta
+
+    # Normal download path
+    video, original_subtitle, subtitle, subtitle_meta = await download_sources(video_id, lang, work_dir, info)
+    source_dir(key).mkdir(parents=True, exist_ok=True)
+    saved_video = source_dir(key) / f"input{video.suffix.lower()}"
+    source_lang = subtitle_meta.get("source_language", lang)
+    saved_original_subtitle = source_dir(key) / f"subtitle.{source_lang}.original{original_subtitle.suffix.lower()}"
+    saved_subtitle = (
+        source_dir(key) / f"subtitle.{lang}.translated{subtitle.suffix.lower()}"
+        if subtitle_meta.get("translated")
+        else source_dir(key) / f"subtitle.{lang}{subtitle.suffix.lower()}"
+    )
+    shutil.move(str(video), saved_video)
+    if original_subtitle != subtitle:
+        shutil.move(str(original_subtitle), saved_original_subtitle)
+    shutil.move(str(subtitle), saved_subtitle)
+    if subtitle_meta.get("translated"):
+        translation_meta_path(key).write_text(
+            json.dumps(subtitle_meta, ensure_ascii=True, indent=2),
+            encoding="utf-8",
+        )
+    write_source_meta(key, video_id, lang, info, saved_video, saved_subtitle, subtitle_meta)
+    return saved_video, saved_subtitle, subtitle_meta
+
+
 async def create_mp4(video_id: str, lang: str) -> Path:
     key = cache_key(video_id, lang)
     final_output = output_path(key)
@@ -944,26 +1036,7 @@ async def create_mp4(video_id: str, lang: str) -> Path:
         try:
             info = await fetch_video_info(video_id)
             assert_duration_allowed(info)
-            video, original_subtitle, subtitle, subtitle_meta = await download_sources(video_id, lang, work_dir, info)
-            source_dir(key).mkdir(parents=True, exist_ok=True)
-            saved_video = source_dir(key) / f"input{video.suffix.lower()}"
-            source_lang = subtitle_meta.get("source_language", lang)
-            saved_original_subtitle = source_dir(key) / f"subtitle.{source_lang}.original{original_subtitle.suffix.lower()}"
-            saved_subtitle = (
-                source_dir(key) / f"subtitle.{lang}.translated{subtitle.suffix.lower()}"
-                if subtitle_meta.get("translated")
-                else source_dir(key) / f"subtitle.{lang}{subtitle.suffix.lower()}"
-            )
-            shutil.move(str(video), saved_video)
-            if original_subtitle != subtitle:
-                shutil.move(str(original_subtitle), saved_original_subtitle)
-            shutil.move(str(subtitle), saved_subtitle)
-            if subtitle_meta.get("translated"):
-                translation_meta_path(key).write_text(
-                    json.dumps(subtitle_meta, ensure_ascii=True, indent=2),
-                    encoding="utf-8",
-                )
-            write_source_meta(key, video_id, lang, info, saved_video, saved_subtitle, subtitle_meta)
+            saved_video, saved_subtitle, subtitle_meta = await prepare_sources(key, video_id, lang, work_dir, info)
             await burn_subtitles(saved_video, saved_subtitle, final_output)
             write_meta(key, video_id, lang, info, "mp4")
             return final_output
@@ -989,26 +1062,7 @@ async def create_hls_job(video_id: str, lang: str) -> Path:
         try:
             info = await fetch_video_info(video_id)
             assert_duration_allowed(info)
-            video, original_subtitle, subtitle, subtitle_meta = await download_sources(video_id, lang, work_dir, info)
-            source_dir(key).mkdir(parents=True, exist_ok=True)
-            saved_video = source_dir(key) / f"input{video.suffix.lower()}"
-            source_lang = subtitle_meta.get("source_language", lang)
-            saved_original_subtitle = source_dir(key) / f"subtitle.{source_lang}.original{original_subtitle.suffix.lower()}"
-            saved_subtitle = (
-                source_dir(key) / f"subtitle.{lang}.translated{subtitle.suffix.lower()}"
-                if subtitle_meta.get("translated")
-                else source_dir(key) / f"subtitle.{lang}{subtitle.suffix.lower()}"
-            )
-            shutil.move(str(video), saved_video)
-            if original_subtitle != subtitle:
-                shutil.move(str(original_subtitle), saved_original_subtitle)
-            shutil.move(str(subtitle), saved_subtitle)
-            if subtitle_meta.get("translated"):
-                translation_meta_path(key).write_text(
-                    json.dumps(subtitle_meta, ensure_ascii=True, indent=2),
-                    encoding="utf-8",
-                )
-            write_source_meta(key, video_id, lang, info, saved_video, saved_subtitle, subtitle_meta)
+            saved_video, saved_subtitle, subtitle_meta = await prepare_sources(key, video_id, lang, work_dir, info)
             write_meta(key, video_id, lang, info, "hls")
             await create_hls(saved_video, saved_subtitle, playlist.parent)
             return playlist
@@ -2313,6 +2367,192 @@ async def prepare_job_status(job_id: str, request: Request) -> JSONResponse:
     if job is None:
         raise HTTPException(status_code=404, detail="Prepare job not found")
     return JSONResponse(job_response_body(job_id, job, request))
+
+
+@app.post("/prepare/youtube/clear-all")
+async def clear_all_youtube(
+    request: Request,
+) -> JSONResponse:
+    require_prepare_auth(request)
+
+    # Cancel all active conversion tasks
+    async with _inflight_lock:
+        for key, task in list(_inflight.items()):
+            if not task.done():
+                task.cancel()
+        _inflight.clear()
+        for key, task in list(_hls_inflight.items()):
+            if not task.done():
+                task.cancel()
+        _hls_inflight.clear()
+
+    # Cancel/remove all queued/running prepare jobs
+    async with _prepare_lock:
+        _prepare_jobs.clear()
+        _prepare_by_key.clear()
+
+    deleted_count = 0
+    dirs_to_clean = []
+
+    if settings.cache_hot_dir.exists():
+        for child in settings.cache_hot_dir.iterdir():
+            if child.is_dir() and not child.name.startswith("."):
+                dirs_to_clean.append(child)
+
+    if settings.cache_archive_dir and settings.cache_archive_dir.exists():
+        for child in settings.cache_archive_dir.iterdir():
+            if child.is_dir() and not child.name.startswith("."):
+                dirs_to_clean.append(child)
+
+    for base_dir in dirs_to_clean:
+        # 1. Delete output.mp4
+        out_mp4 = base_dir / "output.mp4"
+        if out_mp4.exists():
+            try:
+                out_mp4.unlink()
+                deleted_count += 1
+            except Exception as e:
+                print(f"Failed to delete {out_mp4}: {e}", flush=True)
+
+        # 2. Delete meta.json
+        meta = base_dir / "meta.json"
+        if meta.exists():
+            try:
+                meta.unlink()
+                deleted_count += 1
+            except Exception as e:
+                print(f"Failed to delete {meta}: {e}", flush=True)
+
+        # 3. Delete hls directory
+        hls = base_dir / "hls"
+        if hls.exists() and hls.is_dir():
+            try:
+                shutil.rmtree(hls, ignore_errors=True)
+                deleted_count += 1
+            except Exception as e:
+                print(f"Failed to delete {hls}: {e}", flush=True)
+
+        # 4. Clean source directory
+        source = base_dir / "source"
+        if source.exists() and source.is_dir():
+            # Delete translation.json
+            translation_meta = source / "translation.json"
+            if translation_meta.exists():
+                try:
+                    translation_meta.unlink()
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"Failed to delete {translation_meta}: {e}", flush=True)
+
+            # Delete translated subtitles
+            try:
+                for file in source.iterdir():
+                    if file.is_file() and ".translated." in file.name:
+                        file.unlink()
+                        deleted_count += 1
+            except Exception as e:
+                print(f"Failed to clear translated subtitles in {source}: {e}", flush=True)
+
+    return JSONResponse({
+        "message": f"すべての動画の初期化が完了しました。計 {deleted_count} 個のファイル/ディレクトリを削除しました。"
+    })
+
+
+@app.post("/prepare/youtube/{video_id}/{lang}/clear")
+async def clear_youtube(
+    video_id: str,
+    lang: str,
+    request: Request,
+) -> JSONResponse:
+    require_prepare_auth(request)
+    validate_input(video_id, lang)
+
+    key = cache_key(video_id, lang)
+
+    # Cancel any active conversion tasks for this key
+    async with _inflight_lock:
+        task = _inflight.pop(key, None)
+        if task and not task.done():
+            task.cancel()
+        hls_task = _hls_inflight.pop(key, None)
+        if hls_task and not hls_task.done():
+            hls_task.cancel()
+
+    # Cancel/remove any queued/running prepare jobs for this key
+    async with _prepare_lock:
+        for mode in ("mp4", "hls"):
+            job_key = prepare_key(video_id, lang, mode)
+            job_id = _prepare_by_key.pop(job_key, None)
+            if job_id:
+                _prepare_jobs.pop(job_id, None)
+
+    deleted_files = []
+
+    # Directories to clean: hot directory and archive directory
+    dirs_to_clean = []
+    dirs_to_clean.append(entry_dir(key))
+    archive_dir = archive_entry_dir(key)
+    if archive_dir:
+        dirs_to_clean.append(archive_dir)
+
+    for base_dir in dirs_to_clean:
+        if not base_dir.exists():
+            continue
+
+        # 1. Delete re-encoded video output.mp4
+        out_mp4 = base_dir / "output.mp4"
+        if out_mp4.exists():
+            try:
+                out_mp4.unlink()
+                deleted_files.append(f"{base_dir.name}/output.mp4")
+            except Exception as e:
+                print(f"Failed to delete {out_mp4}: {e}", flush=True)
+
+        # 2. Delete meta.json
+        meta = base_dir / "meta.json"
+        if meta.exists():
+            try:
+                meta.unlink()
+                deleted_files.append(f"{base_dir.name}/meta.json")
+            except Exception as e:
+                print(f"Failed to delete {meta}: {e}", flush=True)
+
+        # 3. Delete hls directory
+        hls = base_dir / "hls"
+        if hls.exists() and hls.is_dir():
+            try:
+                shutil.rmtree(hls, ignore_errors=True)
+                deleted_files.append(f"{base_dir.name}/hls")
+            except Exception as e:
+                print(f"Failed to delete {hls}: {e}", flush=True)
+
+        # 4. Clean source folder: remove translated subtitles & translation.json
+        source = base_dir / "source"
+        if source.exists() and source.is_dir():
+            # Delete translation.json
+            translation_meta = source / "translation.json"
+            if translation_meta.exists():
+                try:
+                    translation_meta.unlink()
+                    deleted_files.append(f"{base_dir.name}/source/translation.json")
+                except Exception as e:
+                    print(f"Failed to delete {translation_meta}: {e}", flush=True)
+
+            # Delete translated subtitles (*.translated.*)
+            try:
+                for file in source.iterdir():
+                    if file.is_file() and ".translated." in file.name:
+                        file.unlink()
+                        deleted_files.append(f"{base_dir.name}/source/{file.name}")
+            except Exception as e:
+                print(f"Failed to clear translated subtitles in {source}: {e}", flush=True)
+
+    if deleted_files:
+        msg = f"初期化が完了しました。削除されたファイル: {', '.join(deleted_files)}"
+    else:
+        msg = "初期化対象のファイルはありませんでした（ソースファイルは保持されています）。"
+
+    return JSONResponse({"message": msg})
 
 
 @app.get("/hls/{key}/{filename}")
