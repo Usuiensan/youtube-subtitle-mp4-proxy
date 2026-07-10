@@ -409,8 +409,6 @@ def google_translate_events(
     target_language: str,
     settings: TranslationSettings,
 ) -> dict[str, str]:
-    if settings.fallback_engine != "google_cloud":
-        raise TranslationError("Google Cloud fallback is disabled")
     if not settings.google_project:
         raise TranslationError("GOOGLE_CLOUD_PROJECT is not configured")
 
