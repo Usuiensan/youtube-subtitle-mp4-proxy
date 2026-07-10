@@ -3617,10 +3617,43 @@ async def index() -> str:
       }}
     }}
 
+    let activePrepareBody = null;
+    let etaTimer = null;
+
+    function stopEtaTimer() {{
+      activePrepareBody = null;
+      if (etaTimer) {{
+        clearInterval(etaTimer);
+        etaTimer = null;
+      }}
+    }}
+
+    function setPrepareStatus(body) {{
+      activePrepareBody = body;
+      prepareStatus.textContent = prepareMessage(body);
+      if (body.status === "queued" || body.status === "running") {{
+        if (!etaTimer) {{
+          etaTimer = setInterval(() => {{
+            if (activePrepareBody) {{
+              prepareStatus.textContent = prepareMessage(activePrepareBody);
+            }}
+          }}, 1000);
+        }}
+        return;
+      }}
+      stopEtaTimer();
+    }}
+
     function etaText(body) {{
       const parts = [];
-      if (typeof body.eta_seconds === "number" && body.eta_seconds > 0) {{
-        const seconds = Math.max(1, Math.round(body.eta_seconds));
+      let seconds = null;
+      if (typeof body.estimated_ready_at === "number" && body.estimated_ready_at > 0) {{
+        seconds = Math.ceil(body.estimated_ready_at - Date.now() / 1000);
+      }} else if (typeof body.eta_seconds === "number" && body.eta_seconds > 0) {{
+        seconds = Math.round(body.eta_seconds);
+      }}
+      if (typeof seconds === "number" && seconds > 0) {{
+        seconds = Math.max(1, seconds);
         const minutes = Math.floor(seconds / 60);
         const rest = seconds % 60;
         parts.push(minutes ? `予想${{minutes}}分${{rest}}秒` : `予想${{rest}}秒`);
@@ -3680,7 +3713,7 @@ async def index() -> str:
         const parsed = new URL(statusUrl, location.origin);
         const body = await apiFetch(parsed.pathname + parsed.search);
         latest = body;
-        prepareStatus.textContent = prepareMessage(body);
+        setPrepareStatus(body);
         if (body.status === "ready") {{
           const url = publicUrl(body.url);
           result.textContent = url;
@@ -3692,6 +3725,7 @@ async def index() -> str:
           return;
         }}
       }}
+      stopEtaTimer();
       notify("YouTube準備確認タイムアウト", latest ? prepareMessage(latest) : "status polling timeout");
     }}
 
@@ -3699,6 +3733,7 @@ async def index() -> str:
       const params = new URLSearchParams({{ mode: selectedMode }});
       const body = await apiFetch(`/prepare/youtube/${{videoId}}/${{language}}/subtitles?${{params.toString()}}`);
       if (!body.requires_choice) return false;
+      stopEtaTimer();
       subtitleSource.innerHTML = "";
       for (const candidate of body.candidates || []) {{
         const option = document.createElement("option");
@@ -3712,6 +3747,7 @@ async def index() -> str:
     }}
 
     async function prepareCurrentVideo() {{
+      stopEtaTimer();
       update();
       const videoId = extractVideoId(input.value);
       const language = (lang.value || defaultLang).trim();
@@ -3737,7 +3773,7 @@ async def index() -> str:
         }}
         const params = new URLSearchParams({{ mode: selectedMode }});
         const body = await apiFetch(`${{path}}?${{params.toString()}}`, {{ method: "POST" }});
-        prepareStatus.textContent = prepareMessage(body);
+        setPrepareStatus(body);
         if (body.status === "ready") {{
           const url = publicUrl(body.url);
           result.textContent = url;
@@ -3748,6 +3784,7 @@ async def index() -> str:
           await pollPrepare(body.status_url);
         }}
       }} catch (error) {{
+        stopEtaTimer();
         prepareStatus.textContent = `準備APIエラー: ${{error.message}}`;
       }} finally {{
         prepareButton.disabled = false;
