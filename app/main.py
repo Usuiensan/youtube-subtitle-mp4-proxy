@@ -3263,6 +3263,8 @@ def job_response_body(job_id: str, job: dict, request: Request) -> dict:
         body["eta_seconds"] = job["eta_seconds"]
     if job.get("estimated_ready_at") is not None:
         body["estimated_ready_at"] = job["estimated_ready_at"]
+    if job.get("archived_immediately") is not None:
+        body["archived_immediately"] = bool(job.get("archived_immediately"))
     mentions = job_mentions(job)
     if mentions:
         body["mentions"] = mentions
@@ -3347,11 +3349,14 @@ def batch_response_body(batch_id: str, batch: dict, request: Request, include_it
         "counts": counts,
         "status_url": prepare_batch_status_url(request, batch_id),
     }
-    if pending_etas:
-        body["eta_seconds"] = int(sum(pending_etas))
-        body["estimated_ready_at"] = int(time.time()) + int(sum(pending_etas))
-    elif pending_ready_at:
-        body["estimated_ready_at"] = int(max(pending_ready_at))
+    if pending_ready_at:
+        latest_ready_at = int(max(pending_ready_at))
+        body["estimated_ready_at"] = latest_ready_at
+        body["eta_seconds"] = max(0, latest_ready_at - int(time.time()))
+    elif pending_etas:
+        max_eta = int(max(pending_etas))
+        body["eta_seconds"] = max_eta
+        body["estimated_ready_at"] = int(time.time()) + max_eta
     mentions = batch.get("mentions") or []
     if mentions:
         body["mentions"] = mentions
@@ -3418,6 +3423,7 @@ async def run_prepare_job(
     url: str,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
+    archive_immediately: bool = False,
 ) -> None:
     _prepare_jobs[job_id]["status"] = "running"
     try:
@@ -3469,6 +3475,9 @@ async def run_prepare_job(
                 subtitle_source_lang=subtitle_source_lang,
                 translation_engine=translation_engine,
             )
+        archived = False
+        if archive_immediately:
+            archived = archive_cache_entry(cache_id)
         now = int(time.time())
         subtitle_meta = read_subtitle_meta(cache_id)
         _prepare_jobs[job_id].update(
@@ -3479,6 +3488,7 @@ async def run_prepare_job(
                 "eta_seconds": 0,
                 "estimated_ready_at": now,
                 "completed_at": now,
+                "archived_immediately": archived,
             }
         )
     except Exception as error:
@@ -3506,6 +3516,7 @@ async def enqueue_prepare_job(
     discord_user_id: str | None,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
+    archive_immediately: bool = False,
 ) -> tuple[int, dict]:
     if subtitle_source_lang:
         if not LANG_RE.fullmatch(subtitle_source_lang):
@@ -3523,6 +3534,7 @@ async def enqueue_prepare_job(
             "url": url,
             "subtitle": read_subtitle_meta(cache_id),
             "requesters": [],
+            "archived_immediately": False,
         }
         add_job_requester(job, discord_user_id)
         return 200, job_response_body("", job, request)
@@ -3567,6 +3579,7 @@ async def enqueue_prepare_job(
             "requesters": [],
             "subtitle_source_lang": subtitle_source_lang,
             "translation_engine": normalized_engine,
+            "archive_immediately": archive_immediately,
         }
         if cached_info:
             if cached_info.get("title"):
@@ -3588,6 +3601,7 @@ async def enqueue_prepare_job(
                 url,
                 subtitle_source_lang=subtitle_source_lang,
                 translation_engine=normalized_engine,
+                archive_immediately=archive_immediately,
             )
         )
         return 202, job_response_body(job_id, _prepare_jobs[job_id], request)
@@ -3981,7 +3995,10 @@ async def enqueue_prepare_batch(
     mode: str,
     max_items: int,
     discord_user_id: str | None,
+    archive_immediately: bool = False,
 ) -> tuple[int, dict]:
+    if archive_immediately and mode != "mp4":
+        raise HTTPException(status_code=400, detail="archiveImmediately is supported only for mp4")
     resolved_type, playlist_id, playlist_name, tracks = await expand_prepare_source(
         source_type,
         source,
@@ -4002,6 +4019,7 @@ async def enqueue_prepare_batch(
             lang,
             mode,
             discord_user_id,
+            archive_immediately=archive_immediately,
         )
         if body.get("status") in {"queued", "running"}:
             any_pending = True
@@ -5421,6 +5439,7 @@ async def prepare_youtube(
     discord_user_id: str | None = Query(None, alias="discordUserId"),
     subtitle_source_lang: str | None = Query(None, alias="subtitleSourceLang"),
     translation_engine: str | None = Query(None, alias="translationEngine"),
+    archive_immediately: bool = Query(False, alias="archiveImmediately"),
 ) -> JSONResponse:
     require_prepare_auth(request)
     validate_input(video_id, lang)
@@ -5434,6 +5453,8 @@ async def prepare_youtube(
     discord_user_id = validate_discord_user_id(discord_user_id)
     if mode not in {"mp4", "hls"}:
         raise HTTPException(status_code=400, detail="mode must be mp4 or hls")
+    if archive_immediately and mode != "mp4":
+        raise HTTPException(status_code=400, detail="archiveImmediately is supported only for mp4")
     await cleanup_expired_cache_async()
     status_code, body = await enqueue_prepare_job(
         request,
@@ -5443,6 +5464,7 @@ async def prepare_youtube(
         discord_user_id,
         subtitle_source_lang=subtitle_source_lang,
         translation_engine=translation_engine,
+        archive_immediately=archive_immediately,
     )
     return JSONResponse(body, status_code=status_code)
 
@@ -5521,12 +5543,15 @@ async def prepare_youtube_batch(
     mode: str = Query("mp4"),
     max_items: int = Query(5000, alias="maxItems"),
     discord_user_id: str | None = Query(None, alias="discordUserId"),
+    archive_immediately: bool = Query(False, alias="archiveImmediately"),
 ) -> JSONResponse:
     require_prepare_auth(request)
     if not LANG_RE.fullmatch(lang):
         raise HTTPException(status_code=400, detail="Invalid language code")
     if mode not in {"mp4", "hls"}:
         raise HTTPException(status_code=400, detail="mode must be mp4 or hls")
+    if archive_immediately and mode != "mp4":
+        raise HTTPException(status_code=400, detail="archiveImmediately is supported only for mp4")
     if source_type not in {"auto", "playlist", "channel"}:
         raise HTTPException(status_code=400, detail="sourceType must be auto, playlist, or channel")
     max_items = normalize_max_items(max_items)
@@ -5540,6 +5565,7 @@ async def prepare_youtube_batch(
         mode,
         max_items,
         discord_user_id,
+        archive_immediately,
     )
     return JSONResponse(body, status_code=status_code)
 

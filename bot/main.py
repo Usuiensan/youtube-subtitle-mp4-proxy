@@ -196,10 +196,12 @@ async def prepare_video(
     discord_user_id: int,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
+    archive_immediately: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     params = {
         "mode": mode,
         "discordUserId": str(discord_user_id),
+        "archiveImmediately": "true" if archive_immediately else "false",
     }
     query = urllib.parse.urlencode(params)
     variant_path = ""
@@ -216,7 +218,14 @@ async def fetch_subtitle_options(video_id: str, lang: str, mode: str) -> dict[st
     return body
 
 
-async def prepare_batch(source: str, lang: str, mode: str, discord_user_id: int, max_items: int) -> tuple[int, dict[str, Any]]:
+async def prepare_batch(
+    source: str,
+    lang: str,
+    mode: str,
+    discord_user_id: int,
+    max_items: int,
+    archive_immediately: bool = False,
+) -> tuple[int, dict[str, Any]]:
     query = urllib.parse.urlencode(
         {
             "source": source,
@@ -224,6 +233,7 @@ async def prepare_batch(source: str, lang: str, mode: str, discord_user_id: int,
             "mode": mode,
             "maxItems": str(max_items),
             "discordUserId": str(discord_user_id),
+            "archiveImmediately": "true" if archive_immediately else "false",
         }
     )
     url = f"{settings.youtube_proxy_internal_base_url}/prepare/youtube-batch/{lang}?{query}"
@@ -259,9 +269,14 @@ def eta_text(body: dict[str, Any]) -> str:
     eta_seconds = body.get("eta_seconds")
     if isinstance(eta_seconds, (int, float)) and eta_seconds > 0:
         seconds = max(1, int(round(eta_seconds)))
-        minutes = seconds // 60
-        remaining_seconds = seconds % 60
-        if minutes:
+        days, rem = divmod(seconds, 86400)
+        hours, rem = divmod(rem, 3600)
+        minutes, remaining_seconds = divmod(rem, 60)
+        if days:
+            lines.append(f"あと{days}日{hours}時間{minutes}分{remaining_seconds}秒で終了（予想）")
+        elif hours:
+            lines.append(f"あと{hours}時間{minutes}分{remaining_seconds}秒で終了（予想）")
+        elif minutes:
             lines.append(f"あと{minutes}分{remaining_seconds}秒で終了（予想）")
         else:
             lines.append(f"あと{remaining_seconds}秒で終了（予想）")
@@ -369,7 +384,8 @@ def status_message(body: dict[str, Any], fallback_user_id: int | None = None) ->
         mention = mention_text(body, fallback_user_id)
         prefix = f"{mention} " if mention else ""
         usage_part = translation_usage_text(body.get("subtitle"))
-        return f"{prefix}準備できました。{title_part}{subtitle_part}{usage_part}\n{public_url(body.get('url'))}"
+        archive_part = "\n保存先: HDDアーカイブ" if body.get("archived_immediately") else ""
+        return f"{prefix}準備できました。{title_part}{subtitle_part}{usage_part}{archive_part}\n{public_url(body.get('url'))}"
     if status == "failed":
         mention = mention_text(body, fallback_user_id)
         prefix = f"{mention} " if mention else ""
@@ -530,12 +546,14 @@ class SubtitleChoiceView(discord.ui.View):
         lang: str,
         mode: str,
         options_body: dict[str, Any],
+        archive_immediately: bool = False,
     ) -> None:
         super().__init__(timeout=300)
         self.requester_id = requester_id
         self.video_id = video_id
         self.lang = lang
         self.mode = mode
+        self.archive_immediately = archive_immediately
         self.source_lang: str | None = None
         self.translation_engine = "google_cloud"
 
@@ -631,6 +649,7 @@ class SubtitleChoiceView(discord.ui.View):
                 interaction.user.id,
                 subtitle_source_lang=self.source_lang,
                 translation_engine=self.translation_engine,
+                archive_immediately=self.archive_immediately,
             )
         except PrepareApiError as error:
             await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}", ephemeral=True)
@@ -787,6 +806,7 @@ client = YoutubeProxyBot()
     lang="字幕言語",
     mode="出力形式",
     max_items="playlist/channel URL の最大準備件数",
+    archive_immediately="準備後すぐHDDへ退避する",
 )
 @app_commands.choices(
     mode=[
@@ -800,6 +820,7 @@ async def prepare_command(
     lang: str = "ja",
     mode: app_commands.Choice[str] | None = None,
     max_items: int | None = None,
+    archive_immediately: bool = False,
 ) -> None:
     await interaction.response.defer(thinking=True, ephemeral=True)
 
@@ -812,6 +833,9 @@ async def prepare_command(
     if selected_max_items < 1 or selected_max_items > 5000:
         await interaction.followup.send("max_items は 1 から 5000 の範囲で指定してください。", ephemeral=True)
         return
+    if archive_immediately and selected_mode != "mp4":
+        await interaction.followup.send("archive_immediately は MP4 のみ対応です。", ephemeral=True)
+        return
 
     try:
         if looks_like_playlist_or_channel(url):
@@ -821,6 +845,7 @@ async def prepare_command(
                 selected_mode,
                 interaction.user.id,
                 selected_max_items,
+                archive_immediately,
             )
         else:
             video_id = extract_video_id(url)
@@ -842,6 +867,7 @@ async def prepare_command(
                         lang=lang,
                         mode=selected_mode,
                         options_body=options_body,
+                        archive_immediately=archive_immediately,
                     )
                     await interaction.followup.send(
                         f"日本語字幕が見つかりませんでした。\n{title}\n翻訳元字幕を選択してください。翻訳エンジンは一時的に Google翻訳 のみ使用します。",
@@ -852,7 +878,13 @@ async def prepare_command(
                 if options_body.get("error"):
                     await interaction.followup.send(str(options_body["error"]), ephemeral=True)
                     return
-            _status, body = await prepare_video(video_id, lang, selected_mode, interaction.user.id)
+            _status, body = await prepare_video(
+                video_id,
+                lang,
+                selected_mode,
+                interaction.user.id,
+                archive_immediately=archive_immediately,
+            )
     except ValueError:
         try:
             _status, body = await prepare_batch(
@@ -861,6 +893,7 @@ async def prepare_command(
                 selected_mode,
                 interaction.user.id,
                 selected_max_items,
+                archive_immediately,
             )
         except PrepareApiError as error:
             await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}", ephemeral=True)
