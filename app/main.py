@@ -3373,9 +3373,10 @@ async def index() -> str:
     <section class="section" aria-labelledby="usageTitle">
       <h2 id="usageTitle">使い方</h2>
       <ol class="usage">
-        <li><strong>1. 動画を指定</strong>YouTube URL と字幕言語を入力します。日本語字幕がない場合は翻訳元字幕と翻訳方式を選べます。</li>
-        <li><strong>2. 準備キーを入力</strong>Discord の <code>/webui-key</code> で発行した一時キー、または管理用 prepare token を入力します。</li>
-        <li><strong>3. Prepare を実行</strong>準備完了後に表示される URL をコピーして動画プレーヤーへ設定します。通知を許可すると完了時にブラウザ通知が出ます。</li>
+        <li><strong>1. 準備キーを用意</strong>Discord の <code>/webui-key</code> で一時キーを発行し、Video タブの「準備キー」に貼り付けます。</li>
+        <li><strong>2. 通知を許可</strong>長い動画では準備に時間がかかるため、必要なら <span lang="en">Enable Notifications</span> を押します。</li>
+        <li><strong>3. 動画を指定</strong>YouTube URL、字幕言語、出力形式を選びます。出力形式の初期値は MP4 です。</li>
+        <li><strong>4. Prepare を実行</strong>準備完了後に表示される「準備済みURL」を動画プレーヤーへ設定します。</li>
       </ol>
     </section>
 
@@ -3392,27 +3393,19 @@ async def index() -> str:
       </label>
       <div class="row">
         <label>
-          Lang
+          字幕言語
           <input id="lang" name="lang" value="" maxlength="12" autocomplete="off">
         </label>
         <label>
-          Output
+          出力形式
           <select id="mode" name="mode">
-            <option value="youtube-hls">HLS playlist</option>
             <option value="youtube">MP4</option>
+            <option value="youtube-hls">HLS playlist</option>
           </select>
         </label>
       </div>
       <label>
-        Converted URL
-        <output id="result"></output>
-      </label>
-      <div class="actions">
-        <button type="button" id="copyButton" class="secondary">Copy</button>
-        <a id="openLink" class="button" target="_blank" rel="noopener" aria-disabled="true">Open New Tab</a>
-      </div>
-      <label>
-        Prepare token
+        準備キー
         <input id="prepareToken" name="prepareToken" type="password" autocomplete="current-password" placeholder="DISCORD_PREPARE_TOKEN">
       </label>
       <div id="prepareOptions" class="prepare-options" hidden>
@@ -3434,6 +3427,10 @@ async def index() -> str:
       </div>
       <output id="prepareStatus"></output>
       <output id="message" class="error"></output>
+      <label>
+        準備済みURL
+        <output id="result"></output>
+      </label>
     </form>
     <form id="jsonExporter" class="tool" aria-labelledby="jsonTab" hidden>
       <label>
@@ -3501,8 +3498,6 @@ async def index() -> str:
     const mode = document.getElementById("mode");
     const result = document.getElementById("result");
     const message = document.getElementById("message");
-    const openLink = document.getElementById("openLink");
-    const copyButton = document.getElementById("copyButton");
     const prepareToken = document.getElementById("prepareToken");
     const prepareButton = document.getElementById("prepareButton");
     const notifyButton = document.getElementById("notifyButton");
@@ -3578,29 +3573,21 @@ async def index() -> str:
       if (!input.value.trim()) {{
         result.textContent = "";
         message.textContent = "";
-        openLink.removeAttribute("href");
-        openLink.setAttribute("aria-disabled", "true");
         return;
       }}
       if (!/^[A-Za-z0-9_-]{{11}}$/.test(videoId)) {{
         result.textContent = "";
         message.textContent = "Invalid YouTube URL";
-        openLink.removeAttribute("href");
-        openLink.setAttribute("aria-disabled", "true");
         return;
       }}
       if (!/^[A-Za-z0-9_-]{{2,12}}$/.test(language)) {{
         result.textContent = "";
         message.textContent = "Invalid language";
-        openLink.removeAttribute("href");
-        openLink.setAttribute("aria-disabled", "true");
         return;
       }}
       const url = `${{location.origin}}/${{mode.value}}/${{videoId}}/${{language}}`;
       result.textContent = url;
       message.textContent = "";
-      openLink.href = url;
-      openLink.setAttribute("aria-disabled", "false");
     }}
 
     function prepareMode() {{
@@ -3697,8 +3684,6 @@ async def index() -> str:
         if (body.status === "ready") {{
           const url = publicUrl(body.url);
           result.textContent = url;
-          openLink.href = url;
-          openLink.setAttribute("aria-disabled", "false");
           notify("YouTube準備完了", url);
           return;
         }}
@@ -3756,8 +3741,6 @@ async def index() -> str:
         if (body.status === "ready") {{
           const url = publicUrl(body.url);
           result.textContent = url;
-          openLink.href = url;
-          openLink.setAttribute("aria-disabled", "false");
           notify("YouTube準備完了", url);
           return;
         }}
@@ -3844,12 +3827,7 @@ async def index() -> str:
     }});
     form.addEventListener("submit", (event) => {{
       event.preventDefault();
-      update();
-      if (openLink.href) window.open(openLink.href, "_blank", "noopener");
-    }});
-    copyButton.addEventListener("click", async () => {{
-      update();
-      if (result.textContent) await navigator.clipboard.writeText(result.textContent);
+      prepareCurrentVideo();
     }});
     prepareButton.addEventListener("click", prepareCurrentVideo);
     notifyButton.addEventListener("click", requestNotifications);
