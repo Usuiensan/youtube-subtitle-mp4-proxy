@@ -192,21 +192,91 @@ class MetricsManager:
 metrics_manager = MetricsManager(settings.cache_hot_dir / "metrics.json")
 
 
+import ctypes
+
+class MEMORYSTATUSEX(ctypes.Structure):
+    _fields_ = [
+        ("dwLength", ctypes.c_ulong),
+        ("dwMemoryLoad", ctypes.c_ulong),
+        ("ullTotalPhys", ctypes.c_ulonglong),
+        ("ullAvailPhys", ctypes.c_ulonglong),
+        ("ullTotalPageFile", ctypes.c_ulonglong),
+        ("ullAvailPageFile", ctypes.c_ulonglong),
+        ("ullTotalVirtual", ctypes.c_ulonglong),
+        ("ullAvailVirtual", ctypes.c_ulonglong),
+        ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+    ]
+
+class FILETIME(ctypes.Structure):
+    _fields_ = [
+        ("dwLowDateTime", ctypes.c_ulong),
+        ("dwHighDateTime", ctypes.c_ulong),
+    ]
+
+_last_win_cpu_times: tuple[int, int] | None = None
+
+def read_win_cpu_percent() -> float | None:
+    global _last_win_cpu_times
+    idle = FILETIME()
+    kernel = FILETIME()
+    user = FILETIME()
+    try:
+        if ctypes.windll.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
+            idle_val = (idle.dwHighDateTime << 32) + idle.dwLowDateTime
+            kernel_val = (kernel.dwHighDateTime << 32) + kernel.dwLowDateTime
+            user_val = (user.dwHighDateTime << 32) + user.dwLowDateTime
+            total_val = kernel_val + user_val
+            
+            if _last_win_cpu_times is None:
+                _last_win_cpu_times = (idle_val, total_val)
+                return 0.0
+            
+            prev_idle, prev_total = _last_win_cpu_times
+            _last_win_cpu_times = (idle_val, total_val)
+            
+            idle_delta = idle_val - prev_idle
+            total_delta = total_val - prev_total
+            if total_delta <= 0:
+                return 0.0
+            return round(max(0.0, min(100.0, (1.0 - idle_delta / total_delta) * 100.0)), 1)
+    except Exception:
+        pass
+    return None
+
+def read_win_memory_metrics() -> dict:
+    result = {"used_percent": None, "used_bytes": None, "total_bytes": None}
+    try:
+        stat = MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(stat)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            total = stat.ullTotalPhys
+            used = total - stat.ullAvailPhys
+            result.update({
+                "used_percent": float(stat.dwMemoryLoad),
+                "used_bytes": float(used),
+                "total_bytes": float(total),
+            })
+    except Exception:
+        pass
+    return result
+
 def read_proc_cpu_percent() -> float | None:
+    if sys.platform == "win32":
+        return read_win_cpu_percent()
     global _last_cpu_times
     try:
         first = Path("/proc/stat").read_text(encoding="utf-8").splitlines()[0].split()
         if first[0] != "cpu":
             return None
-        values = [int(value) for value in first[1:]]
+        idle = int(first[4]) + int(first[5])
+        total = sum(int(x) for x in first[1:8])
     except Exception:
         return None
-    idle = values[3] + (values[4] if len(values) > 4 else 0)
-    total = sum(values)
+    if _last_cpu_times is None:
+        _last_cpu_times = (idle, total)
+        return 0.0
     previous = _last_cpu_times
     _last_cpu_times = (idle, total)
-    if previous is None:
-        return None
     previous_idle, previous_total = previous
     total_delta = total - previous_total
     idle_delta = idle - previous_idle
@@ -216,6 +286,8 @@ def read_proc_cpu_percent() -> float | None:
 
 
 def read_memory_metrics() -> dict:
+    if sys.platform == "win32":
+        return read_win_memory_metrics()
     result = {"used_percent": None, "used_bytes": None, "total_bytes": None}
     try:
         values: dict[str, int] = {}
@@ -3624,9 +3696,37 @@ async def index() -> str:
     }}
     .chart {{
       width: 100%;
-      height: 240px;
+      height: 200px;
       border: 1px solid var(--color-gray-200);
       background: #fff;
+    }}
+    .chart-grid {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: calc(16 / 16 * 1rem);
+      margin-bottom: calc(24 / 16 * 1rem);
+    }}
+    .chart-card {{
+      border-left: calc(8 / 16 * 1rem) solid var(--color-blue-900);
+      background: var(--color-gray-50);
+      padding: calc(12 / 16 * 1rem) calc(16 / 16 * 1rem);
+      display: flex;
+      flex-direction: column;
+      gap: calc(8 / 16 * 1rem);
+    }}
+    .chart-card strong {{
+      display: block;
+      color: var(--color-gray-900);
+      font-size: calc(14 / 16 * 1rem);
+    }}
+    .card-cpu {{
+      border-left-color: #3b82f6;
+    }}
+    .card-memory {{
+      border-left-color: #10b981;
+    }}
+    .card-gpu {{
+      border-left-color: #8b5cf6;
     }}
     .job-list {{
       display: grid;
@@ -3650,7 +3750,8 @@ async def index() -> str:
       .json-row {{
         grid-template-columns: 1fr;
       }}
-      .metric-grid {{
+      .metric-grid,
+      .chart-grid {{
         grid-template-columns: 1fr;
       }}
       h1 {{
@@ -3794,11 +3895,24 @@ async def index() -> str:
     </form>
     <section id="monitorPanel" class="tool" aria-labelledby="monitorTab" hidden>
       <div class="metric-grid">
-        <div class="metric-card"><strong>CPU</strong><span id="metricCpu">--</span></div>
-        <div class="metric-card"><strong>Memory</strong><span id="metricMemory">--</span></div>
-        <div class="metric-card"><strong>GPU</strong><span id="metricGpu">--</span></div>
+        <div class="metric-card card-cpu"><strong>CPU</strong><span id="metricCpu">--</span></div>
+        <div class="metric-card card-memory"><strong>Memory</strong><span id="metricMemory">--</span></div>
+        <div class="metric-card card-gpu"><strong>GPU</strong><span id="metricGpu">--</span></div>
       </div>
-      <svg id="metricsChart" class="chart" viewBox="0 0 960 240" role="img" aria-label="CPU Memory GPU history graph"></svg>
+      <div class="chart-grid">
+        <div class="chart-card card-cpu">
+          <strong>CPU 使用率履歴</strong>
+          <svg id="cpuChart" class="chart" viewBox="0 0 960 240" role="img" aria-label="CPU history graph"></svg>
+        </div>
+        <div class="chart-card card-memory">
+          <strong>Memory 使用率履歴</strong>
+          <svg id="memoryChart" class="chart" viewBox="0 0 960 240" role="img" aria-label="Memory history graph"></svg>
+        </div>
+        <div class="chart-card card-gpu">
+          <strong>GPU 使用率履歴</strong>
+          <svg id="gpuChart" class="chart" viewBox="0 0 960 240" role="img" aria-label="GPU history graph"></svg>
+        </div>
+      </div>
       <output id="metricDetails"></output>
       <h2>準備ジョブ</h2>
       <div id="monitorJobs" class="job-list"></div>
@@ -3839,7 +3953,6 @@ async def index() -> str:
     const metricCpu = document.getElementById("metricCpu");
     const metricMemory = document.getElementById("metricMemory");
     const metricGpu = document.getElementById("metricGpu");
-    const metricsChart = document.getElementById("metricsChart");
     const metricDetails = document.getElementById("metricDetails");
     const monitorJobs = document.getElementById("monitorJobs");
 
@@ -3954,32 +4067,55 @@ async def index() -> str:
       const height = 240;
       const padding = 28;
       const series = [
-        {{ name: "CPU", color: "#0017c1", path: ["cpu", "used_percent"] }},
-        {{ name: "Memory", color: "#008000", path: ["memory", "used_percent"] }},
-        {{ name: "GPU", color: "#ec0000", path: ["gpu", "gpu_percent"] }},
+        {{ id: "cpuChart", name: "CPU", color: "#3b82f6", path: ["cpu", "used_percent"] }},
+        {{ id: "memoryChart", name: "Memory", color: "#10b981", path: ["memory", "used_percent"] }},
+        {{ id: "gpuChart", name: "GPU", color: "#8b5cf6", path: ["gpu", "gpu_percent"] }},
       ];
-      const pointsFor = (path) => history
-        .map((sample, index) => [index, metricValue(sample, path)])
-        .filter((point) => point[1] !== null);
       const xFor = (index) => padding + (history.length <= 1 ? 0 : index / (history.length - 1) * (width - padding * 2));
       const yFor = (value) => height - padding - value / 100 * (height - padding * 2);
-      const lines = series.map((item) => {{
-        const points = pointsFor(item.path);
-        if (points.length < 2) return "";
-        const d = points.map(([index, value], i) => `${{i ? "L" : "M"}} ${{xFor(index).toFixed(1)}} ${{yFor(value).toFixed(1)}}`).join(" ");
-        return `<path d="${{d}}" fill="none" stroke="${{item.color}}" stroke-width="3"><title>${{item.name}}</title></path>`;
-      }}).join("");
-      metricsChart.innerHTML = `
-        <rect x="0" y="0" width="${{width}}" height="${{height}}" fill="#fff"></rect>
-        <line x1="${{padding}}" y1="${{padding}}" x2="${{padding}}" y2="${{height - padding}}" stroke="#ccc"></line>
-        <line x1="${{padding}}" y1="${{height - padding}}" x2="${{width - padding}}" y2="${{height - padding}}" stroke="#ccc"></line>
-        <text x="${{padding}}" y="18" font-size="14">100%</text>
-        <text x="${{padding}}" y="${{height - 8}}" font-size="14">0%</text>
-        ${{lines}}
-        <text x="760" y="24" fill="#0017c1" font-size="14">CPU</text>
-        <text x="810" y="24" fill="#008000" font-size="14">Memory</text>
-        <text x="890" y="24" fill="#ec0000" font-size="14">GPU</text>
-      `;
+
+      for (const item of series) {{
+        const chartSvg = document.getElementById(item.id);
+        if (!chartSvg) continue;
+
+        const points = history
+          .map((sample, index) => [index, metricValue(sample, item.path)])
+          .filter((point) => point[1] !== null);
+
+        if (points.length < 2) {{
+          chartSvg.innerHTML = "";
+          continue;
+        }}
+
+        const svgPoints = points.map(([index, value]) => [xFor(index), yFor(value)]);
+        const lineD = svgPoints.map(([x, y], i) => `${{i ? "L" : "M"}} ${{x.toFixed(1)}} ${{y.toFixed(1)}}`).join(" ");
+        const yBottom = height - padding;
+        const areaD = `${{lineD}} L ${{svgPoints[svgPoints.length - 1][0].toFixed(1)}} ${{yBottom.toFixed(1)}} L ${{svgPoints[0][0].toFixed(1)}} ${{yBottom.toFixed(1)}} Z`;
+        const gradientId = `${{item.id}}Gradient`;
+
+        chartSvg.innerHTML = `
+          <defs>
+            <linearGradient id="${{gradientId}}" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="${{item.color}}" stop-opacity="0.45"/>
+              <stop offset="100%" stop-color="${{item.color}}" stop-opacity="0.0"/>
+            </linearGradient>
+          </defs>
+          <rect x="0" y="0" width="${{width}}" height="${{height}}" fill="#fff"></rect>
+          <line x1="${{padding}}" y1="${{padding}}" x2="${{padding}}" y2="${{height - padding}}" stroke="#e5e7eb" stroke-width="1.5"></line>
+          <line x1="${{padding}}" y1="${{height - padding}}" x2="${{width - padding}}" y2="${{height - padding}}" stroke="#9ca3af" stroke-width="1.5"></line>
+          
+          <!-- grid lines -->
+          <line x1="${{padding}}" y1="${{yFor(25).toFixed(1)}}" x2="${{width - padding}}" y2="${{yFor(25).toFixed(1)}}" stroke="#f3f4f6" stroke-width="1"></line>
+          <line x1="${{padding}}" y1="${{yFor(50).toFixed(1)}}" x2="${{width - padding}}" y2="${{yFor(50).toFixed(1)}}" stroke="#e5e7eb" stroke-width="1"></line>
+          <line x1="${{padding}}" y1="${{yFor(75).toFixed(1)}}" x2="${{width - padding}}" y2="${{yFor(75).toFixed(1)}}" stroke="#f3f4f6" stroke-width="1"></line>
+
+          <text x="${{padding + 8}}" y="22" font-size="14" font-weight="600" fill="#9ca3af">100%</text>
+          <text x="${{padding + 8}}" y="${{height - 10}}" font-size="14" font-weight="600" fill="#9ca3af">0%</text>
+          
+          <path d="${{areaD}}" fill="url(#${{gradientId}})"></path>
+          <path d="${{lineD}}" fill="none" stroke="${{item.color}}" stroke-width="3"></path>
+        `;
+      }}
     }}
 
     function renderMonitorJobs(jobs) {{
