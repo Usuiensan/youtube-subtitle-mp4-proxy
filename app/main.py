@@ -37,6 +37,12 @@ from app.translation import (
     save_srt,
     translate_srt_with_local_worker,
 )
+from app.nllb_provider import (
+    NllbConfig,
+    NllbTranslationProvider,
+    TranslationError as NllbTranslationError,
+    translate_texts_async,
+)
 
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -131,6 +137,14 @@ class Settings:
     translation_topic = os.getenv("TRANSLATION_TOPIC", "")
     translation_glossary = os.getenv("TRANSLATION_GLOSSARY", "")
     google_cloud_project = os.getenv("GOOGLE_CLOUD_PROJECT", "")
+    translation_provider = os.getenv("TRANSLATION_PROVIDER", "local_llm").strip().lower()
+    nllb_model = os.getenv("NLLB_MODEL", "facebook/nllb-200-distilled-600M")
+    nllb_device = os.getenv("NLLB_DEVICE", "auto")
+    nllb_batch_size = int(os.getenv("NLLB_BATCH_SIZE", "16"))
+    nllb_max_input_tokens = int(os.getenv("NLLB_MAX_INPUT_TOKENS", "512"))
+    nllb_max_new_tokens = int(os.getenv("NLLB_MAX_NEW_TOKENS", "128"))
+    nllb_num_beams = int(os.getenv("NLLB_NUM_BEAMS", "1"))
+    nllb_keep_loaded = os.getenv("NLLB_KEEP_LOADED", "1") != "0"
     translation_failure_dir = Path(
         os.getenv("TRANSLATION_FAILURE_DIR", str(cache_hot_dir / ".translation-attempts"))
     )
@@ -144,6 +158,8 @@ settings = Settings()
 _system_metrics: deque[dict] = deque(maxlen=max(1, int(settings.system_metrics_history_seconds / max(settings.system_metrics_interval_seconds, 1)) + 60))
 _last_cpu_times: tuple[int, int] | None = None
 _metrics_task: asyncio.Task | None = None
+_nllb_lock = asyncio.Lock()
+_nllb_provider: NllbTranslationProvider | None = None
 
 
 class MetricsManager:
@@ -990,6 +1006,8 @@ def default_variant_priority(key: str) -> tuple[int, str]:
     for profile_id in settings.local_llm_profile_models:
         if f"_{profile_id}_" in key:
             return (1, key)
+    if "_nllb_" in key:
+        return (1, key)
     if "_local_llm_" in key:
         return (1, key)
     if "_google_cloud_" in key:
@@ -1203,10 +1221,12 @@ def configured_translation_source_langs() -> list[str]:
 
 def normalize_translation_engine(value: str | None) -> str:
     engine = (value or settings.local_llm_engine or "local_llm").strip().lower()
-    if engine in {"llm", "local", "local_llm", "openai_compatible"}:
+    if engine in {"llm", "local", "local_llm", "openai_compatible", "ollama"}:
         return "local_llm"
     if engine in {"google", "google_cloud", "google_translate"}:
         return "google_cloud"
+    if engine in {"nllb", "nllb200_distilled_600m"}:
+        return "nllb"
     if engine in settings.local_llm_profile_models:
         return engine
     raise HTTPException(status_code=400, detail="translationEngine must be a known translation profile")
@@ -1218,17 +1238,26 @@ def translation_profile_options() -> list[dict]:
             "value": profile_id,
             "label": settings.local_llm_profile_labels.get(profile_id, profile_id),
             "model": model,
-            "default": profile_id == "qwen3_1_7b",
+            "default": profile_id == settings.translation_provider,
             "kind": "local",
         }
         for profile_id, model in settings.local_llm_profile_models.items()
     ]
     options.append(
         {
+            "value": "nllb",
+            "label": "NLLB-200 distilled 600M",
+            "model": settings.nllb_model,
+            "default": settings.translation_provider == "nllb",
+            "kind": "nllb",
+        }
+    )
+    options.append(
+        {
             "value": "google_cloud",
             "label": "Google翻訳",
             "model": None,
-            "default": False,
+            "default": settings.translation_provider == "google_cloud",
             "kind": "cloud",
         }
     )
@@ -1237,7 +1266,10 @@ def translation_profile_options() -> list[dict]:
 
 def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
     normalized = normalize_translation_engine(profile_id)
-    model_name = settings.local_llm_profile_models.get(normalized, settings.local_llm_model)
+    if normalized == "nllb":
+        model_name = settings.nllb_model
+    else:
+        model_name = settings.local_llm_profile_models.get(normalized, settings.local_llm_model)
     return TranslationSettings(
         enabled=settings.translation_enabled,
         target_window_seconds=settings.local_llm_target_window_seconds,
@@ -1253,6 +1285,27 @@ def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
         topic=settings.translation_topic,
         google_project=settings.google_cloud_project,
     )
+
+
+def nllb_translation_config() -> NllbConfig:
+    return NllbConfig(
+        model_name=settings.nllb_model,
+        device=settings.nllb_device,
+        batch_size=max(1, settings.nllb_batch_size),
+        max_input_tokens=settings.nllb_max_input_tokens,
+        max_new_tokens=settings.nllb_max_new_tokens,
+        num_beams=max(1, settings.nllb_num_beams),
+        keep_loaded=settings.nllb_keep_loaded,
+    )
+
+
+async def get_nllb_provider() -> NllbTranslationProvider:
+    global _nllb_provider
+    if _nllb_provider is None:
+        async with _nllb_lock:
+            if _nllb_provider is None:
+                _nllb_provider = await asyncio.to_thread(NllbTranslationProvider.load, nllb_translation_config())
+    return _nllb_provider
 
 
 def manual_subtitle_candidates(info: dict, requested_lang: str) -> list[dict]:
@@ -1627,6 +1680,8 @@ def subtitle_translation_service_label(subtitle_meta: dict) -> str:
         return "[translation] Google Cloud fallback"
     if engine == "google_cloud":
         return "[translation] Google Cloud"
+    if engine == "nllb":
+        return f"[translation] NLLB-200 distilled 600M ({settings.nllb_model})"
     if model:
         label = settings.local_llm_profile_labels.get(engine) or settings.local_llm_profile_labels.get(requested) or "LLM"
         return f"[translation] {label} {model}"
@@ -1662,13 +1717,13 @@ def ffmpeg_subtitle_arg(path: Path, subtitle_meta: dict | None = None) -> str:
     if subtitle_meta:
         label = get_subtitle_overlay_label(subtitle_meta)
         lines = label.split("\n")
-        
+
         font_file = find_japanese_font_file()
         if font_file:
             font_opt = f":fontfile='{font_file}'"
         else:
             font_opt = f":font='{settings.subtitle_font}'" if settings.subtitle_font else ""
-            
+
         drawtext_filters = []
         for i, line in enumerate(lines):
             escaped_line = (
@@ -1685,7 +1740,7 @@ def ffmpeg_subtitle_arg(path: Path, subtitle_meta: dict | None = None) -> str:
                 f":enable='lt(t,5)'{font_opt}"
             )
             drawtext_filters.append(drawtext_filter)
-            
+
         filter_str = f"{filter_str},{','.join(drawtext_filters)}"
     return filter_str
 
@@ -2025,6 +2080,82 @@ async def translate_subtitle_if_needed(
             "translation_fallback_used": False,
             "translation_created_at": int(time.time()),
         }
+        return translated_path, metadata
+
+    if requested_engine == "nllb":
+        provider = await get_nllb_provider()
+        subtitles = load_srt(subtitle)
+        total_items = len(subtitles)
+        if job_id:
+            update_job_progress(
+                job_id,
+                "translate",
+                0.0,
+                details=f"stage=translating completed_items=0 total_items={total_items} current_batch=0 total_batches=0",
+            )
+        if total_items == 0:
+            save_srt(translated_path, [])
+            metadata = {
+                **selection,
+                "translation_engine": "nllb",
+                "translation_model": settings.nllb_model,
+                "translation_fallback_used": False,
+                "translation_created_at": int(time.time()),
+            }
+            return translated_path, metadata
+
+        translated_subtitles: list[srt.Subtitle] = []
+        batch_size = max(1, provider.config.batch_size)
+        total_batches = (total_items + batch_size - 1) // batch_size
+        start_t = time.time()
+        async with _nllb_lock:
+            for batch_index, start in enumerate(range(0, total_items, batch_size), start=1):
+                chunk = subtitles[start : start + batch_size]
+                translated_texts = await translate_texts_async(
+                    provider,
+                    [item.content for item in chunk],
+                    selection["source_language"],
+                    selection["requested_language"],
+                )
+                for item, translated_text in zip(chunk, translated_texts):
+                    translated_subtitles.append(
+                        srt.Subtitle(
+                            index=item.index,
+                            start=item.start,
+                            end=item.end,
+                            content=translated_text,
+                            proprietary=item.proprietary,
+                        )
+                    )
+                if job_id:
+                    completed_items = len(translated_subtitles)
+                    elapsed = time.time() - start_t
+                    remaining = None
+                    if completed_items > 0:
+                        avg = elapsed / completed_items
+                        remaining = int(max(0, avg * (total_items - completed_items)))
+                        if job_id in _prepare_jobs:
+                            _prepare_jobs[job_id]["eta_seconds"] = remaining
+                            _prepare_jobs[job_id]["estimated_ready_at"] = int(time.time()) + remaining
+                    details = (
+                        "stage=translating "
+                        f"completed_items={completed_items} total_items={total_items} "
+                        f"progress_percent={completed_items / total_items * 100:.1f} "
+                        f"current_batch={batch_index} total_batches={total_batches}"
+                    )
+                    update_job_progress(job_id, "translate", completed_items / total_items * 100.0, eta_seconds=remaining, details=details)
+
+        save_srt(translated_path, translated_subtitles)
+        metrics_manager.record_translate(total_items, time.time() - start_t)
+        metadata = {
+            **selection,
+            "translation_engine": "nllb",
+            "translation_model": settings.nllb_model,
+            "translation_fallback_used": False,
+            "translation_created_at": int(time.time()),
+        }
+        if not settings.nllb_keep_loaded:
+            NllbTranslationProvider.unload()
         return translated_path, metadata
 
     async def worker(payload: dict) -> dict:

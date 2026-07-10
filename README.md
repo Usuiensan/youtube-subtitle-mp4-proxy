@@ -216,6 +216,98 @@ export GOOGLE_CLOUD_PROJECT=your-google-cloud-project-id
 
 翻訳プロファイルはURLの `translationEngine` 部分でも指定できます。例: `/youtube/RSTNhvDGbYI/ja/en-US/qwen3_1_7b`、`/youtube/RSTNhvDGbYI/ja/en-US/gemma3_4b`。Web UI の「字幕比較」タブでは複数プロファイルを準備し、動画を一時停止またはシークしながら同じ時刻の字幕テキストを横並びで比較できます。
 
+### NLLB-200 distilled 600M
+
+NLLB は LLM ではなく、Transformers で動かす翻訳専用モデルです。Ollama API には送りません。`TRANSLATION_PROVIDER=nllb` にすると、設定画面や準備 API の既定エンジンとして NLLB を選びやすくなります。Google 翻訳と Ollama 翻訳はそのまま使えます。
+
+対応する言語コードは次の通りです。
+
+```text
+ja en ko zh zh-CN zh-Hans zh-TW zh-Hant es pt fr de it ru uk pl tr ar fa hi bn id vi th
+```
+
+NLLB 用の設定例です。
+
+```bash
+export TRANSLATION_PROVIDER=nllb
+export NLLB_MODEL=facebook/nllb-200-distilled-600M
+export NLLB_DEVICE=auto
+export NLLB_BATCH_SIZE=16
+export NLLB_MAX_INPUT_TOKENS=512
+export NLLB_MAX_NEW_TOKENS=128
+export NLLB_NUM_BEAMS=1
+export NLLB_KEEP_LOADED=1
+export HF_HOME=/mnt/youtube-archive/ai-cache/huggingface
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+```
+
+`NLLB_DEVICE` は `auto` / `cuda` / `cpu` を受け付けます。`auto` は CUDA が使えれば GPU、そうでなければ CPU です。`cuda` を指定したのに GPU が使えない場合は明確にエラーにします。GTX 1050 Ti 4GB では `NLLB_BATCH_SIZE=16` から始め、OOM が出るなら 8, 4, 2 と下げてください。実装側は CUDA OOM 時にバッチを半分ずつ再試行します。
+
+GTX 1050 Ti の運用では、CUDA 12.6 対応の PyTorch を使ってください。CUDA 12.8 系はこの構成では使わない前提です。
+
+モデルを手動で事前ダウンロードする場合は、Hugging Face キャッシュ先を固定してから `from_pretrained()` してください。
+
+```bash
+sudo -u youtubeproxy env \
+  HF_HOME=/mnt/youtube-archive/ai-cache/huggingface \
+  HF_HUB_OFFLINE=1 \
+  TRANSFORMERS_OFFLINE=1 \
+  /opt/youtube-mp4-proxy/.venv/bin/python \
+  - <<'PY'
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+model = "facebook/nllb-200-distilled-600M"
+AutoTokenizer.from_pretrained(model)
+AutoModelForSeq2SeqLM.from_pretrained(model)
+print("cached")
+PY
+```
+
+NLLB 単体の確認には、3 文以上の英日翻訳を小さなスクリプトで流し、使用モデル、使用デバイス、dtype、件数、処理時間、結果を確認します。GPU メモリは `nvidia-smi` で別途見ます。`NLLB_KEEP_LOADED=0` にすると、ジョブ終了後にモデルを解放できます。
+
+設定の切り替えは次の通りです。
+
+```bash
+export TRANSLATION_PROVIDER=google_cloud   # Google 翻訳を既定にする
+export TRANSLATION_PROVIDER=local_llm      # Ollama / OpenAI 互換 LLM を既定にする
+export TRANSLATION_PROVIDER=nllb          # NLLB を既定にする
+```
+
+systemd で動かしている場合は、設定変更後に FastAPI と Discord bot を再起動します。
+
+```bash
+sudo systemctl restart youtube-mp4-proxy
+sudo systemctl restart youtube-mp4-proxy-discord
+```
+
+NLLB の単体確認スクリプトは、`app/nllb_provider.py` を使って英語から日本語へ 3 文以上翻訳する小さな Python を用意し、`HF_HOME` とオフライン設定を付けて実行してください。`NLLB_MODEL`、`NLLB_DEVICE`、`NLLB_BATCH_SIZE` を変えたときは、同じコマンドで再確認できます。
+
+#### 進め方
+
+1. 既存コードと README を調査します。
+2. 修正方針を簡潔に整理します。
+3. 実装します。
+4. 単体テストを追加します。
+5. 既存テストと新規テストを実行します。
+6. import・型・構文エラーを確認します。
+7. 変更ファイル一覧を提示します。
+8. 設定追加内容を提示します。
+9. 実行したテストと結果を提示します。
+10. 残る制約や未確認事項を明記します。
+
+#### 禁止事項
+
+- Google 翻訳機能を削除しない
+- Ollama 翻訳機能を削除しない
+- API キーや認証ファイルをコードへ直書きしない
+- Hugging Face トークンをログへ出さない
+- 字幕ごとにモデルをロードしない
+- リクエストごとに Tokenizer を生成しない
+- NLLB を Ollama モデルとして扱わない
+- GPU OOM を握りつぶさない
+- 既存 API 仕様を理由なく破壊しない
+- 動作確認せずに完了扱いにしない
+
 ## YamaPlayer JSON 書き出し
 
 YouTube Data API v3 を使って、YouTube のプレイリストまたはチャンネルの投稿一覧を YamaPlayer の JSON インポート形式で返します。環境変数 `YOUTUBE_DATA_API_KEY` が必要です。

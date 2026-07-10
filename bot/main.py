@@ -444,9 +444,17 @@ def subtitle_status_text(meta: Any) -> str:
     translated = meta.get("translated")
     kind = meta.get("source_kind")
     engine = meta.get("translation_engine")
+    model = meta.get("translation_model")
     fallback = meta.get("translation_fallback_used")
     if translated:
-        engine_text = "Google翻訳フォールバック" if fallback else (engine or "local_llm")
+        if fallback:
+            engine_text = "Google翻訳フォールバック"
+        elif engine == "nllb":
+            engine_text = f"NLLB-200 distilled 600M{f' ({model})' if model else ''}"
+        elif model:
+            engine_text = f"{engine or 'local_llm'} ({model})"
+        else:
+            engine_text = engine or "local_llm"
         kind_text = "手動" if kind == "manual" else str(kind or "")
         return f"\n字幕: {lang_name_ja(source)}（{kind_text}）→{lang_name_ja(requested)}（{engine_text}）"
     if source:
