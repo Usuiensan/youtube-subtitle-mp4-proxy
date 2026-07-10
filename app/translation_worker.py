@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import urllib.parse
 import urllib.error
 import urllib.request
 from typing import Any
@@ -99,7 +100,78 @@ def call_openai_compatible(prompt: str, payload: dict[str, Any]) -> dict[str, An
         raise RuntimeError(f"local llm http error {error.code}: {message}") from error
 
     content = data["choices"][0]["message"]["content"]
-    return json.loads(content)
+    result = json.loads(content)
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    result["_usage"] = {
+        "input_tokens": int(usage.get("prompt_tokens") or 0),
+        "output_tokens": int(usage.get("completion_tokens") or 0),
+        "total_tokens": int(usage.get("total_tokens") or 0),
+    }
+    return result
+
+
+def call_gemini_api(prompt: str, payload: dict[str, Any]) -> dict[str, Any]:
+    model = str(payload.get("model_name") or os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
+    api_key = os.getenv("GEMINI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+    timeout = int(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "300"))
+    temperature = float(os.getenv("LOCAL_LLM_TEMPERATURE", "0"))
+    max_tokens = int(os.getenv("LOCAL_LLM_MAX_OUTPUT_TOKENS", "2048"))
+    endpoint = os.getenv(
+        "GEMINI_API_ENDPOINT",
+        "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+    ).format(model=urllib.parse.quote(model, safe=""))
+    url = f"{endpoint}?key={urllib.parse.quote(api_key, safe='')}"
+    body = json.dumps(
+        {
+            "system_instruction": {
+                "parts": [
+                    {"text": "You are a precise subtitle translation engine. Return JSON only."}
+                ]
+            },
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": prompt}],
+                }
+            ],
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_tokens,
+                "responseMimeType": "application/json",
+            },
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        message = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"gemini api http error {error.code}: {message}") from error
+
+    candidates = data.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        raise RuntimeError("gemini api returned no candidates")
+    content = candidates[0].get("content") if isinstance(candidates[0], dict) else None
+    parts = content.get("parts") if isinstance(content, dict) else None
+    if not isinstance(parts, list) or not parts or not isinstance(parts[0], dict) or not parts[0].get("text"):
+        raise RuntimeError("gemini api returned no text part")
+    result = json.loads(str(parts[0]["text"]))
+    usage = data.get("usageMetadata") if isinstance(data.get("usageMetadata"), dict) else {}
+    result["_usage"] = {
+        "input_tokens": int(usage.get("promptTokenCount") or 0),
+        "output_tokens": int(usage.get("candidatesTokenCount") or 0),
+        "total_tokens": int(usage.get("totalTokenCount") or 0),
+    }
+    result["_gemini_model_version"] = data.get("modelVersion")
+    return result
 
 
 def main() -> int:
@@ -111,7 +183,12 @@ def main() -> int:
     with open(args.input, "r", encoding="utf-8") as file:
         payload = json.load(file)
 
-    result = call_openai_compatible(build_prompt(payload), payload)
+    provider = str(payload.get("translation_provider") or os.getenv("LOCAL_LLM_ENGINE", "openai_compatible")).strip().lower()
+    prompt = build_prompt(payload)
+    if provider == "gemini_api":
+        result = call_gemini_api(prompt, payload)
+    else:
+        result = call_openai_compatible(prompt, payload)
 
     with open(args.output, "w", encoding="utf-8") as file:
         json.dump(result, file, ensure_ascii=False, indent=2)

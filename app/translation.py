@@ -30,6 +30,7 @@ class TranslationSettings:
     glossary: str
     topic: str
     google_project: str
+    provider_name: str
 
 
 @dataclass
@@ -165,6 +166,7 @@ def build_worker_payload(
         "glossary": settings.glossary,
         "source_language": source_language,
         "target_language": target_language,
+        "translation_provider": settings.provider_name,
         "translation_profile": settings.engine,
         "model_name": settings.model_name,
         "strict": strict,
@@ -254,6 +256,7 @@ async def translate_srt_with_local_worker(
     on_progress: Callable[[int, int], None] | None = None,
 ) -> SubtitleTranslationResult:
     subtitles = load_srt(subtitle_path)
+    translation_characters = sum(len(sub.content) for sub in subtitles)
     windows = window_subtitles(
         subtitles,
         settings.target_window_seconds,
@@ -262,6 +265,26 @@ async def translate_srt_with_local_worker(
     translated_subtitles: list[srt.Subtitle] = []
     fallback_used = False
     total_windows = len(windows)
+    usage_totals = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "requests": 0,
+    }
+
+    def add_usage(result: dict[str, Any]) -> None:
+        usage = result.get("_usage")
+        if not isinstance(usage, dict):
+            return
+        for source_key, target_key in (
+            ("input_tokens", "input_tokens"),
+            ("output_tokens", "output_tokens"),
+            ("total_tokens", "total_tokens"),
+        ):
+            value = usage.get(source_key)
+            if isinstance(value, (int, float)):
+                usage_totals[target_key] += int(value)
+        usage_totals["requests"] += 1
 
     for index, window in enumerate(windows):
         if on_progress:
@@ -281,6 +304,7 @@ async def translate_srt_with_local_worker(
                     strict=strict,
                 )
                 result = await run_worker(payload)
+                add_usage(result)
                 try:
                     translated_map = validate_translations(window, result)
                 except Exception as error:
@@ -318,6 +342,7 @@ async def translate_srt_with_local_worker(
                 )
                 try:
                     result = await run_worker(payload)
+                    add_usage(result)
                     try:
                         translated_map.update(validate_translations(part, result))
                     except Exception as error:
@@ -375,6 +400,12 @@ async def translate_srt_with_local_worker(
             "translation_model": settings.model_name if engine == settings.engine else None,
             "translation_fallback_used": fallback_used,
             "translation_created_at": int(time.time()),
+            "translation_characters": translation_characters,
+            "translation_input_tokens": usage_totals["input_tokens"],
+            "translation_output_tokens": usage_totals["output_tokens"],
+            "translation_total_tokens": usage_totals["total_tokens"],
+            "translation_request_count": usage_totals["requests"],
+            "translation_billing_class": "local",
         },
     )
 

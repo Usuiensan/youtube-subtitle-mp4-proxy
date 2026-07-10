@@ -111,6 +111,7 @@ class Settings:
     local_llm_model = os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M")
     local_llm_profile_models = {
         "local_llm": os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M"),
+        "gemini_2_5_flash": os.getenv("LOCAL_LLM_MODEL_GEMINI_2_5_FLASH", "gemini-2.5-flash"),
         "qwen3_1_7b": os.getenv("LOCAL_LLM_MODEL_QWEN3_1_7B", "qwen3:1.7b"),
         "gemma3_1b": os.getenv("LOCAL_LLM_MODEL_GEMMA3_1B", "gemma3:1b"),
         "gemma3_4b": os.getenv("LOCAL_LLM_MODEL_GEMMA3_4B", "gemma3:4b"),
@@ -121,6 +122,7 @@ class Settings:
     }
     local_llm_profile_labels = {
         "local_llm": os.getenv("LOCAL_LLM_LABEL", "Default LLM"),
+        "gemini_2_5_flash": "Gemini Flash",
         "qwen3_1_7b": "Qwen 3 1.7B",
         "gemma3_1b": "Gemma 3 1B",
         "gemma3_4b": "Gemma 3 4B",
@@ -137,6 +139,11 @@ class Settings:
     translation_topic = os.getenv("TRANSLATION_TOPIC", "")
     translation_glossary = os.getenv("TRANSLATION_GLOSSARY", "")
     google_cloud_project = os.getenv("GOOGLE_CLOUD_PROJECT", "")
+    gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+    gemini_billing_mode = os.getenv("GEMINI_BILLING_MODE", "free_tier").strip().lower()
+    gemini_flash_input_price_per_million = float(os.getenv("GEMINI_FLASH_INPUT_PRICE_PER_MILLION", "0.30"))
+    gemini_flash_output_price_per_million = float(os.getenv("GEMINI_FLASH_OUTPUT_PRICE_PER_MILLION", "2.50"))
+    usd_to_jpy_rate = float(os.getenv("USD_TO_JPY_RATE", "160.0"))
     translation_provider = os.getenv("TRANSLATION_PROVIDER", "local_llm").strip().lower()
     nllb_model = os.getenv("NLLB_MODEL", "facebook/nllb-200-distilled-600M")
     nllb_device = os.getenv("NLLB_DEVICE", "auto")
@@ -1368,6 +1375,7 @@ def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
         model_name = settings.nllb_model
     else:
         model_name = settings.local_llm_profile_models.get(normalized, settings.local_llm_model)
+    provider_name = "gemini_api" if normalized == "gemini_2_5_flash" else settings.local_llm_engine
     return TranslationSettings(
         enabled=settings.translation_enabled,
         target_window_seconds=settings.local_llm_target_window_seconds,
@@ -1382,6 +1390,7 @@ def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
         glossary=settings.translation_glossary,
         topic=settings.translation_topic,
         google_project=settings.google_cloud_project,
+        provider_name=provider_name,
     )
 
 
@@ -1790,6 +1799,32 @@ def subtitle_translation_service_label(subtitle_meta: dict) -> str:
     if engine:
         return f"[translation] {engine}"
     return ""
+
+
+def gemini_overage_estimate(input_tokens: int, output_tokens: int) -> tuple[float, float]:
+    usd = (
+        (input_tokens / 1_000_000.0) * settings.gemini_flash_input_price_per_million
+        + (output_tokens / 1_000_000.0) * settings.gemini_flash_output_price_per_million
+    )
+    jpy = usd * settings.usd_to_jpy_rate
+    return usd, jpy
+
+
+def enrich_translation_metadata(metadata: dict) -> dict:
+    engine = str(metadata.get("translation_engine") or "")
+    if engine != "gemini_2_5_flash":
+        return metadata
+    input_tokens = int(metadata.get("translation_input_tokens") or 0)
+    output_tokens = int(metadata.get("translation_output_tokens") or 0)
+    usd, jpy = gemini_overage_estimate(input_tokens, output_tokens)
+    return {
+        **metadata,
+        "translation_provider_label": "Gemini Flash",
+        "translation_billing_class": "Gemini API Free Tier" if settings.gemini_billing_mode == "free_tier" else "Gemini API Paid Tier",
+        "translation_api_cost_jpy": 0.0 if settings.gemini_billing_mode == "free_tier" else jpy,
+        "translation_overage_estimate_usd": usd,
+        "translation_overage_estimate_jpy": jpy,
+    }
 
 
 def find_japanese_font_spec() -> tuple[str | None, str | None]:
@@ -2296,7 +2331,7 @@ async def translate_subtitle_if_needed(
     except Exception:
         pass
         
-    metadata = {**selection, **result.metadata}
+    metadata = enrich_translation_metadata({**selection, **result.metadata})
     return result.subtitle_path, metadata
 
 

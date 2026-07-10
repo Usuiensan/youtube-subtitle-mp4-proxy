@@ -351,7 +351,8 @@ def status_message(body: dict[str, Any], fallback_user_id: int | None = None) ->
     if status == "ready":
         mention = mention_text(body, fallback_user_id)
         prefix = f"{mention} " if mention else ""
-        return f"{prefix}準備できました。{title_part}{subtitle_part}\n{public_url(body.get('url'))}"
+        usage_part = translation_usage_text(body.get("subtitle"))
+        return f"{prefix}準備できました。{title_part}{subtitle_part}{usage_part}\n{public_url(body.get('url'))}"
     if status == "failed":
         mention = mention_text(body, fallback_user_id)
         prefix = f"{mention} " if mention else ""
@@ -451,6 +452,8 @@ def subtitle_status_text(meta: Any) -> str:
             engine_text = "Google翻訳フォールバック"
         elif engine == "nllb":
             engine_text = f"NLLB-200 distilled 600M{f' ({model})' if model else ''}"
+        elif engine == "gemini_2_5_flash":
+            engine_text = "Gemini Flash"
         elif model:
             engine_text = f"{engine or 'local_llm'} ({model})"
         else:
@@ -460,6 +463,28 @@ def subtitle_status_text(meta: Any) -> str:
     if source:
         return f"\n字幕: {lang_name_ja(source)}"
     return ""
+
+
+def translation_usage_text(meta: Any) -> str:
+    if not isinstance(meta, dict) or str(meta.get("translation_engine") or "") != "gemini_2_5_flash":
+        return ""
+    provider_label = str(meta.get("translation_provider_label") or "Gemini Flash")
+    billing_class = str(meta.get("translation_billing_class") or "Gemini API Free Tier")
+    characters = int(meta.get("translation_characters") or 0)
+    input_tokens = int(meta.get("translation_input_tokens") or 0)
+    output_tokens = int(meta.get("translation_output_tokens") or 0)
+    api_cost_jpy = float(meta.get("translation_api_cost_jpy") or 0.0)
+    overage_usd = float(meta.get("translation_overage_estimate_usd") or 0.0)
+    overage_jpy = float(meta.get("translation_overage_estimate_jpy") or 0.0)
+    return (
+        f"\n翻訳エンジン: {provider_label}"
+        f"\nAPI料金: ¥{api_cost_jpy:,.0f}"
+        f"\n課金区分: {billing_class}"
+        f"\n翻訳文字数: {characters:,}文字"
+        f"\n入力トークン: {input_tokens:,}"
+        f"\n出力トークン: {output_tokens:,}"
+        f"\n無料枠超過時の概算料金: ${overage_usd:,.4f} / ¥{overage_jpy:,.2f}"
+    )
 
 
 def sanitize_progress_details(details: Any) -> str:
@@ -532,7 +557,8 @@ class SubtitleChoiceView(discord.ui.View):
             self.translation_engine = default_option.value if default_option else engine_options[0].value
         if not engine_options:
             engine_options = [
-                discord.SelectOption(label="Qwen 3 1.7B", value="qwen3_1_7b", default=True),
+                discord.SelectOption(label="Gemini Flash", value="gemini_2_5_flash", default=True),
+                discord.SelectOption(label="Qwen 3 1.7B", value="qwen3_1_7b"),
                 discord.SelectOption(label="Gemma 3 1B", value="gemma3_1b"),
                 discord.SelectOption(label="Gemma 3 4B", value="gemma3_4b"),
                 discord.SelectOption(label="NLLB-200 distilled 600M", value="nllb200_distilled_600m"),
@@ -675,7 +701,10 @@ async def notify_when_done(
             continue
         if latest.get("status") in {"ready", "failed"}:
             notification = latest.get("notification") or {}
-            content = notification.get("content") or status_message(latest, interaction.user.id)
+            if isinstance(latest.get("counts"), dict):
+                content = notification.get("content") or status_message(latest, interaction.user.id)
+            else:
+                content = status_message(latest, interaction.user.id)
             subtitle_part = subtitle_status_text(latest.get("subtitle"))
             if subtitle_part and subtitle_part not in content:
                 content += subtitle_part
