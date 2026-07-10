@@ -62,7 +62,13 @@ NLLB_LANGUAGE_MAP: dict[str, str] = {
 
 
 def normalize_language_code(code: str) -> str:
-    return code.strip().lower()
+    normalized = code.strip().replace("_", "-").lower()
+    if normalized in {"zh-hans", "zh-hant", "zh-cn", "zh-tw"}:
+        return normalized
+    parts = [part for part in normalized.split("-") if part]
+    if len(parts) >= 2 and len(parts[0]) == 2:
+        return parts[0]
+    return normalized
 
 
 def nllb_language_code(code: str) -> str:
@@ -70,6 +76,10 @@ def nllb_language_code(code: str) -> str:
     mapped = NLLB_LANGUAGE_MAP.get(normalized)
     if mapped:
         return mapped
+    if "-" in normalized:
+        mapped = NLLB_LANGUAGE_MAP.get(normalized.split("-", 1)[0])
+        if mapped:
+            return mapped
     raise TranslationError(f"Unsupported NLLB language code: {code}")
 
 

@@ -27,7 +27,10 @@ class NllbProviderTests(unittest.TestCase):
     def test_language_mapping(self) -> None:
         self.assertEqual(nllb.nllb_language_code("ja"), "jpn_Jpan")
         self.assertEqual(nllb.nllb_language_code("en"), "eng_Latn")
+        self.assertEqual(nllb.nllb_language_code("en-US"), "eng_Latn")
+        self.assertEqual(nllb.nllb_language_code("ja-JP"), "jpn_Jpan")
         self.assertEqual(nllb.nllb_language_code("zh-Hans"), "zho_Hans")
+        self.assertEqual(nllb.nllb_language_code("zh-CN"), "zho_Hans")
 
     def test_unsupported_language_raises(self) -> None:
         with self.assertRaises(nllb.TranslationError):
