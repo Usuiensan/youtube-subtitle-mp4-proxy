@@ -283,6 +283,26 @@ async def reburn_batch(
     return await asyncio.to_thread(http_json, "POST", url)
 
 
+async def reburn_all(
+    lang: str,
+    mode: str,
+    discord_user_id: int,
+    max_items: int,
+    archive_immediately: bool = False,
+) -> tuple[int, dict[str, Any]]:
+    params = {
+        "mode": mode,
+        "maxItems": str(max_items),
+        "discordUserId": str(discord_user_id),
+        "archiveImmediately": "true" if archive_immediately else "false",
+    }
+    if lang and lang.lower() not in {"all", "*"}:
+        params["lang"] = lang
+    query = urllib.parse.urlencode(params)
+    url = f"{settings.youtube_proxy_internal_base_url}/prepare/youtube-reburn-all?{query}"
+    return await asyncio.to_thread(http_json, "POST", url)
+
+
 async def clear_video(video_id: str, lang: str) -> tuple[int, dict[str, Any]]:
     url = f"{settings.youtube_proxy_internal_base_url}/prepare/youtube/{video_id}/{lang}/clear"
     return await asyncio.to_thread(http_json, "POST", url)
@@ -1065,6 +1085,65 @@ async def reburn_command(
         )
     except PrepareApiError as error:
         await interaction.followup.send(f"再焼き込みAPIエラー ({error.status_code}): {error.detail}", ephemeral=True)
+        return
+
+    content = status_message(body, interaction.user.id)
+    await interaction.followup.send(
+        content,
+        allowed_mentions=discord.AllowedMentions(users=True),
+        ephemeral=True,
+    )
+
+    status_url = body.get("status_url")
+    if body.get("status") in {"queued", "running"} and isinstance(status_url, str):
+        asyncio.create_task(notify_when_done(interaction, status_url))
+
+
+@client.tree.command(name="reburn-all", description="再利用可能な準備済み動画をすべて再焼き込みします")
+@app_commands.describe(
+    lang="字幕言語。allで全言語",
+    mode="出力形式",
+    max_items="最大処理件数",
+    archive_immediately="準備後すぐHDDへ退避する",
+)
+@app_commands.choices(
+    mode=[
+        app_commands.Choice(name="MP4", value="mp4"),
+        app_commands.Choice(name="HLS", value="hls"),
+    ]
+)
+async def reburn_all_command(
+    interaction: discord.Interaction,
+    lang: str = "all",
+    mode: app_commands.Choice[str] | None = None,
+    max_items: int | None = None,
+    archive_immediately: bool = False,
+) -> None:
+    await interaction.response.defer(thinking=True, ephemeral=True)
+
+    if not settings.discord_prepare_token:
+        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=True)
+        return
+
+    selected_mode = mode.value if mode else "mp4"
+    selected_max_items = max_items if max_items is not None else settings.prepare_batch_max_items
+    if selected_max_items < 1 or selected_max_items > 5000:
+        await interaction.followup.send("max_items は 1 から 5000 の範囲で指定してください。", ephemeral=True)
+        return
+    if archive_immediately and selected_mode != "mp4":
+        await interaction.followup.send("archive_immediately は MP4 のみ対応です。", ephemeral=True)
+        return
+
+    try:
+        _status, body = await reburn_all(
+            lang,
+            selected_mode,
+            interaction.user.id,
+            selected_max_items,
+            archive_immediately,
+        )
+    except PrepareApiError as error:
+        await interaction.followup.send(f"全件再焼き込みAPIエラー ({error.status_code}): {error.detail}", ephemeral=True)
         return
 
     content = status_message(body, interaction.user.id)

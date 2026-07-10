@@ -4420,6 +4420,94 @@ async def enqueue_reburn_batch(
     return status_code, batch_response_body(batch_id, batch, request, include_items=True)
 
 
+async def enqueue_reburn_all(
+    request: Request,
+    lang: str | None,
+    mode: str,
+    max_items: int,
+    discord_user_id: str | None,
+    archive_immediately: bool = False,
+) -> tuple[int, dict]:
+    if archive_immediately and mode != "mp4":
+        raise HTTPException(status_code=400, detail="archiveImmediately is supported only for mp4")
+
+    candidates = []
+    seen: set[str] = set()
+    for prepared in list_prepared_cache_entries(request):
+        if lang and prepared.get("lang") != lang:
+            continue
+        if not any(output.get("mode") == mode for output in prepared.get("outputs", [])):
+            continue
+        key = str(prepared.get("key") or "")
+        if not key or key in seen:
+            continue
+        if check_existing_sources(key) is None:
+            continue
+        seen.add(key)
+        candidates.append(prepared)
+        if len(candidates) >= max_items:
+            break
+
+    if not candidates:
+        raise HTTPException(status_code=404, detail="No reusable prepared entries found")
+
+    mentions = [discord_mention(discord_user_id)] if discord_user_id else []
+    batch_id = uuid.uuid4().hex
+    items = []
+    any_pending = False
+    for prepared in candidates:
+        video_id = str(prepared["video_id"])
+        item_lang = str(prepared["lang"])
+        key = str(prepared["key"])
+        subtitle_meta = prepared.get("subtitle") if isinstance(prepared.get("subtitle"), dict) else {}
+        source_lang, translation_engine = prepared_variant_from_meta(subtitle_meta)
+        clear_rendered_outputs_only(key, mode)
+        status_code, body = await enqueue_prepare_job(
+            request,
+            video_id,
+            item_lang,
+            mode,
+            discord_user_id,
+            subtitle_source_lang=source_lang,
+            translation_engine=translation_engine,
+            archive_immediately=archive_immediately,
+            reuse_cached_subtitle=True,
+        )
+        if body.get("status") in {"queued", "running"}:
+            any_pending = True
+        items.append(
+            {
+                "video_id": video_id,
+                "title": prepared.get("title") or body.get("title") or video_id,
+                "lang": item_lang,
+                "mode": mode,
+                "status": body.get("status", "unknown"),
+                "job_id": body.get("job_id"),
+                "url": body.get("url"),
+                "error": body.get("error"),
+                "status_code": status_code,
+            }
+        )
+
+    batch = {
+        "source_type": "prepared",
+        "source": "all",
+        "playlist_id": "prepared",
+        "playlist_name": "準備済み全件 / 再焼き込み",
+        "lang": lang or "all",
+        "mode": mode,
+        "created_at": int(time.time()),
+        "mentions": mentions,
+        "items": items,
+    }
+    async with _prepare_lock:
+        prune_prepare_jobs()
+        _prepare_batches[batch_id] = batch
+
+    status_code = 202 if any_pending else 200
+    return status_code, batch_response_body(batch_id, batch, request, include_items=True)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index() -> str:
     default_lang = json.dumps(settings.default_lang)
@@ -6103,6 +6191,38 @@ async def prepare_youtube_reburn_batch(
         request,
         source,
         source_type,
+        lang,
+        mode,
+        max_items,
+        discord_user_id,
+        archive_immediately,
+    )
+    return JSONResponse(body, status_code=status_code)
+
+
+@app.post("/prepare/youtube-reburn-all")
+async def prepare_youtube_reburn_all(
+    request: Request,
+    lang: str | None = Query(None),
+    mode: str = Query("mp4"),
+    max_items: int = Query(5000, alias="maxItems"),
+    discord_user_id: str | None = Query(None, alias="discordUserId"),
+    archive_immediately: bool = Query(False, alias="archiveImmediately"),
+) -> JSONResponse:
+    require_prepare_auth(request)
+    if lang in {"", "all", "*"}:
+        lang = None
+    if lang is not None and not LANG_RE.fullmatch(lang):
+        raise HTTPException(status_code=400, detail="Invalid language code")
+    if mode not in {"mp4", "hls"}:
+        raise HTTPException(status_code=400, detail="mode must be mp4 or hls")
+    if archive_immediately and mode != "mp4":
+        raise HTTPException(status_code=400, detail="archiveImmediately is supported only for mp4")
+    max_items = normalize_max_items(max_items)
+    discord_user_id = validate_discord_user_id(discord_user_id)
+    await cleanup_expired_cache_async()
+    status_code, body = await enqueue_reburn_all(
+        request,
         lang,
         mode,
         max_items,
