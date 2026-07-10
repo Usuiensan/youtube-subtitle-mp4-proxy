@@ -90,6 +90,17 @@ def normalize_japanese_subtitle(text: str) -> str:
     return text
 
 
+def resolve_forced_bos_token_id(tokenizer: Any, target_code: str) -> int:
+    lang_map = getattr(tokenizer, "lang_code_to_id", None)
+    if isinstance(lang_map, dict) and target_code in lang_map:
+        return int(lang_map[target_code])
+
+    token_id = tokenizer.convert_tokens_to_ids(target_code)
+    if token_id is None or int(token_id) < 0:
+        raise TranslationError(f"Tokenizer does not support target language: {target_code}")
+    return int(token_id)
+
+
 def is_oom_error(error: BaseException) -> bool:
     message = str(error).lower()
     return "out of memory" in message or "cuda oom" in message or "cublas" in message and "alloc" in message
@@ -246,7 +257,7 @@ class NllbTranslationProvider:
             max_length=self.config.max_input_tokens,
         )
         inputs = {key: value.to(self.device) for key, value in inputs.items()}
-        forced_bos_token_id = tokenizer.lang_code_to_id[target_code]
+        forced_bos_token_id = resolve_forced_bos_token_id(tokenizer, target_code)
         with torch.inference_mode():
             generated = model.generate(
                 **inputs,

@@ -65,12 +65,13 @@ class NllbProviderTests(unittest.TestCase):
                 return self
 
         class FakeTokenizer:
-            lang_code_to_id = {"eng_Latn": 1, "jpn_Jpan": 2}
-
             @classmethod
             def from_pretrained(cls, model_name):
                 state["tokenizer"] += 1
                 return cls()
+
+            def convert_tokens_to_ids(self, token):
+                return {"eng_Latn": 1, "jpn_Jpan": 2}[token]
 
             def __call__(self, texts, return_tensors, padding, truncation, max_length):
                 return FakeInputs({"input_ids": object()})
