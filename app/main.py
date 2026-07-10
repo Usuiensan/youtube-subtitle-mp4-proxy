@@ -1024,6 +1024,37 @@ def reburn_variant_for(video_id: str, lang: str, mode: str) -> tuple[str, str | 
     return key, source_lang, translation_engine
 
 
+def reusable_source_entries() -> list[dict]:
+    items: dict[str, dict] = {}
+    for storage, root in (("hot", settings.cache_hot_dir), ("archive", settings.cache_archive_dir)):
+        if root is None or not root.exists():
+            continue
+        for child in root.iterdir():
+            if not child.is_dir() or child.name.startswith(".") or child.name in items:
+                continue
+            existing = check_existing_source_video(child.name)
+            if existing is None:
+                continue
+            _video_path, source_meta, _base_dir = existing
+            video_id = source_meta.get("video_id")
+            lang = source_meta.get("lang")
+            if not isinstance(video_id, str) or not VIDEO_ID_RE.fullmatch(video_id):
+                continue
+            if not isinstance(lang, str) or not LANG_RE.fullmatch(lang):
+                continue
+            subtitle_meta = source_meta.get("subtitle_meta") if isinstance(source_meta.get("subtitle_meta"), dict) else {}
+            items[child.name] = {
+                "key": child.name,
+                "storage": storage,
+                "video_id": video_id,
+                "title": source_meta.get("title") or video_id,
+                "lang": lang,
+                "subtitle": subtitle_meta,
+                "updated_at": int(cache_entry_newest_mtime(child) or child.stat().st_mtime),
+            }
+    return sorted(items.values(), key=lambda item: int(item.get("updated_at") or 0), reverse=True)
+
+
 def extract_title_variants(info: dict) -> list[dict[str, str]]:
     variants: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -2760,6 +2791,55 @@ async def download_sources(
     return video, original_subtitle, subtitle, subtitle_meta
 
 
+async def download_subtitle_only(
+    video_id: str,
+    lang: str,
+    work_dir: Path,
+    info: dict,
+    job_id: str | None = None,
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
+) -> tuple[Path, Path, dict]:
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    subtitle_selection = select_subtitle_language(
+        info,
+        lang,
+        source_lang=subtitle_source_lang,
+        translation_engine=translation_engine,
+    )
+    source_lang = subtitle_selection["source_language"]
+    start_t = time.time()
+    dl_args = yt_dlp_base_args() + [
+        "--no-playlist",
+        "--skip-download",
+        "--write-subs",
+        "--sub-langs",
+        source_lang,
+        "--convert-subs",
+        "srt",
+        "--paths",
+        str(work_dir),
+        "-o",
+        "%(id)s.%(ext)s",
+        url,
+    ]
+    if job_id:
+        await run_yt_dlp_with_progress(dl_args, job_id=job_id, cwd=work_dir)
+    else:
+        await run_command(dl_args, cwd=work_dir)
+    original_subtitle = find_subtitle(work_dir, source_lang)
+    metrics_manager.record_download(original_subtitle.stat().st_size, time.time() - start_t)
+    subtitle, subtitle_meta = await translate_subtitle_if_needed(
+        key=cache_key(video_id, lang, subtitle_source_lang, translation_engine),
+        subtitle=original_subtitle,
+        info=info,
+        selection=subtitle_selection,
+        work_dir=work_dir,
+        job_id=job_id,
+    )
+    return original_subtitle, subtitle, subtitle_meta
+
+
 async def burn_subtitles(
     video: Path,
     subtitle: Path,
@@ -2847,7 +2927,7 @@ def get_cached_video_info(key: str) -> dict | None:
 
     archive_dir = archive_entry_dir(key)
     if archive_dir:
-        archive_meta_p = archive_dir / "source" / "source.json"
+        archive_meta_p = archive_dir / "source.json"
         if archive_meta_p.exists():
             try:
                 return json.loads(archive_meta_p.read_text(encoding="utf-8"))
@@ -2897,6 +2977,22 @@ def check_existing_sources(key: str) -> tuple[Path, Path, dict] | None:
     return video_path, original_subtitle_path, subtitle_meta
 
 
+def check_existing_source_video(key: str) -> tuple[Path, dict, Path] | None:
+    source_meta = get_cached_video_info(key)
+    if not source_meta:
+        return None
+    for base_dir in (entry_dir(key), archive_entry_dir(key)):
+        if not base_dir or not base_dir.exists():
+            continue
+        source_video_rel = source_meta.get("source_video")
+        if not isinstance(source_video_rel, str) or not source_video_rel:
+            continue
+        video_path = base_dir / source_video_rel
+        if video_path.exists() and video_path.stat().st_size > 0:
+            return video_path, source_meta, base_dir
+    return None
+
+
 def cached_subtitle_path(key: str) -> Path | None:
     source_meta = get_cached_video_info(key)
     if not source_meta:
@@ -2941,6 +3037,7 @@ async def prepare_sources(
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
     reuse_cached_subtitle: bool = False,
+    reuse_source_video: bool = False,
 ) -> tuple[Path, Path, dict]:
     existing = check_existing_sources(key)
     if existing and subtitle_source_lang:
@@ -2993,6 +3090,46 @@ async def prepare_sources(
         write_source_meta(key, video_id, lang, info, saved_video, saved_subtitle, new_subtitle_meta)
         return saved_video, saved_subtitle, new_subtitle_meta
 
+    if reuse_source_video:
+        existing_video = check_existing_source_video(key)
+        if existing_video:
+            saved_video, _source_meta, base_dir = existing_video
+            hot_dir = entry_dir(key)
+            archive_dir = archive_entry_dir(key)
+            if archive_dir and base_dir == archive_dir and not hot_dir.exists():
+                shutil.copytree(archive_dir, hot_dir)
+                saved_video = hot_dir / saved_video.relative_to(archive_dir)
+
+            original_subtitle, subtitle, subtitle_meta = await download_subtitle_only(
+                video_id,
+                lang,
+                work_dir,
+                info,
+                job_id=job_id,
+                subtitle_source_lang=subtitle_source_lang,
+                translation_engine=translation_engine,
+            )
+            source_dir(key).mkdir(parents=True, exist_ok=True)
+            source_lang = subtitle_meta.get("source_language", lang)
+            saved_original_subtitle = source_dir(key) / f"subtitle.{source_lang}.original{original_subtitle.suffix.lower()}"
+            saved_subtitle = (
+                source_dir(key) / f"subtitle.{lang}.translated{subtitle.suffix.lower()}"
+                if subtitle_meta.get("translated")
+                else source_dir(key) / f"subtitle.{lang}{subtitle.suffix.lower()}"
+            )
+            move_replace(original_subtitle, saved_original_subtitle)
+            if subtitle != saved_original_subtitle:
+                move_replace(subtitle, saved_subtitle)
+            else:
+                saved_subtitle = saved_original_subtitle
+            if subtitle_meta.get("translated"):
+                translation_meta_path(key).write_text(
+                    json.dumps(subtitle_meta, ensure_ascii=True, indent=2),
+                    encoding="utf-8",
+                )
+            write_source_meta(key, video_id, lang, info, saved_video, saved_subtitle, subtitle_meta)
+            return saved_video, saved_subtitle, subtitle_meta
+
     # Normal download path
     video, original_subtitle, subtitle, subtitle_meta = await download_sources(
         video_id,
@@ -3032,6 +3169,7 @@ async def create_mp4(
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
     reuse_cached_subtitle: bool = False,
+    reuse_source_video: bool = False,
 ) -> Path:
     key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
     final_output = output_path(key)
@@ -3062,6 +3200,7 @@ async def create_mp4(
                 subtitle_source_lang=subtitle_source_lang,
                 translation_engine=translation_engine,
                 reuse_cached_subtitle=reuse_cached_subtitle,
+                reuse_source_video=reuse_source_video,
             )
             await burn_subtitles(
                 saved_video,
@@ -3084,6 +3223,7 @@ async def create_hls_job(
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
     reuse_cached_subtitle: bool = False,
+    reuse_source_video: bool = False,
 ) -> Path:
     key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
     playlist = hls_playlist_path(key)
@@ -3114,6 +3254,7 @@ async def create_hls_job(
                 subtitle_source_lang=subtitle_source_lang,
                 translation_engine=translation_engine,
                 reuse_cached_subtitle=reuse_cached_subtitle,
+                reuse_source_video=reuse_source_video,
             )
             write_meta(key, video_id, lang, info, "hls")
             await create_hls(
@@ -3136,6 +3277,7 @@ async def get_or_create_mp4(
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
     reuse_cached_subtitle: bool = False,
+    reuse_source_video: bool = False,
 ) -> Path:
     key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
     cached = prepared_output_path(key)
@@ -3153,6 +3295,7 @@ async def get_or_create_mp4(
                     subtitle_source_lang=subtitle_source_lang,
                     translation_engine=translation_engine,
                     reuse_cached_subtitle=reuse_cached_subtitle,
+                    reuse_source_video=reuse_source_video,
                 )
             )
             _inflight[key] = task
@@ -3185,6 +3328,7 @@ async def get_or_start_hls(
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
     reuse_cached_subtitle: bool = False,
+    reuse_source_video: bool = False,
 ) -> Path:
     key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
     cached = prepared_hls_playlist_path(key)
@@ -3202,6 +3346,7 @@ async def get_or_start_hls(
                     subtitle_source_lang=subtitle_source_lang,
                     translation_engine=translation_engine,
                     reuse_cached_subtitle=reuse_cached_subtitle,
+                    reuse_source_video=reuse_source_video,
                 )
             )
             _hls_inflight[key] = task
@@ -3222,6 +3367,7 @@ async def get_or_create_hls(
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
     reuse_cached_subtitle: bool = False,
+    reuse_source_video: bool = False,
 ) -> Path:
     key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
     cached = prepared_hls_playlist_path(key)
@@ -3239,6 +3385,7 @@ async def get_or_create_hls(
                     subtitle_source_lang=subtitle_source_lang,
                     translation_engine=translation_engine,
                     reuse_cached_subtitle=reuse_cached_subtitle,
+                    reuse_source_video=reuse_source_video,
                 )
             )
             _hls_inflight[key] = task
@@ -3632,6 +3779,7 @@ async def run_prepare_job(
     translation_engine: str | None = None,
     archive_immediately: bool = False,
     reuse_cached_subtitle: bool = False,
+    reuse_source_video: bool = False,
 ) -> None:
     _prepare_jobs[job_id]["status"] = "running"
     try:
@@ -3675,6 +3823,7 @@ async def run_prepare_job(
                 subtitle_source_lang=subtitle_source_lang,
                 translation_engine=translation_engine,
                 reuse_cached_subtitle=reuse_cached_subtitle,
+                reuse_source_video=reuse_source_video,
             )
         else:
             await get_or_create_mp4(
@@ -3684,6 +3833,7 @@ async def run_prepare_job(
                 subtitle_source_lang=subtitle_source_lang,
                 translation_engine=translation_engine,
                 reuse_cached_subtitle=reuse_cached_subtitle,
+                reuse_source_video=reuse_source_video,
             )
         archived = False
         if archive_immediately:
@@ -3728,6 +3878,7 @@ async def enqueue_prepare_job(
     translation_engine: str | None = None,
     archive_immediately: bool = False,
     reuse_cached_subtitle: bool = False,
+    reuse_source_video: bool = False,
 ) -> tuple[int, dict]:
     if subtitle_source_lang:
         if not LANG_RE.fullmatch(subtitle_source_lang):
@@ -3792,6 +3943,7 @@ async def enqueue_prepare_job(
             "translation_engine": normalized_engine,
             "archive_immediately": archive_immediately,
             "reuse_cached_subtitle": reuse_cached_subtitle,
+            "reuse_source_video": reuse_source_video,
         }
         if cached_info:
             if cached_info.get("title"):
@@ -3815,6 +3967,7 @@ async def enqueue_prepare_job(
                 translation_engine=normalized_engine,
                 archive_immediately=archive_immediately,
                 reuse_cached_subtitle=reuse_cached_subtitle,
+                reuse_source_video=reuse_source_video,
             )
         )
         return 202, job_response_body(job_id, _prepare_jobs[job_id], request)
@@ -4360,7 +4513,7 @@ async def enqueue_reburn_batch(
     for track in tracks:
         video_id = track["video_id"]
         variant_key, source_lang, translation_engine = reburn_variant_for(video_id, lang, mode)
-        if check_existing_sources(variant_key) is None:
+        if check_existing_source_video(variant_key) is None:
             items.append(
                 {
                     "video_id": video_id,
@@ -4368,7 +4521,7 @@ async def enqueue_reburn_batch(
                     "lang": lang,
                     "mode": mode,
                     "status": "failed",
-                    "error": "No reusable source video/subtitle found",
+                    "error": "No reusable source video found",
                     "status_code": 404,
                 }
             )
@@ -4384,6 +4537,7 @@ async def enqueue_reburn_batch(
             translation_engine=translation_engine,
             archive_immediately=archive_immediately,
             reuse_cached_subtitle=True,
+            reuse_source_video=True,
         )
         if body.get("status") in {"queued", "running"}:
             any_pending = True
@@ -4433,15 +4587,13 @@ async def enqueue_reburn_all(
 
     candidates = []
     seen: set[str] = set()
-    for prepared in list_prepared_cache_entries(request):
+    for prepared in reusable_source_entries():
         if lang and prepared.get("lang") != lang:
-            continue
-        if not any(output.get("mode") == mode for output in prepared.get("outputs", [])):
             continue
         key = str(prepared.get("key") or "")
         if not key or key in seen:
             continue
-        if check_existing_sources(key) is None:
+        if check_existing_source_video(key) is None:
             continue
         seen.add(key)
         candidates.append(prepared)
@@ -4472,6 +4624,7 @@ async def enqueue_reburn_all(
             translation_engine=translation_engine,
             archive_immediately=archive_immediately,
             reuse_cached_subtitle=True,
+            reuse_source_video=True,
         )
         if body.get("status") in {"queued", "running"}:
             any_pending = True
