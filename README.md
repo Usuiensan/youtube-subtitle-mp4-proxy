@@ -106,7 +106,7 @@ curl -X POST \
 
 `POST /prepare/youtube/:videoId/:lang?mode=mp4|hls` は、準備済みなら `200 {"status":"ready","url":"..."}` を返します。準備が必要なら `202` と `job_id` / `status_url` を返すので、Discord bot 側で `GET /prepare/jobs/:jobId` をポーリングし、`ready` になってから `url` を投稿します。
 
-`GET /prepare/youtube/:videoId/:lang/subtitles?mode=mp4|hls` は、準備前に字幕候補を確認するための API です。`lang=ja` で日本語字幕がなく、翻訳可能な手動字幕がある場合は `requires_choice: true` と `candidates` を返します。`POST /prepare/youtube/:videoId/:lang` には `subtitleSourceLang=en&translationEngine=local_llm|google_cloud` を渡せます。
+`GET /prepare/youtube/:videoId/:lang/subtitles?mode=mp4|hls` は、準備前に字幕候補を確認するための API です。`lang=ja` で日本語字幕がなく、翻訳可能な手動字幕がある場合は `requires_choice: true` と `candidates` を返します。翻訳エンジンは一時的に `google_cloud` のみ受け付けます。
 
 翻訳元や翻訳方式を明示する版は、VRChat の動画プレーヤーで query string が落ちる可能性を避けるため path でも指定できます。
 
@@ -229,11 +229,7 @@ export GOOGLE_CLOUD_PROJECT=your-google-cloud-project-id
 
 翻訳済み字幕は `source/subtitle.ja.translated.srt`、元字幕は `source/subtitle.SOURCE.original.srt`、翻訳メタデータは `source/translation.json` に保存します。翻訳設定とモデル名はキャッシュキーへ含まれるため、モデルやwindow設定を変えた場合に古いMP4を誤再利用しません。
 
-翻訳プロファイルはURLの `translationEngine` 部分でも指定できます。例: `/youtube/RSTNhvDGbYI/ja/en-US/gemini_2_5_flash`、`/youtube/RSTNhvDGbYI/ja/en-US/opus_mt_en_jap`、`/youtube/RSTNhvDGbYI/ja/en-US/qwen3_1_7b`、`/youtube/RSTNhvDGbYI/ja/en-US/gemma3_4b`。Web UI の「字幕比較」タブでは複数プロファイルを準備し、動画を一時停止またはシークしながら同じ時刻の字幕テキストを横並びで比較できます。
-
-Gemini Flash を使う場合は `LOCAL_LLM_MODEL_GEMINI_2_5_FLASH=gemini-2.5-flash` と `GEMINI_API_KEY` を設定し、翻訳エンジンで `gemini_2_5_flash` を選びます。Discord の完了報告には、Gemini Flash の翻訳文字数、入力トークン、出力トークン、無料枠超過時の概算料金を表示します。`GEMINI_BILLING_MODE=free_tier` の間は `API料金: ¥0` / `課金区分: Gemini API Free Tier` として扱い、超過時の概算は `GEMINI_FLASH_INPUT_PRICE_PER_MILLION`、`GEMINI_FLASH_OUTPUT_PRICE_PER_MILLION`、`USD_TO_JPY_RATE` から計算します。
-
-`Helsinki-NLP/opus-mt-en-jap` を使う場合は `OPUS_MT_MODEL=Helsinki-NLP/opus-mt-en-jap` を設定し、翻訳エンジンで `opus_mt_en_jap` を選びます。これは英語から日本語への専用モデルなので、`source_language` は `en` 系、`target_language` は `ja` 系である必要があります。CUDA が使えるなら GPU、そうでなければ CPU で動きます。NLLB と同様に batch 単位で推論し、OOM 時は半分ずつ再試行します。
+翻訳プロファイルの複数運用は一時停止しています。翻訳は当面 `google_cloud` のみに固定し、Gemini / Opus MT / NLLB / ローカル LLM は準備 API から使えないようにしています。
 
 ### NLLB-200 distilled 600M
 

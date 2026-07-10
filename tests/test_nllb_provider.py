@@ -122,7 +122,7 @@ class NllbProviderTests(unittest.TestCase):
 
     def test_provider_selection(self) -> None:
         values = [item["value"] for item in app_main.translation_profile_options()]
-        self.assertIn("nllb", values)
+        self.assertEqual(values, ["google_cloud"])
         self.assertEqual(app_main.normalize_translation_engine("nllb"), "nllb")
         self.assertEqual(app_main.translation_settings("nllb").model_name, app_main.settings.nllb_model)
 

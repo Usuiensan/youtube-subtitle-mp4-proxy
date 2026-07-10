@@ -520,7 +520,7 @@ class SubtitleChoiceView(discord.ui.View):
         self.lang = lang
         self.mode = mode
         self.source_lang: str | None = None
-        self.translation_engine = "qwen3_1_7b"
+        self.translation_engine = "google_cloud"
 
         candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
         source_options = []
@@ -559,13 +559,7 @@ class SubtitleChoiceView(discord.ui.View):
             self.translation_engine = default_option.value if default_option else engine_options[0].value
         if not engine_options:
             engine_options = [
-                discord.SelectOption(label="Gemini Flash", value="gemini_2_5_flash", default=True),
-                discord.SelectOption(label="Opus MT en->ja", value="opus_mt_en_jap"),
-                discord.SelectOption(label="Qwen 3 1.7B", value="qwen3_1_7b"),
-                discord.SelectOption(label="Gemma 3 1B", value="gemma3_1b"),
-                discord.SelectOption(label="Gemma 3 4B", value="gemma3_4b"),
-                discord.SelectOption(label="NLLB-200 distilled 600M", value="nllb200_distilled_600m"),
-                discord.SelectOption(label="Google翻訳", value="google_cloud"),
+                discord.SelectOption(label="Google翻訳", value="google_cloud", default=True),
             ]
         self.source_select = discord.ui.Select(
             placeholder="翻訳元字幕を選択",
@@ -833,7 +827,7 @@ async def prepare_command(
                         options_body=options_body,
                     )
                     await interaction.followup.send(
-                        f"日本語字幕が見つかりませんでした。\n{title}\n翻訳元字幕と翻訳エンジンを選択してください。既定は LLM 翻訳です。",
+                        f"日本語字幕が見つかりませんでした。\n{title}\n翻訳元字幕を選択してください。翻訳エンジンは一時的に Google翻訳 のみ使用します。",
                         view=view,
                         ephemeral=True,
                     )
