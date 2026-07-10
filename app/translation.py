@@ -4,6 +4,7 @@ import html
 import json
 import math
 import re
+import sys
 import time
 from dataclasses import dataclass
 from datetime import timedelta
@@ -243,6 +244,7 @@ async def translate_srt_with_local_worker(
         if on_progress:
             on_progress(index, total_windows)
         translated_map: dict[str, str] | None = None
+        last_error: Exception | None = None
         for strict in (False, True):
             try:
                 payload = build_worker_payload(
@@ -258,13 +260,24 @@ async def translate_srt_with_local_worker(
                 result = await run_worker(payload)
                 translated_map = validate_translations(window, result)
                 break
-            except Exception:
+            except Exception as error:
+                last_error = error
+                print(
+                    (
+                        "local LLM translation attempt failed: "
+                        f"window={index + 1}/{total_windows} strict={strict} "
+                        f"source={source_language} target={target_language} "
+                        f"error={type(error).__name__}: {error}"
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
                 translated_map = None
 
         if translated_map is None and len(window) > 1:
             translated_map = {}
             midpoint = len(window) // 2
-            for part in (window[:midpoint], window[midpoint:]):
+            for part_index, part in enumerate((window[:midpoint], window[midpoint:]), start=1):
                 payload = build_worker_payload(
                     video_title=video_title,
                     source_language=source_language,
@@ -278,12 +291,32 @@ async def translate_srt_with_local_worker(
                 try:
                     result = await run_worker(payload)
                     translated_map.update(validate_translations(part, result))
-                except Exception:
+                except Exception as error:
+                    last_error = error
+                    print(
+                        (
+                            "local LLM translation split retry failed: "
+                            f"window={index + 1}/{total_windows} part={part_index}/2 "
+                            f"source={source_language} target={target_language} "
+                            f"error={type(error).__name__}: {error}"
+                        ),
+                        file=sys.stderr,
+                        flush=True,
+                    )
                     translated_map = None
                     break
 
         if translated_map is None:
             fallback_used = True
+            print(
+                (
+                    "local LLM translation fell back to Google Cloud: "
+                    f"window={index + 1}/{total_windows} source={source_language} "
+                    f"target={target_language} last_error={type(last_error).__name__ if last_error else 'unknown'}: {last_error}"
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
             translated_map = google_translate_events(window, target_language, settings)
 
         for sub in window:

@@ -8,12 +8,14 @@ import re
 import secrets
 import shlex
 import shutil
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import AsyncIterator
@@ -112,9 +114,16 @@ class Settings:
     translation_topic = os.getenv("TRANSLATION_TOPIC", "")
     translation_glossary = os.getenv("TRANSLATION_GLOSSARY", "")
     google_cloud_project = os.getenv("GOOGLE_CLOUD_PROJECT", "")
+    system_metrics_enabled = os.getenv("SYSTEM_METRICS_ENABLED", "1") != "0"
+    system_metrics_interval_seconds = float(os.getenv("SYSTEM_METRICS_INTERVAL_SECONDS", "5"))
+    system_metrics_history_seconds = int(os.getenv("SYSTEM_METRICS_HISTORY_SECONDS", "86400"))
+    system_metrics_file = Path(os.getenv("SYSTEM_METRICS_FILE", str(cache_hot_dir / "system-metrics.jsonl")))
 
 
 settings = Settings()
+_system_metrics: deque[dict] = deque(maxlen=max(1, int(settings.system_metrics_history_seconds / max(settings.system_metrics_interval_seconds, 1)) + 60))
+_last_cpu_times: tuple[int, int] | None = None
+_metrics_task: asyncio.Task | None = None
 
 
 class MetricsManager:
@@ -181,7 +190,209 @@ class MetricsManager:
 
 
 metrics_manager = MetricsManager(settings.cache_hot_dir / "metrics.json")
+
+
+def read_proc_cpu_percent() -> float | None:
+    global _last_cpu_times
+    try:
+        first = Path("/proc/stat").read_text(encoding="utf-8").splitlines()[0].split()
+        if first[0] != "cpu":
+            return None
+        values = [int(value) for value in first[1:]]
+    except Exception:
+        return None
+    idle = values[3] + (values[4] if len(values) > 4 else 0)
+    total = sum(values)
+    previous = _last_cpu_times
+    _last_cpu_times = (idle, total)
+    if previous is None:
+        return None
+    previous_idle, previous_total = previous
+    total_delta = total - previous_total
+    idle_delta = idle - previous_idle
+    if total_delta <= 0:
+        return None
+    return round(max(0.0, min(100.0, (1.0 - idle_delta / total_delta) * 100.0)), 1)
+
+
+def read_memory_metrics() -> dict:
+    result = {"used_percent": None, "used_bytes": None, "total_bytes": None}
+    try:
+        values: dict[str, int] = {}
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            key, raw_value = line.split(":", 1)
+            values[key] = int(raw_value.strip().split()[0]) * 1024
+        total = values.get("MemTotal")
+        available = values.get("MemAvailable")
+        if total and available is not None:
+            used = total - available
+            result.update(
+                {
+                    "used_percent": round(used / total * 100.0, 1),
+                    "used_bytes": used,
+                    "total_bytes": total,
+                }
+            )
+    except Exception:
+        pass
+    return result
+
+
+def read_gpu_metrics() -> dict | None:
+    nvidia_smi = shutil.which("nvidia-smi")
+    if not nvidia_smi:
+        return None
+    query = ",".join(
+        [
+            "utilization.gpu",
+            "utilization.memory",
+            "memory.used",
+            "memory.total",
+            "temperature.gpu",
+            "power.draw",
+            "encoder.stats.sessionCount",
+            "encoder.stats.averageFps",
+            "encoder.stats.averageLatency",
+        ]
+    )
+    try:
+        completed = subprocess.run(
+            [
+                nvidia_smi,
+                f"--query-gpu={query}",
+                "--format=csv,noheader,nounits",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        return None
+    if completed.returncode != 0 or not completed.stdout.strip():
+        return None
+    line = completed.stdout.strip().splitlines()[0]
+    parts = [part.strip() for part in line.split(",")]
+    keys = [
+        "gpu_percent",
+        "memory_percent",
+        "memory_used_mib",
+        "memory_total_mib",
+        "temperature_c",
+        "power_w",
+        "encoder_sessions",
+        "encoder_fps",
+        "encoder_latency_ms",
+    ]
+    result: dict[str, int | float | None] = {}
+    for key, value in zip(keys, parts):
+        try:
+            number = float(value)
+        except ValueError:
+            result[key] = None
+            continue
+        result[key] = int(number) if number.is_integer() else round(number, 1)
+    return result
+
+
+def read_disk_metrics() -> dict:
+    def usage(path: Path | None) -> dict | None:
+        if path is None:
+            return None
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            item = shutil.disk_usage(path)
+            used = item.total - item.free
+            return {
+                "path": str(path),
+                "used_percent": round(used / item.total * 100.0, 1),
+                "free_bytes": item.free,
+                "total_bytes": item.total,
+            }
+        except Exception:
+            return None
+
+    return {
+        "hot": usage(settings.cache_hot_dir),
+        "archive": usage(settings.cache_archive_dir),
+    }
+
+
+def current_job_summaries() -> list[dict]:
+    jobs = []
+    for job_id, job in _prepare_jobs.items():
+        if job.get("status") not in {"queued", "running"}:
+            continue
+        jobs.append(
+            {
+                "job_id": job_id,
+                "status": job.get("status"),
+                "video_id": job.get("video_id"),
+                "title": job.get("title"),
+                "mode": job.get("mode"),
+                "eta_seconds": job.get("eta_seconds"),
+                "estimated_ready_at": job.get("estimated_ready_at"),
+                "progress": job.get("progress"),
+                "queue_counts": queue_counts_for_job(job_id),
+            }
+        )
+    return jobs
+
+
+def collect_system_metrics() -> dict:
+    return {
+        "timestamp": int(time.time()),
+        "cpu": {"used_percent": read_proc_cpu_percent()},
+        "memory": read_memory_metrics(),
+        "gpu": read_gpu_metrics(),
+        "disk": read_disk_metrics(),
+        "jobs": current_job_summaries(),
+    }
+
+
+def append_system_metric(sample: dict) -> None:
+    _system_metrics.append(sample)
+    try:
+        settings.system_metrics_file.parent.mkdir(parents=True, exist_ok=True)
+        with settings.system_metrics_file.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(sample, ensure_ascii=True, separators=(",", ":")) + "\n")
+    except Exception as error:
+        print(f"Failed to write system metrics: {error}", file=sys.stderr, flush=True)
+
+
+def load_system_metrics_history() -> None:
+    if not settings.system_metrics_file.exists():
+        return
+    cutoff = int(time.time()) - settings.system_metrics_history_seconds
+    try:
+        for line in settings.system_metrics_file.read_text(encoding="utf-8").splitlines()[-_system_metrics.maxlen:]:
+            try:
+                sample = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if int(sample.get("timestamp") or 0) >= cutoff:
+                _system_metrics.append(sample)
+    except Exception:
+        pass
+
+
+async def system_metrics_loop() -> None:
+    while True:
+        append_system_metric(collect_system_metrics())
+        await asyncio.sleep(max(1.0, settings.system_metrics_interval_seconds))
+
+
 app = FastAPI(title="YouTube subtitle burned MP4 proxy")
+
+
+@app.on_event("startup")
+async def start_system_metrics() -> None:
+    global _metrics_task
+    if not settings.system_metrics_enabled:
+        return
+    load_system_metrics_history()
+    if _metrics_task is None or _metrics_task.done():
+        _metrics_task = asyncio.create_task(system_metrics_loop())
 
 _global_encode_lock = asyncio.Semaphore(1)
 _inflight_lock = asyncio.Lock()
@@ -3391,6 +3602,43 @@ async def index() -> str:
       font-size: calc(14 / 16 * 1rem);
       line-height: 1.5;
     }}
+    .metric-grid {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: calc(16 / 16 * 1rem);
+      margin-bottom: calc(24 / 16 * 1rem);
+    }}
+    .metric-card {{
+      border-left: calc(8 / 16 * 1rem) solid var(--color-blue-900);
+      background: var(--color-gray-50);
+      padding: calc(12 / 16 * 1rem) calc(16 / 16 * 1rem);
+    }}
+    .metric-card strong {{
+      display: block;
+      color: var(--color-gray-900);
+      font-size: calc(14 / 16 * 1rem);
+    }}
+    .metric-card span {{
+      font-size: calc(24 / 16 * 1rem);
+      font-weight: 700;
+    }}
+    .chart {{
+      width: 100%;
+      height: 240px;
+      border: 1px solid var(--color-gray-200);
+      background: #fff;
+    }}
+    .job-list {{
+      display: grid;
+      gap: calc(12 / 16 * 1rem);
+      margin-top: calc(16 / 16 * 1rem);
+    }}
+    .job-item {{
+      border-left: calc(8 / 16 * 1rem) solid var(--color-blue-900);
+      background: var(--color-gray-50);
+      padding: calc(12 / 16 * 1rem) calc(16 / 16 * 1rem);
+      overflow-wrap: anywhere;
+    }}
     .error {{
       color: var(--color-error);
       font-weight: 600;
@@ -3400,6 +3648,9 @@ async def index() -> str:
         grid-template-columns: 1fr;
       }}
       .json-row {{
+        grid-template-columns: 1fr;
+      }}
+      .metric-grid {{
         grid-template-columns: 1fr;
       }}
       h1 {{
@@ -3440,6 +3691,7 @@ async def index() -> str:
       <div class="tabs" role="tablist" aria-label="Tool">
         <button type="button" id="videoTab" role="tab" aria-controls="converter" aria-selected="true">動画準備</button>
         <button type="button" id="jsonTab" role="tab" aria-controls="jsonExporter" aria-selected="false">JSON 書き出し</button>
+        <button type="button" id="monitorTab" role="tab" aria-controls="monitorPanel" aria-selected="false">監視</button>
       </div>
     <form id="converter" class="tool" aria-labelledby="videoTab">
       <label>
@@ -3540,14 +3792,27 @@ async def index() -> str:
       </div>
       <output id="jsonMessage" class="error"></output>
     </form>
+    <section id="monitorPanel" class="tool" aria-labelledby="monitorTab" hidden>
+      <div class="metric-grid">
+        <div class="metric-card"><strong>CPU</strong><span id="metricCpu">--</span></div>
+        <div class="metric-card"><strong>Memory</strong><span id="metricMemory">--</span></div>
+        <div class="metric-card"><strong>GPU</strong><span id="metricGpu">--</span></div>
+      </div>
+      <svg id="metricsChart" class="chart" viewBox="0 0 960 240" role="img" aria-label="CPU Memory GPU history graph"></svg>
+      <output id="metricDetails"></output>
+      <h2>準備ジョブ</h2>
+      <div id="monitorJobs" class="job-list"></div>
+    </section>
     </section>
   </main>
   <script>
     const defaultLang = {default_lang};
     const form = document.getElementById("converter");
     const jsonForm = document.getElementById("jsonExporter");
+    const monitorPanel = document.getElementById("monitorPanel");
     const videoTab = document.getElementById("videoTab");
     const jsonTab = document.getElementById("jsonTab");
+    const monitorTab = document.getElementById("monitorTab");
     const input = document.getElementById("youtubeUrl");
     const lang = document.getElementById("lang");
     const mode = document.getElementById("mode");
@@ -3571,6 +3836,12 @@ async def index() -> str:
     const jsonMessage = document.getElementById("jsonMessage");
     const downloadJsonLink = document.getElementById("downloadJsonLink");
     const jsonCopyButton = document.getElementById("jsonCopyButton");
+    const metricCpu = document.getElementById("metricCpu");
+    const metricMemory = document.getElementById("metricMemory");
+    const metricGpu = document.getElementById("metricGpu");
+    const metricsChart = document.getElementById("metricsChart");
+    const metricDetails = document.getElementById("metricDetails");
+    const monitorJobs = document.getElementById("monitorJobs");
 
     lang.value = defaultLang;
     jsonLang.value = defaultLang;
@@ -3578,10 +3849,14 @@ async def index() -> str:
 
     function selectTool(tool) {{
       const jsonSelected = tool === "json";
-      form.hidden = jsonSelected;
+      const monitorSelected = tool === "monitor";
+      form.hidden = jsonSelected || monitorSelected;
       jsonForm.hidden = !jsonSelected;
-      videoTab.setAttribute("aria-selected", String(!jsonSelected));
+      monitorPanel.hidden = !monitorSelected;
+      videoTab.setAttribute("aria-selected", String(!jsonSelected && !monitorSelected));
       jsonTab.setAttribute("aria-selected", String(jsonSelected));
+      monitorTab.setAttribute("aria-selected", String(monitorSelected));
+      if (monitorSelected) updateMonitor();
     }}
 
     function extractVideoId(value) {{
@@ -3647,6 +3922,101 @@ async def index() -> str:
 
     function prepareMode() {{
       return mode.value === "youtube-hls" ? "hls" : "mp4";
+    }}
+
+    function percentText(value) {{
+      return typeof value === "number" ? `${{value.toFixed(1)}}%` : "--";
+    }}
+
+    function bytesText(value) {{
+      if (typeof value !== "number") return "--";
+      const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+      let size = value;
+      let unit = 0;
+      while (size >= 1024 && unit < units.length - 1) {{
+        size /= 1024;
+        unit += 1;
+      }}
+      return `${{size.toFixed(unit ? 1 : 0)}} ${{units[unit]}}`;
+    }}
+
+    function metricValue(sample, path) {{
+      let current = sample;
+      for (const key of path) {{
+        if (!current || typeof current !== "object") return null;
+        current = current[key];
+      }}
+      return typeof current === "number" ? current : null;
+    }}
+
+    function drawMetricsChart(history) {{
+      const width = 960;
+      const height = 240;
+      const padding = 28;
+      const series = [
+        {{ name: "CPU", color: "#0017c1", path: ["cpu", "used_percent"] }},
+        {{ name: "Memory", color: "#008000", path: ["memory", "used_percent"] }},
+        {{ name: "GPU", color: "#ec0000", path: ["gpu", "gpu_percent"] }},
+      ];
+      const pointsFor = (path) => history
+        .map((sample, index) => [index, metricValue(sample, path)])
+        .filter((point) => point[1] !== null);
+      const xFor = (index) => padding + (history.length <= 1 ? 0 : index / (history.length - 1) * (width - padding * 2));
+      const yFor = (value) => height - padding - value / 100 * (height - padding * 2);
+      const lines = series.map((item) => {{
+        const points = pointsFor(item.path);
+        if (points.length < 2) return "";
+        const d = points.map(([index, value], i) => `${{i ? "L" : "M"}} ${{xFor(index).toFixed(1)}} ${{yFor(value).toFixed(1)}}`).join(" ");
+        return `<path d="${{d}}" fill="none" stroke="${{item.color}}" stroke-width="3"><title>${{item.name}}</title></path>`;
+      }}).join("");
+      metricsChart.innerHTML = `
+        <rect x="0" y="0" width="${{width}}" height="${{height}}" fill="#fff"></rect>
+        <line x1="${{padding}}" y1="${{padding}}" x2="${{padding}}" y2="${{height - padding}}" stroke="#ccc"></line>
+        <line x1="${{padding}}" y1="${{height - padding}}" x2="${{width - padding}}" y2="${{height - padding}}" stroke="#ccc"></line>
+        <text x="${{padding}}" y="18" font-size="14">100%</text>
+        <text x="${{padding}}" y="${{height - 8}}" font-size="14">0%</text>
+        ${{lines}}
+        <text x="760" y="24" fill="#0017c1" font-size="14">CPU</text>
+        <text x="810" y="24" fill="#008000" font-size="14">Memory</text>
+        <text x="890" y="24" fill="#ec0000" font-size="14">GPU</text>
+      `;
+    }}
+
+    function renderMonitorJobs(jobs) {{
+      if (!jobs || jobs.length === 0) {{
+        monitorJobs.textContent = "実行中の準備ジョブはありません。";
+        return;
+      }}
+      monitorJobs.innerHTML = "";
+      for (const job of jobs) {{
+        const progress = job.progress || {{}};
+        const counts = job.queue_counts || {{}};
+        const item = document.createElement("div");
+        item.className = "job-item";
+        const percent = typeof progress.percent === "number" ? `${{progress.percent.toFixed(1)}}%` : "--";
+        const eta = typeof job.estimated_ready_at === "number" ? new Date(job.estimated_ready_at * 1000).toLocaleTimeString() : "--";
+        item.textContent = `${{job.mode?.toUpperCase() || "MP4"}} ${{job.status}} / ${{job.title || job.video_id}} / ${{progress.phase || "queued"}} ${{percent}} / 終了予想 ${{eta}} / 待ち: DL ${{counts.download || 0}}, 翻訳 ${{counts.translate || 0}}, Encode ${{counts.encode || 0}}`;
+        monitorJobs.appendChild(item);
+      }}
+    }}
+
+    async function updateMonitor() {{
+      try {{
+        const response = await fetch("/monitor/system?seconds=21600", {{ headers: {{ "Accept": "application/json" }} }});
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.detail || `HTTP ${{response.status}}`);
+        const current = body.current || {{}};
+        metricCpu.textContent = percentText(current.cpu?.used_percent);
+        metricMemory.textContent = percentText(current.memory?.used_percent);
+        metricGpu.textContent = current.gpu ? percentText(current.gpu.gpu_percent) : "n/a";
+        const hot = current.disk?.hot;
+        const archive = current.disk?.archive;
+        metricDetails.textContent = `GPU mem: ${{current.gpu ? `${{current.gpu.memory_used_mib}}/${{current.gpu.memory_total_mib}} MiB` : "n/a"}} / Hot free: ${{hot ? bytesText(hot.free_bytes) : "n/a"}} / Archive free: ${{archive ? bytesText(archive.free_bytes) : "n/a"}}`;
+        drawMetricsChart(body.history || []);
+        renderMonitorJobs(current.jobs || []);
+      }} catch (error) {{
+        metricDetails.textContent = `監視APIエラー: ${{error.message}}`;
+      }}
     }}
 
     function authHeaders() {{
@@ -3907,6 +4277,10 @@ async def index() -> str:
 
     videoTab.addEventListener("click", () => selectTool("video"));
     jsonTab.addEventListener("click", () => selectTool("json"));
+    monitorTab.addEventListener("click", () => selectTool("monitor"));
+    setInterval(() => {{
+      if (!monitorPanel.hidden) updateMonitor();
+    }}, 5000);
     function resetPrepareChoices() {{
       prepareOptions.hidden = true;
       subtitleSource.innerHTML = "";
@@ -3947,6 +4321,21 @@ async def index() -> str:
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/monitor/system")
+async def monitor_system(seconds: int = Query(3600, ge=60, le=86400)) -> JSONResponse:
+    cutoff = int(time.time()) - seconds
+    history = [sample for sample in _system_metrics if int(sample.get("timestamp") or 0) >= cutoff]
+    current = history[-1] if history else collect_system_metrics()
+    return JSONResponse(
+        {
+            "interval_seconds": settings.system_metrics_interval_seconds,
+            "history_seconds": settings.system_metrics_history_seconds,
+            "current": current,
+            "history": history,
+        }
+    )
 
 
 @app.get("/yamaplayer/playlist")

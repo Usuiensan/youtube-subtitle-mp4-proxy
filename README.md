@@ -154,6 +154,15 @@ bot はスラッシュコマンド `/prepare` を提供します。
 
 `/webui-key days:N` は Web UI 一次利用者向けの一時キーを ephemeral で返します。キー形式は `YYYY-MM-DD-署名` で、先頭の日付を見ると有効期限が分かります。有効期限はその日付の終わりまで、タイムゾーンは JST です。一時キーは準備・状態確認には使えますが、削除系 API と `/reset-eta` には使えません。`WEBUI_TEMP_KEY_SECRET` を FastAPI と Discord bot の両方で同じ値にしてください。未設定時は `DISCORD_PREPARE_TOKEN` を使いますが、運用では別値を推奨します。
 
+トップページの Monitor タブでは、CPU、メモリ、NVIDIA GPU、SSD/HDD空き容量、実行中の準備ジョブ進捗を確認できます。履歴は `SYSTEM_METRICS_FILE` に JSONL で保存され、ブラウザは `GET /monitor/system?seconds=21600` を5秒ごとに読み直してグラフを更新します。Linux では CPU/メモリを `/proc` から、GPUを `nvidia-smi` から取得します。
+
+```bash
+export SYSTEM_METRICS_ENABLED=1
+export SYSTEM_METRICS_INTERVAL_SECONDS=5
+export SYSTEM_METRICS_HISTORY_SECONDS=86400
+export SYSTEM_METRICS_FILE=/var/lib/youtube-mp4-proxy/system-metrics.jsonl
+```
+
 ### SSD/HDD アーカイブキャッシュ
 
 SSD を変換作業と直近キャッシュ、HDD を古い成果物の保管先に分ける場合は、`CACHE_HOT_DIR` と `CACHE_ARCHIVE_DIR` を指定します。`CACHE_HOT_DIR` が未指定なら従来どおり `CACHE_DIR` を使います。
