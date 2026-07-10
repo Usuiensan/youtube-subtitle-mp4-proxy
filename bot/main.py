@@ -4,10 +4,14 @@ import asyncio
 import json
 import os
 import re
+import base64
+import hashlib
+import hmac
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +21,34 @@ from discord import app_commands
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env.local"
+LANG_NAMES_JA = {
+    "ar": "アラビア語",
+    "de": "ドイツ語",
+    "en": "英語",
+    "en-gb": "英語(英国)",
+    "es": "スペイン語",
+    "es-419": "スペイン語(ラテンアメリカ)",
+    "fr": "フランス語",
+    "fr-ca": "フランス語(カナダ)",
+    "hi": "ヒンディー語",
+    "id": "インドネシア語",
+    "it": "イタリア語",
+    "ja": "日本語",
+    "ko": "韓国語",
+    "nl": "オランダ語",
+    "pt": "ポルトガル語",
+    "pt-br": "ポルトガル語(ブラジル)",
+    "ru": "ロシア語",
+    "th": "タイ語",
+    "tr": "トルコ語",
+    "uk": "ウクライナ語",
+    "vi": "ベトナム語",
+    "zh": "中国語",
+    "zh-cn": "中国語(簡体字)",
+    "zh-hans": "中国語(簡体字)",
+    "zh-hant": "中国語(繁体字)",
+    "zh-tw": "中国語(繁体字)",
+}
 
 
 def load_env_file(path: Path) -> None:
@@ -47,9 +79,11 @@ class Settings:
     poll_seconds = int(os.getenv("DISCORD_PREPARE_POLL_SECONDS", "10"))
     poll_timeout_seconds = int(os.getenv("DISCORD_PREPARE_POLL_TIMEOUT_SECONDS", "7200"))
     prepare_batch_max_items = int(os.getenv("DISCORD_PREPARE_BATCH_MAX_ITEMS", "5000"))
+    webui_temp_key_secret = os.getenv("WEBUI_TEMP_KEY_SECRET", os.getenv("DISCORD_PREPARE_TOKEN", ""))
 
 
 settings = Settings()
+JST = timezone(timedelta(hours=9))
 
 
 class PrepareApiError(Exception):
@@ -57,6 +91,28 @@ class PrepareApiError(Exception):
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
+
+
+def hmac_sha256(message: str, secret: str) -> str:
+    digest = hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def make_webui_temp_key(days: int) -> dict[str, Any]:
+    if days < 1 or days > 30:
+        raise ValueError("days は 1 から 30 の範囲で指定してください。")
+    if not settings.webui_temp_key_secret:
+        raise RuntimeError("WEBUI_TEMP_KEY_SECRET が設定されていません。")
+    today = datetime.now(JST).date()
+    expires_date = today + timedelta(days=days - 1)
+    expires_on = expires_date.isoformat()
+    signature = hmac_sha256(f"webui-temp-key:{expires_on}", settings.webui_temp_key_secret)[:32]
+    expires_at = datetime.combine(expires_date + timedelta(days=1), datetime.min.time(), tzinfo=JST)
+    return {
+        "key": f"{expires_on}-{signature}",
+        "expires_on": expires_on,
+        "expires_at": int(expires_at.timestamp()),
+    }
 
 
 def extract_video_id(value: str) -> str:
@@ -182,6 +238,11 @@ async def clear_all_videos() -> tuple[int, dict[str, Any]]:
     return await asyncio.to_thread(http_json, "POST", url)
 
 
+async def reset_eta_metrics() -> tuple[int, dict[str, Any]]:
+    url = f"{settings.youtube_proxy_internal_base_url}/prepare/eta/reset"
+    return await asyncio.to_thread(http_json, "POST", url)
+
+
 async def fetch_job(status_url: str) -> dict[str, Any]:
     public_base = settings.youtube_proxy_base_url
     internal_base = settings.youtube_proxy_internal_base_url
@@ -195,8 +256,13 @@ def eta_text(body: dict[str, Any]) -> str:
     parts: list[str] = []
     eta_seconds = body.get("eta_seconds")
     if isinstance(eta_seconds, (int, float)) and eta_seconds > 0:
-        minutes = max(1, round(eta_seconds / 60))
-        parts.append(f"予想{minutes}分")
+        seconds = max(1, int(round(eta_seconds)))
+        minutes = seconds // 60
+        remaining_seconds = seconds % 60
+        if minutes:
+            parts.append(f"予想{minutes}分{remaining_seconds}秒")
+        else:
+            parts.append(f"予想{remaining_seconds}秒")
 
     estimated_ready_at = body.get("estimated_ready_at")
     if isinstance(estimated_ready_at, (int, float)) and estimated_ready_at > 0:
@@ -231,6 +297,17 @@ def mention_text(body: dict[str, Any], fallback_user_id: int | None = None) -> s
     if fallback_user_id is not None:
         return f"<@{fallback_user_id}>"
     return ""
+
+
+def lang_name_ja(code: Any) -> str:
+    if not isinstance(code, str) or not code:
+        return ""
+    normalized = code.lower().strip()
+    base = normalized.split("-")[0]
+    name = LANG_NAMES_JA.get(normalized) or LANG_NAMES_JA.get(base)
+    if name:
+        return name
+    return code
 
 
 def status_message(body: dict[str, Any], fallback_user_id: int | None = None) -> str:
@@ -273,10 +350,13 @@ def status_message(body: dict[str, Any], fallback_user_id: int | None = None) ->
         
         eta_part = ""
         if isinstance(eta_sec, (int, float)) and eta_sec > 0:
-            if eta_sec < 60:
-                eta_part = f" (残り {int(eta_sec)}秒)"
+            seconds = max(1, int(round(eta_sec)))
+            minutes = seconds // 60
+            remaining_seconds = seconds % 60
+            if minutes:
+                eta_part = f" (残り {minutes}分{remaining_seconds}秒)"
             else:
-                eta_part = f" (残り {max(1, round(eta_sec / 60))}分)"
+                eta_part = f" (残り {remaining_seconds}秒)"
 
         progress_bar = f"`[{bar}] {percent:5.1f}%`{eta_part}"
         details_part = f"\n{details}" if details else ""
@@ -338,9 +418,9 @@ def subtitle_status_text(meta: Any) -> str:
     if translated:
         engine_text = "Google翻訳フォールバック" if fallback else (engine or "local_llm")
         kind_text = "手動" if kind == "manual" else str(kind or "")
-        return f"\n字幕: {source}（{kind_text}）→{requested}（{engine_text}）"
+        return f"\n字幕: {lang_name_ja(source)}（{kind_text}）→{lang_name_ja(requested)}（{engine_text}）"
     if source:
-        return f"\n字幕: {source}"
+        return f"\n字幕: {lang_name_ja(source)}"
     return ""
 
 
@@ -703,6 +783,56 @@ async def clear_all_command(
 
     await interaction.followup.send(
         body.get("message", "すべての動画を初期化しました。"),
+    )
+
+
+@client.tree.command(name="reset-eta", description="変換時間予想の学習データをリセットします")
+async def reset_eta_command(
+    interaction: discord.Interaction,
+) -> None:
+    await interaction.response.defer(thinking=True)
+
+    if not settings.discord_prepare_token:
+        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。")
+        return
+
+    try:
+        _status, body = await reset_eta_metrics()
+    except PrepareApiError as error:
+        await interaction.followup.send(f"予想時間リセットAPIエラー ({error.status_code}): {error.detail}")
+        return
+
+    await interaction.followup.send(
+        body.get("message", "予想時間の学習データをリセットしました。"),
+    )
+
+
+@client.tree.command(name="webui-key", description="Web UI 一時利用者向けの期限付き準備キーを発行します")
+@app_commands.describe(
+    days="有効日数。JSTで期限日の終わりまで有効です",
+)
+async def webui_key_command(
+    interaction: discord.Interaction,
+    days: int = 1,
+) -> None:
+    await interaction.response.defer(thinking=True, ephemeral=True)
+
+    try:
+        body = make_webui_temp_key(days)
+    except (RuntimeError, ValueError) as error:
+        await interaction.followup.send(str(error), ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        (
+            "Web UI用の一時キーを発行しました。\n"
+            f"有効期限: {body['expires_on']} の終わりまで (JST)\n"
+            f"Discord表示: <t:{body['expires_at']}:F> まで\n"
+            "```text\n"
+            f"{body['key']}\n"
+            "```"
+        ),
+        ephemeral=True,
     )
 
 

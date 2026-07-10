@@ -14,6 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -94,6 +95,7 @@ class Settings:
     ytdlp_extra_args = os.getenv("YTDLP_EXTRA_ARGS", "")
     youtube_data_api_key = os.getenv("YOUTUBE_DATA_API_KEY")
     discord_prepare_token = os.getenv("DISCORD_PREPARE_TOKEN")
+    webui_temp_key_secret = os.getenv("WEBUI_TEMP_KEY_SECRET", os.getenv("DISCORD_PREPARE_TOKEN", ""))
     youtube_proxy_base_url = os.getenv("YOUTUBE_PROXY_BASE_URL", "").rstrip("/")
     translation_enabled = os.getenv("TRANSLATION_ENABLED", "1") != "0"
     translation_source_langs = os.getenv("TRANSLATION_SOURCE_LANGS", "en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW")
@@ -167,6 +169,15 @@ class MetricsManager:
         # keep last 50 entries
         vals = vals[-50:]
         return sum(vals) / len(vals)
+
+    def reset(self):
+        self.data = {
+            "download_speed": [],
+            "encode_speed_ratio": [],
+            "translate_speed": [],
+            "archive_speed": [],
+        }
+        self.save()
 
 
 metrics_manager = MetricsManager(settings.cache_hot_dir / "metrics.json")
@@ -1237,8 +1248,8 @@ def ffmpeg_subtitle_arg(path: Path, subtitle_meta: dict | None = None) -> str:
             y_expr = f"h/30+{i}*h/20"
             drawtext_filter = (
                 f"drawtext=text='{escaped_line}'"
-                f":x=h/30:y={y_expr}:fontsize=h/25:fontcolor=white@0.6"
-                f":box=1:boxcolor=black@0.4:boxborderw=h/100"
+                f":x=h/30:y={y_expr}:fontsize=h/25:fontcolor=white@1.0"
+                f":box=1:boxcolor=black@1.0:boxborderw=h/100"
                 f":enable='lt(t,5)'{font_opt}"
             )
             drawtext_filters.append(drawtext_filter)
@@ -2127,13 +2138,73 @@ async def get_or_create_hls(
                     _hls_inflight.pop(key, None)
 
 
-def require_prepare_auth(request: Request) -> None:
+def require_prepare_auth(request: Request, allow_temp_key: bool = True) -> None:
     if not settings.discord_prepare_token:
         raise HTTPException(status_code=500, detail="DISCORD_PREPARE_TOKEN is not configured")
     expected = f"Bearer {settings.discord_prepare_token}"
     auth_header = request.headers.get("authorization")
+    if auth_header and secrets.compare_digest(auth_header, expected):
+        return
+    if allow_temp_key and auth_header and is_valid_webui_temp_key(auth_header.removeprefix("Bearer ").strip()):
+        return
     if not auth_header or not secrets.compare_digest(auth_header, expected):
         raise HTTPException(status_code=401, detail="Invalid prepare token")
+
+
+JST = timezone(timedelta(hours=9))
+WEBUI_TEMP_KEY_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})-([A-Za-z0-9_-]{22,64})$")
+
+
+def webui_temp_key_signature(expires_on: str) -> str:
+    secret = settings.webui_temp_key_secret or ""
+    if not secret:
+        raise HTTPException(status_code=500, detail="WEBUI_TEMP_KEY_SECRET is not configured")
+    digest = hmac_sha256(f"webui-temp-key:{expires_on}", secret)
+    return digest[:32]
+
+
+def hmac_sha256(message: str, secret: str) -> str:
+    import hmac
+    import base64
+
+    digest = hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def make_webui_temp_key(days: int) -> dict:
+    if days < 1 or days > 30:
+        raise HTTPException(status_code=400, detail="days must be between 1 and 30")
+    today = datetime.now(JST).date()
+    expires_date = today + timedelta(days=days - 1)
+    expires_on = expires_date.isoformat()
+    key = f"{expires_on}-{webui_temp_key_signature(expires_on)}"
+    expires_at = datetime.combine(expires_date + timedelta(days=1), datetime.min.time(), tzinfo=JST)
+    return {
+        "key": key,
+        "expires_on": expires_on,
+        "expires_at": int(expires_at.timestamp()),
+        "timezone": "Asia/Tokyo",
+    }
+
+
+def is_valid_webui_temp_key(token: str) -> bool:
+    match = WEBUI_TEMP_KEY_RE.fullmatch(token)
+    if not match:
+        return False
+    expires_on = match.group(1)
+    signature = match.group(2)
+    try:
+        expires_date = datetime.strptime(expires_on, "%Y-%m-%d").date()
+    except ValueError:
+        return False
+    expires_at = datetime.combine(expires_date + timedelta(days=1), datetime.min.time(), tzinfo=JST)
+    if datetime.now(JST) >= expires_at:
+        return False
+    try:
+        expected = webui_temp_key_signature(expires_on)
+    except HTTPException:
+        return False
+    return secrets.compare_digest(signature, expected)
 
 
 def prepare_key(
@@ -3048,60 +3119,150 @@ async def index() -> str:
   <title>YouTube Tools</title>
   <style>
     :root {{
-      color-scheme: light dark;
-      font-family: "Segoe UI", "Yu Gothic", Meiryo, sans-serif;
-      background: #f6f7f8;
-      color: #15171a;
+      color-scheme: light;
+      --color-blue-900: #0017c1;
+      --color-blue-1000: #00118f;
+      --color-blue-1200: #000060;
+      --color-blue-100: #d9e6ff;
+      --color-blue-200: #c5d7fb;
+      --color-yellow-300: #ffd43d;
+      --color-gray-50: #f2f2f2;
+      --color-gray-100: #e6e6e6;
+      --color-gray-200: #cccccc;
+      --color-gray-536: #767676;
+      --color-gray-600: #666666;
+      --color-gray-700: #4d4d4d;
+      --color-gray-800: #333333;
+      --color-gray-900: #1a1a1a;
+      --color-error: #ec0000;
+      font-family: "Noto Sans JP", -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #fff;
+      color: var(--color-gray-800);
     }}
     body {{
       margin: 0;
       min-height: 100vh;
-      display: grid;
-      place-items: center;
-      padding: 24px;
+      padding: calc(24 / 16 * 1rem);
+      font-size: calc(17 / 16 * 1rem);
+      line-height: 1.7;
+      letter-spacing: 0.02em;
     }}
     main {{
-      width: min(720px, 100%);
+      width: min(960px, 100%);
+      margin-inline: auto;
     }}
     h1 {{
-      margin: 0 0 18px;
-      font-size: 26px;
+      margin: 0 0 calc(8 / 16 * 1rem);
+      color: var(--color-gray-900);
+      font-size: calc(45 / 16 * 1rem);
+      line-height: 1.4;
+      letter-spacing: 0;
       font-weight: 700;
+    }}
+    h2 {{
+      margin: 0 0 calc(16 / 16 * 1rem);
+      border-left: calc(8 / 16 * 1rem) solid var(--color-blue-900);
+      padding-left: calc(16 / 16 * 1rem);
+      color: var(--color-gray-900);
+      font-size: calc(24 / 16 * 1rem);
+      line-height: 1.5;
+      letter-spacing: 0.02em;
+    }}
+    p {{
+      margin: 0 0 calc(16 / 16 * 1rem);
+    }}
+    .lead {{
+      max-width: 72ch;
+      margin-bottom: calc(24 / 16 * 1rem);
+      font-size: calc(18 / 16 * 1rem);
+      line-height: 1.6;
+    }}
+    .page-header {{
+      padding-block: calc(24 / 16 * 1rem) calc(32 / 16 * 1rem);
+      border-bottom: 1px solid var(--color-gray-200);
+    }}
+    .utility-links {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: calc(16 / 16 * 1rem);
+      margin-top: calc(16 / 16 * 1rem);
+    }}
+    a {{
+      color: var(--color-blue-1000);
+      text-decoration: underline;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }}
+    @media (hover: hover) {{
+      a:hover {{
+        text-decoration-thickness: 3px;
+      }}
+    }}
+    a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {{
+      outline: 4px solid #000;
+      outline-offset: 2px;
+      box-shadow: 0 0 0 2px var(--color-yellow-300);
+    }}
+    .section {{
+      padding-block: calc(32 / 16 * 1rem);
+      border-bottom: 1px solid var(--color-gray-200);
+    }}
+    .usage {{
+      display: grid;
+      gap: calc(16 / 16 * 1rem);
+      margin: 0 0 calc(24 / 16 * 1rem);
+      padding: 0;
+      list-style: none;
+    }}
+    .usage li {{
+      border-left: calc(8 / 16 * 1rem) solid var(--color-blue-900);
+      padding: calc(8 / 16 * 1rem) calc(16 / 16 * 1rem);
+      background: var(--color-gray-50);
+    }}
+    .usage strong {{
+      display: block;
+      color: var(--color-gray-900);
     }}
     form {{
       display: grid;
-      gap: 14px;
+      gap: calc(16 / 16 * 1rem);
     }}
     .tabs {{
       display: flex;
-      gap: 8px;
-      margin: 0 0 18px;
+      gap: calc(8 / 16 * 1rem);
+      margin: 0 0 calc(24 / 16 * 1rem);
     }}
     .tabs button {{
-      min-height: 38px;
-      color: #17202a;
-      background: #e7ebf0;
+      min-width: calc(96 / 16 * 1rem);
+      min-height: calc(48 / 16 * 1rem);
+      color: var(--color-blue-900);
+      background: #fff;
+      border: 1px solid currentcolor;
     }}
     .tabs button[aria-selected="true"] {{
       color: #fff;
-      background: #1f6feb;
+      background: var(--color-blue-900);
+      border-color: var(--color-blue-900);
     }}
     .tool[hidden] {{
       display: none;
     }}
     label {{
       display: grid;
-      gap: 7px;
-      font-size: 14px;
+      gap: calc(8 / 16 * 1rem);
+      color: var(--color-gray-900);
+      font-size: calc(16 / 16 * 1rem);
+      line-height: 1.7;
+      letter-spacing: 0.02em;
       font-weight: 600;
     }}
     input, select, textarea {{
       box-sizing: border-box;
       width: 100%;
-      min-height: 42px;
-      border: 1px solid #c8ced6;
+      min-height: calc(48 / 16 * 1rem);
+      border: 1px solid var(--color-gray-600);
       border-radius: 8px;
-      padding: 9px 11px;
+      padding: calc(12 / 16 * 1rem) calc(16 / 16 * 1rem);
       font: inherit;
       background: #fff;
       color: inherit;
@@ -3113,34 +3274,55 @@ async def index() -> str:
     .row {{
       display: grid;
       grid-template-columns: 120px 1fr;
-      gap: 12px;
+      gap: calc(24 / 16 * 1rem);
     }}
     .json-row {{
       display: grid;
       grid-template-columns: 1fr 120px 120px 100px 120px;
-      gap: 12px;
+      gap: calc(24 / 16 * 1rem);
     }}
     .actions {{
       display: flex;
       flex-wrap: wrap;
-      gap: 10px;
+      gap: calc(8 / 16 * 1rem);
       align-items: center;
     }}
+    .prepare-options {{
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: calc(24 / 16 * 1rem);
+    }}
     button, a.button {{
-      min-height: 42px;
-      border: 0;
+      min-width: calc(96 / 16 * 1rem);
+      min-height: calc(48 / 16 * 1rem);
+      border: 4px double transparent;
       border-radius: 8px;
-      padding: 9px 14px;
+      padding: calc(8 / 16 * 1rem) calc(16 / 16 * 1rem);
       font: inherit;
       font-weight: 700;
       color: #fff;
-      background: #1f6feb;
+      background: var(--color-blue-900);
       text-decoration: none;
       cursor: pointer;
     }}
+    @media (hover: hover) {{
+      button:hover, a.button:hover {{
+        background: var(--color-blue-1000);
+      }}
+    }}
+    button:active, a.button:active {{
+      background: var(--color-blue-1200);
+    }}
     button.secondary {{
-      color: #17202a;
-      background: #e7ebf0;
+      color: var(--color-blue-900);
+      background: #fff;
+      border: 1px solid currentcolor;
+    }}
+    @media (hover: hover) {{
+      button.secondary:hover {{
+        color: var(--color-blue-1000);
+        background: var(--color-blue-200);
+      }}
     }}
     a.button[aria-disabled="true"] {{
       pointer-events: none;
@@ -3150,14 +3332,15 @@ async def index() -> str:
       display: block;
       min-height: 22px;
       overflow-wrap: anywhere;
-      font-family: Consolas, "Courier New", monospace;
-      font-size: 14px;
+      font-family: "Noto Sans Mono", monospace;
+      font-size: calc(14 / 16 * 1rem);
+      line-height: 1.5;
     }}
     .error {{
-      color: #b42318;
+      color: var(--color-error);
       font-weight: 600;
     }}
-    @media (max-width: 560px) {{
+    @media (max-width: 47.999rem) {{
       .row {{
         grid-template-columns: 1fr;
       }}
@@ -3165,32 +3348,43 @@ async def index() -> str:
         grid-template-columns: 1fr;
       }}
       h1 {{
-        font-size: 22px;
+        font-size: calc(32 / 16 * 1rem);
+        line-height: 1.5;
+        letter-spacing: 0.01em;
       }}
     }}
-    @media (prefers-color-scheme: dark) {{
-      :root {{
-        background: #101316;
-        color: #f2f4f7;
-      }}
-      input, select, textarea {{
-        background: #191d22;
-        border-color: #3a424d;
-      }}
-      button.secondary {{
-        color: #f2f4f7;
-        background: #303842;
+    @media (forced-colors: active) {{
+      h2::before {{
+        background-color: CanvasText;
       }}
     }}
   </style>
 </head>
 <body>
   <main>
-    <h1>YouTube Tools</h1>
-    <div class="tabs" role="tablist" aria-label="Tool">
-      <button type="button" id="videoTab" role="tab" aria-controls="converter" aria-selected="true">Video</button>
-      <button type="button" id="jsonTab" role="tab" aria-controls="jsonExporter" aria-selected="false">JSON</button>
-    </div>
+    <header class="page-header">
+      <h1>YouTube 字幕焼き込みプロキシ</h1>
+      <p class="lead">YouTube の手動字幕を焼き込んだ MP4 / HLS を準備し、VRChat などの動画プレーヤーで使いやすい URL を発行します。</p>
+      <div class="utility-links">
+        <a href="https://github.com/Usuiensan/youtube-subtitle-mp4-proxy" target="_blank" rel="noopener">GitHub リポジトリを開く ↗</a>
+      </div>
+    </header>
+
+    <section class="section" aria-labelledby="usageTitle">
+      <h2 id="usageTitle">使い方</h2>
+      <ol class="usage">
+        <li><strong>1. 動画を指定</strong>YouTube URL と字幕言語を入力します。日本語字幕がない場合は翻訳元字幕と翻訳方式を選べます。</li>
+        <li><strong>2. 準備キーを入力</strong>Discord の <code>/webui-key</code> で発行した一時キー、または管理用 prepare token を入力します。</li>
+        <li><strong>3. Prepare を実行</strong>準備完了後に表示される URL をコピーして動画プレーヤーへ設定します。通知を許可すると完了時にブラウザ通知が出ます。</li>
+      </ol>
+    </section>
+
+    <section class="section" aria-labelledby="toolsTitle">
+      <h2 id="toolsTitle">ツール</h2>
+      <div class="tabs" role="tablist" aria-label="Tool">
+        <button type="button" id="videoTab" role="tab" aria-controls="converter" aria-selected="true">動画準備</button>
+        <button type="button" id="jsonTab" role="tab" aria-controls="jsonExporter" aria-selected="false">JSON 書き出し</button>
+      </div>
     <form id="converter" class="tool" aria-labelledby="videoTab">
       <label>
         YouTube URL
@@ -3217,6 +3411,28 @@ async def index() -> str:
         <button type="button" id="copyButton" class="secondary">Copy</button>
         <a id="openLink" class="button" target="_blank" rel="noopener" aria-disabled="true">Open New Tab</a>
       </div>
+      <label>
+        Prepare token
+        <input id="prepareToken" name="prepareToken" type="password" autocomplete="current-password" placeholder="DISCORD_PREPARE_TOKEN">
+      </label>
+      <div id="prepareOptions" class="prepare-options" hidden>
+        <label>
+          Source subtitle
+          <select id="subtitleSource" name="subtitleSource"></select>
+        </label>
+        <label>
+          Translation
+          <select id="translationEngine" name="translationEngine">
+            <option value="local_llm">LLM</option>
+            <option value="google_cloud">Google</option>
+          </select>
+        </label>
+      </div>
+      <div class="actions">
+        <button type="button" id="prepareButton">Prepare</button>
+        <button type="button" id="notifyButton" class="secondary">Enable Notifications</button>
+      </div>
+      <output id="prepareStatus"></output>
       <output id="message" class="error"></output>
     </form>
     <form id="jsonExporter" class="tool" aria-labelledby="jsonTab" hidden>
@@ -3272,6 +3488,7 @@ async def index() -> str:
       </div>
       <output id="jsonMessage" class="error"></output>
     </form>
+    </section>
   </main>
   <script>
     const defaultLang = {default_lang};
@@ -3286,6 +3503,13 @@ async def index() -> str:
     const message = document.getElementById("message");
     const openLink = document.getElementById("openLink");
     const copyButton = document.getElementById("copyButton");
+    const prepareToken = document.getElementById("prepareToken");
+    const prepareButton = document.getElementById("prepareButton");
+    const notifyButton = document.getElementById("notifyButton");
+    const prepareStatus = document.getElementById("prepareStatus");
+    const prepareOptions = document.getElementById("prepareOptions");
+    const subtitleSource = document.getElementById("subtitleSource");
+    const translationEngine = document.getElementById("translationEngine");
     const sourceUrl = document.getElementById("sourceUrl");
     const sourceType = document.getElementById("sourceType");
     const playerMode = document.getElementById("playerMode");
@@ -3300,6 +3524,7 @@ async def index() -> str:
 
     lang.value = defaultLang;
     jsonLang.value = defaultLang;
+    prepareToken.value = localStorage.getItem("youtubeProxyPrepareToken") || "";
 
     function selectTool(tool) {{
       const jsonSelected = tool === "json";
@@ -3378,6 +3603,174 @@ async def index() -> str:
       openLink.setAttribute("aria-disabled", "false");
     }}
 
+    function prepareMode() {{
+      return mode.value === "youtube-hls" ? "hls" : "mp4";
+    }}
+
+    function authHeaders() {{
+      const token = prepareToken.value.trim();
+      if (token) localStorage.setItem("youtubeProxyPrepareToken", token);
+      return {{
+        "Accept": "application/json",
+        "Authorization": `Bearer ${{token}}`
+      }};
+    }}
+
+    function publicUrl(url) {{
+      if (!url) return "";
+      try {{
+        const parsed = new URL(url);
+        if (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") {{
+          parsed.protocol = location.protocol;
+          parsed.host = location.host;
+        }}
+        return parsed.toString();
+      }} catch {{
+        return url;
+      }}
+    }}
+
+    function etaText(body) {{
+      const parts = [];
+      if (typeof body.eta_seconds === "number" && body.eta_seconds > 0) {{
+        const seconds = Math.max(1, Math.round(body.eta_seconds));
+        const minutes = Math.floor(seconds / 60);
+        const rest = seconds % 60;
+        parts.push(minutes ? `予想${{minutes}}分${{rest}}秒` : `予想${{rest}}秒`);
+      }}
+      if (typeof body.estimated_ready_at === "number" && body.estimated_ready_at > 0) {{
+        parts.push(`終了予想 ${{new Date(body.estimated_ready_at * 1000).toLocaleTimeString()}}`);
+      }}
+      return parts.length ? parts.join(" / ") : "終了予想を計算中";
+    }}
+
+    function prepareMessage(body) {{
+      if (body.status === "ready") {{
+        return `準備できました。\\n${{publicUrl(body.url)}}`;
+      }}
+      if (body.status === "failed") {{
+        return `準備に失敗しました。\\n${{body.error || "unknown error"}}`;
+      }}
+      if (body.counts) {{
+        return `${{body.mode?.toUpperCase() || "MP4"}}を一括準備しています。${{etaText(body)}}\\nready ${{body.counts.ready}}/${{body.counts.total}} / running ${{body.counts.running}} / queued ${{body.counts.queued}} / failed ${{body.counts.failed}}`;
+      }}
+      return `${{body.mode?.toUpperCase() || "MP4"}}を準備しています。${{etaText(body)}}`;
+    }}
+
+    function notify(title, body) {{
+      if (!("Notification" in window) || Notification.permission !== "granted") return;
+      new Notification(title, {{ body }});
+    }}
+
+    async function requestNotifications() {{
+      if (!("Notification" in window)) {{
+        prepareStatus.textContent = "このブラウザは通知に対応していません。";
+        return;
+      }}
+      const permission = await Notification.requestPermission();
+      prepareStatus.textContent = permission === "granted" ? "通知を有効にしました。" : "通知は許可されませんでした。";
+    }}
+
+    async function apiFetch(url, options = {{}}) {{
+      const response = await fetch(url, {{
+        ...options,
+        headers: {{
+          ...authHeaders(),
+          ...(options.headers || {{}})
+        }}
+      }});
+      const body = await response.json().catch(() => ({{}}));
+      if (!response.ok) {{
+        throw new Error(body.detail || body.error || `HTTP ${{response.status}}`);
+      }}
+      return body;
+    }}
+
+    async function pollPrepare(statusUrl) {{
+      let latest = null;
+      for (let i = 0; i < 720; i++) {{
+        await new Promise((resolve) => setTimeout(resolve, i === 0 ? 2000 : 10000));
+        const parsed = new URL(statusUrl, location.origin);
+        const body = await apiFetch(parsed.pathname + parsed.search);
+        latest = body;
+        prepareStatus.textContent = prepareMessage(body);
+        if (body.status === "ready") {{
+          const url = publicUrl(body.url);
+          result.textContent = url;
+          openLink.href = url;
+          openLink.setAttribute("aria-disabled", "false");
+          notify("YouTube準備完了", url);
+          return;
+        }}
+        if (body.status === "failed") {{
+          notify("YouTube準備失敗", body.error || "unknown error");
+          return;
+        }}
+      }}
+      notify("YouTube準備確認タイムアウト", latest ? prepareMessage(latest) : "status polling timeout");
+    }}
+
+    async function loadSubtitleChoices(videoId, language, selectedMode) {{
+      const params = new URLSearchParams({{ mode: selectedMode }});
+      const body = await apiFetch(`/prepare/youtube/${{videoId}}/${{language}}/subtitles?${{params.toString()}}`);
+      if (!body.requires_choice) return false;
+      subtitleSource.innerHTML = "";
+      for (const candidate of body.candidates || []) {{
+        const option = document.createElement("option");
+        option.value = candidate.language;
+        option.textContent = `${{candidate.language}} / ${{candidate.name || candidate.name_en || candidate.language}}`;
+        subtitleSource.appendChild(option);
+      }}
+      prepareOptions.hidden = false;
+      prepareStatus.textContent = "日本語字幕が見つかりませんでした。翻訳元字幕と翻訳方式を選んで、もう一度 Prepare を押してください。";
+      return true;
+    }}
+
+    async function prepareCurrentVideo() {{
+      update();
+      const videoId = extractVideoId(input.value);
+      const language = (lang.value || defaultLang).trim();
+      const token = prepareToken.value.trim();
+      const selectedMode = prepareMode();
+      if (!token) {{
+        prepareStatus.textContent = "Prepare token を入力してください。";
+        return;
+      }}
+      if (!/^[A-Za-z0-9_-]{{11}}$/.test(videoId) || !/^[A-Za-z0-9_-]{{2,12}}$/.test(language)) {{
+        prepareStatus.textContent = "YouTube URLと言語を確認してください。";
+        return;
+      }}
+      prepareButton.disabled = true;
+      try {{
+        let path = `/prepare/youtube/${{videoId}}/${{language}}`;
+        if (language === "ja" && prepareOptions.hidden) {{
+          const needsChoice = await loadSubtitleChoices(videoId, language, selectedMode);
+          if (needsChoice) return;
+        }}
+        if (!prepareOptions.hidden && subtitleSource.value) {{
+          path += `/${{encodeURIComponent(subtitleSource.value)}}/${{encodeURIComponent(translationEngine.value)}}`;
+        }}
+        const params = new URLSearchParams({{ mode: selectedMode }});
+        const body = await apiFetch(`${{path}}?${{params.toString()}}`, {{ method: "POST" }});
+        prepareStatus.textContent = prepareMessage(body);
+        if (body.status === "ready") {{
+          const url = publicUrl(body.url);
+          result.textContent = url;
+          openLink.href = url;
+          openLink.setAttribute("aria-disabled", "false");
+          notify("YouTube準備完了", url);
+          return;
+        }}
+        if (body.status_url) {{
+          await pollPrepare(body.status_url);
+        }}
+      }} catch (error) {{
+        prepareStatus.textContent = `準備APIエラー: ${{error.message}}`;
+      }} finally {{
+        prepareButton.disabled = false;
+      }}
+    }}
+
     function updateJson() {{
       const values = sourceUrl.value.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean);
       const selectedType = sourceType.value;
@@ -3439,9 +3832,16 @@ async def index() -> str:
 
     videoTab.addEventListener("click", () => selectTool("video"));
     jsonTab.addEventListener("click", () => selectTool("json"));
-    input.addEventListener("input", update);
-    lang.addEventListener("input", update);
-    mode.addEventListener("change", update);
+    function resetPrepareChoices() {{
+      prepareOptions.hidden = true;
+      subtitleSource.innerHTML = "";
+    }}
+    input.addEventListener("input", () => {{ resetPrepareChoices(); update(); }});
+    lang.addEventListener("input", () => {{ resetPrepareChoices(); update(); }});
+    mode.addEventListener("change", () => {{ resetPrepareChoices(); update(); }});
+    prepareToken.addEventListener("input", () => {{
+      localStorage.setItem("youtubeProxyPrepareToken", prepareToken.value.trim());
+    }});
     form.addEventListener("submit", (event) => {{
       event.preventDefault();
       update();
@@ -3451,6 +3851,8 @@ async def index() -> str:
       update();
       if (result.textContent) await navigator.clipboard.writeText(result.textContent);
     }});
+    prepareButton.addEventListener("click", prepareCurrentVideo);
+    notifyButton.addEventListener("click", requestNotifications);
     sourceUrl.addEventListener("input", updateJson);
     sourceType.addEventListener("change", updateJson);
     playerMode.addEventListener("change", updateJson);
@@ -3699,6 +4101,13 @@ async def prepare_job_status(job_id: str, request: Request) -> JSONResponse:
     return JSONResponse(job_response_body(job_id, job, request))
 
 
+@app.post("/prepare/eta/reset")
+async def reset_prepare_eta(request: Request) -> JSONResponse:
+    require_prepare_auth(request, allow_temp_key=False)
+    metrics_manager.reset()
+    return JSONResponse({"message": "予想時間の学習データをリセットしました。"})
+
+
 @app.post("/prepare/youtube-batch/{lang}")
 async def prepare_youtube_batch(
     lang: str,
@@ -3744,7 +4153,7 @@ async def prepare_batch_status(batch_id: str, request: Request) -> JSONResponse:
 async def clear_all_youtube(
     request: Request,
 ) -> JSONResponse:
-    require_prepare_auth(request)
+    require_prepare_auth(request, allow_temp_key=False)
 
     # Cancel all active conversion tasks
     async with _inflight_lock:
@@ -3839,7 +4248,7 @@ async def clear_youtube(
     path_source_lang: str | None = None,
     path_translation_engine: str | None = None,
 ) -> JSONResponse:
-    require_prepare_auth(request)
+    require_prepare_auth(request, allow_temp_key=False)
     validate_input(video_id, lang)
     normalized_engine = None
     if path_source_lang or path_translation_engine:

@@ -140,13 +140,19 @@ bot はスラッシュコマンド `/prepare` を提供します。
 ```text
 /prepare url:https://www.youtube.com/watch?v=dQw4w9WgXcQ lang:ja mode:MP4
 /prepare url:https://www.youtube.com/@ikeaireland lang:ja mode:MP4 max_items:5000
+/webui-key days:3
+/reset-eta
 ```
 
 `url` にプレイリスト URL やチャンネル URL を渡した場合は、YouTube Data API v3 で一覧を展開して一括準備します。`max_items` の既定値は `DISCORD_PREPARE_BATCH_MAX_ITEMS`、未設定時は 5000 件です。
 
 単体動画で `lang:ja` を指定し、日本語字幕が存在しない場合は、準備を始める前に翻訳元字幕と言語エンジンを選ぶ UI を表示します。翻訳エンジンは LLM 翻訳が既定で、必要に応じて Google 翻訳を選べます。
 
-準備開始時は `予想N分 / 終了予想 <t:1783619520:t>` の形式で返信します。ジョブが完了または失敗すると、コマンドを実行したユーザーにメンションして結果を投稿します。一括準備では完了時に先頭 10 件の配信 URL と残り件数を投稿します。
+準備開始時は `予想N分N秒 / 終了予想 <t:1783619520:t>` の形式で返信します。ジョブが完了または失敗すると、コマンドを実行したユーザーにメンションして結果を投稿します。一括準備では完了時に先頭 10 件の配信 URL と残り件数を投稿します。予想時間の学習データは `/reset-eta` でリセットできます。
+
+トップページの Video タブからも単体動画の準備を開始できます。`Prepare token` に `DISCORD_PREPARE_TOKEN` または `/webui-key` で発行した一時キーを入力して `Prepare` を押します。`Enable Notifications` を押してブラウザ通知を許可しておくと、ページを開いている間は準備完了または失敗時に通知します。削除系操作はブラウザ UI には置いていません。
+
+`/webui-key days:N` は Web UI 一次利用者向けの一時キーを ephemeral で返します。キー形式は `YYYY-MM-DD-署名` で、先頭の日付を見ると有効期限が分かります。有効期限はその日付の終わりまで、タイムゾーンは JST です。一時キーは準備・状態確認には使えますが、削除系 API と `/reset-eta` には使えません。`WEBUI_TEMP_KEY_SECRET` を FastAPI と Discord bot の両方で同じ値にしてください。未設定時は `DISCORD_PREPARE_TOKEN` を使いますが、運用では別値を推奨します。
 
 ### SSD/HDD アーカイブキャッシュ
 
