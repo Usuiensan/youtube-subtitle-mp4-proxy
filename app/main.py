@@ -896,6 +896,101 @@ LANG_NAMES_JA = {
 }
 
 
+LANG_NAMES_EN = {
+    "af": "Afrikaans",
+    "sq": "Albanian",
+    "am": "Amharic",
+    "ar": "Arabic",
+    "hy": "Armenian",
+    "as": "Assamese",
+    "az": "Azerbaijani",
+    "eu": "Basque",
+    "bn": "Bengali",
+    "bg": "Bulgarian",
+    "my": "Burmese",
+    "ca": "Catalan",
+    "chr": "Cherokee",
+    "zh-hk": "Chinese (Hong Kong)",
+    "zh-cn": "Chinese (Simplified)",
+    "zh-tw": "Chinese (Traditional)",
+    "zh-hans": "Chinese (Simplified)",
+    "zh-hant": "Chinese (Traditional)",
+    "zh": "Chinese",
+    "hr": "Croatian",
+    "cs": "Czech",
+    "da": "Danish",
+    "nl": "Dutch",
+    "en-gb": "English (UK)",
+    "en": "English",
+    "et": "Estonian",
+    "fil": "Filipino",
+    "fi": "Finnish",
+    "fr": "French",
+    "fr-ca": "French (Canada)",
+    "gl": "Galician",
+    "ka": "Georgian",
+    "de": "German",
+    "el": "Greek",
+    "gu": "Gujarati",
+    "iw": "Hebrew",
+    "he": "Hebrew",
+    "hi": "Hindi",
+    "hu": "Hungarian",
+    "is": "Icelandic",
+    "id": "Indonesian",
+    "ga": "Irish",
+    "it": "Italian",
+    "ja": "Japanese",
+    "kn": "Kannada",
+    "kk": "Kazakh",
+    "km": "Khmer",
+    "ko": "Korean",
+    "lo": "Lao",
+    "lv": "Latvian",
+    "lt": "Lithuanian",
+    "mk": "Macedonian",
+    "ms": "Malay",
+    "ml": "Malayalam",
+    "mr": "Marathi",
+    "mn": "Mongolian",
+    "ne": "Nepali",
+    "no": "Norwegian",
+    "or": "Oriya",
+    "fa": "Persian",
+    "pl": "Polish",
+    "pt-br": "Portuguese (Brazil)",
+    "pt-pt": "Portuguese (Portugal)",
+    "pt": "Portuguese",
+    "pa": "Punjabi",
+    "ro": "Romanian",
+    "ru": "Russian",
+    "sr": "Serbian",
+    "si": "Sinhala",
+    "sk": "Slovak",
+    "sl": "Slovenian",
+    "es": "Spanish",
+    "es-419": "Spanish (Latin America)",
+    "sw": "Swahili",
+    "sv": "Swedish",
+    "ta": "Tamil",
+    "te": "Telugu",
+    "th": "Thai",
+    "tr": "Turkish",
+    "uk": "Ukrainian",
+    "ur": "Urdu",
+    "uz": "Uzbek",
+    "vi": "Vietnamese",
+    "cy": "Welsh",
+    "zu": "Zulu",
+}
+
+
+def get_lang_name_en(code: str) -> str:
+    normalized = code.lower().strip()
+    base = normalized.split("-")[0]
+    return LANG_NAMES_EN.get(normalized) or LANG_NAMES_EN.get(base) or normalized
+
+
 def get_lang_name_ja(code: str) -> str:
     normalized = code.lower().strip()
     base = normalized.split("-")[0]
@@ -909,13 +1004,16 @@ def get_subtitle_overlay_label(subtitle_meta: dict) -> str:
     if translated and source_lang and requested_lang:
         src_ja = get_lang_name_ja(source_lang)
         req_ja = get_lang_name_ja(requested_lang)
+        src_en = get_lang_name_en(source_lang)
+        req_en = get_lang_name_en(requested_lang)
         line1 = f"[字幕]{src_ja} → {req_ja}"
-        line2 = f"[SUB]{source_lang.lower()} → {requested_lang.lower()}"
+        line2 = f"[SUB]{src_en} → {req_en}"
         return f"{line1}\n{line2}"
     elif requested_lang:
         req_ja = get_lang_name_ja(requested_lang)
+        req_en = get_lang_name_en(requested_lang)
         line1 = f"[字幕]{req_ja}"
-        line2 = f"[SUB]{requested_lang.lower()}"
+        line2 = f"[SUB]{req_en}"
         return f"{line1}\n{line2}"
     return "[SUB]"
 
@@ -943,7 +1041,7 @@ def ffmpeg_subtitle_arg(path: Path, subtitle_meta: dict | None = None) -> str:
     )
     if subtitle_meta:
         label = get_subtitle_overlay_label(subtitle_meta)
-        escaped_label = label.replace("'", "'\\\\''").replace(":", "\\:")
+        lines = label.split("\n")
         
         font_file = find_japanese_font_file()
         if font_file:
@@ -951,13 +1049,19 @@ def ffmpeg_subtitle_arg(path: Path, subtitle_meta: dict | None = None) -> str:
         else:
             font_opt = f":font='{settings.subtitle_font}'" if settings.subtitle_font else ""
             
-        drawtext_filter = (
-            f"drawtext=text='{escaped_label}'"
-            f":x=h/30:y=h/30:fontsize=h/25:fontcolor=white@0.6"
-            f":box=1:boxcolor=black@0.4:boxborderw=h/100"
-            f":enable='lt(t,5)'{font_opt}"
-        )
-        filter_str = f"{filter_str},{drawtext_filter}"
+        drawtext_filters = []
+        for i, line in enumerate(lines):
+            escaped_line = line.replace("'", "'\\\\''").replace(":", "\\:")
+            y_expr = f"h/30+{i}*h/20"
+            drawtext_filter = (
+                f"drawtext=text='{escaped_line}'"
+                f":x=h/30:y={y_expr}:fontsize=h/25:fontcolor=white@0.6"
+                f":box=1:boxcolor=black@0.4:boxborderw=h/100"
+                f":enable='lt(t,5)'{font_opt}"
+            )
+            drawtext_filters.append(drawtext_filter)
+            
+        filter_str = f"{filter_str},{','.join(drawtext_filters)}"
     return filter_str
 
 
