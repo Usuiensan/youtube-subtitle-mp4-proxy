@@ -926,13 +926,19 @@ async def create_hls(video: Path, subtitle: Path, destination_dir: Path) -> None
     )
 
 
-def check_existing_sources(key: str) -> tuple[Path, Path, dict] | None:
+def get_cached_video_info(key: str) -> dict | None:
     meta_p = source_meta_path(key)
     if not meta_p.exists():
         return None
     try:
-        source_meta = json.loads(meta_p.read_text(encoding="utf-8"))
+        return json.loads(meta_p.read_text(encoding="utf-8"))
     except Exception:
+        return None
+
+
+def check_existing_sources(key: str) -> tuple[Path, Path, dict] | None:
+    source_meta = get_cached_video_info(key)
+    if not source_meta:
         return None
 
     source_video_rel = source_meta.get("source_video")
@@ -1314,11 +1320,18 @@ async def run_prepare_job(
         if archived_ready_entry_exists(cache_id, mode):
             update_job_eta(job_id, estimate_archive_prepare_seconds(cache_id))
         else:
-            info = await fetch_video_info(video_id)
-            assert_duration_allowed(info)
-            _prepare_jobs[job_id]["title"] = info.get("title")
-            _prepare_jobs[job_id]["duration"] = info.get("duration")
-            update_job_eta(job_id, estimate_conversion_seconds(info.get("duration"), mode))
+            cached_info = get_cached_video_info(cache_id)
+            if cached_info and cached_info.get("duration"):
+                info = cached_info
+                _prepare_jobs[job_id]["title"] = info.get("title")
+                _prepare_jobs[job_id]["duration"] = info.get("duration")
+                update_job_eta(job_id, estimate_conversion_seconds(info.get("duration"), mode))
+            else:
+                info = await fetch_video_info(video_id)
+                assert_duration_allowed(info)
+                _prepare_jobs[job_id]["title"] = info.get("title")
+                _prepare_jobs[job_id]["duration"] = info.get("duration")
+                update_job_eta(job_id, estimate_conversion_seconds(info.get("duration"), mode))
         if mode == "hls":
             await get_or_create_hls(video_id, lang)
         else:
@@ -1387,11 +1400,13 @@ async def enqueue_prepare_job(
 
         job_id = uuid.uuid4().hex
         cache_id = cache_key(video_id, lang)
-        eta_seconds = (
-            estimate_archive_prepare_seconds(cache_id)
-            if archived_ready_entry_exists(cache_id, mode)
-            else None
-        )
+        cached_info = get_cached_video_info(cache_id)
+        if archived_ready_entry_exists(cache_id, mode):
+            eta_seconds = estimate_archive_prepare_seconds(cache_id)
+        elif cached_info and cached_info.get("duration"):
+            eta_seconds = estimate_conversion_seconds(cached_info.get("duration"), mode)
+        else:
+            eta_seconds = None
         estimated_ready_at = int(time.time()) + eta_seconds if eta_seconds is not None else None
         _prepare_by_key[job_key] = job_id
         _prepare_jobs[job_id] = {
@@ -1405,6 +1420,11 @@ async def enqueue_prepare_job(
             "estimated_ready_at": estimated_ready_at,
             "requesters": [],
         }
+        if cached_info:
+            if cached_info.get("title"):
+                _prepare_jobs[job_id]["title"] = cached_info.get("title")
+            if cached_info.get("duration"):
+                _prepare_jobs[job_id]["duration"] = cached_info.get("duration")
         add_job_requester(_prepare_jobs[job_id], discord_user_id)
         asyncio.create_task(run_prepare_job(job_id, job_key, video_id, lang, mode, url))
         return 202, job_response_body(job_id, _prepare_jobs[job_id], request)

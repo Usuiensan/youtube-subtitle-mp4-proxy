@@ -260,8 +260,11 @@ async def notify_when_done(
             except discord.HTTPException:
                 pass
 
+    is_first_poll = True
     while time.monotonic() < deadline:
-        await asyncio.sleep(settings.poll_seconds)
+        sleep_time = 2 if is_first_poll else settings.poll_seconds
+        await asyncio.sleep(sleep_time)
+        is_first_poll = False
         try:
             latest = await fetch_job(status_url)
         except Exception:
