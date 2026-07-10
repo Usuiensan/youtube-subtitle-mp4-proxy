@@ -920,6 +920,21 @@ def get_subtitle_overlay_label(subtitle_meta: dict) -> str:
     return "[SUB]"
 
 
+def find_japanese_font_file() -> str | None:
+    candidates = [
+        "/usr/local/share/fonts/truetype/form-udp-gothic/FORMUDPGothic-Regular.ttf",
+        "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/ipaexfont/ipaexg.ttf",
+        "/usr/share/fonts/truetype/vlgothic/VL-PGothic-Regular.ttf",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
 def ffmpeg_subtitle_arg(path: Path, subtitle_meta: dict | None = None) -> str:
     value = path.as_posix()
     filter_str = (
@@ -929,7 +944,13 @@ def ffmpeg_subtitle_arg(path: Path, subtitle_meta: dict | None = None) -> str:
     if subtitle_meta:
         label = get_subtitle_overlay_label(subtitle_meta)
         escaped_label = label.replace("'", "'\\\\''").replace(":", "\\:")
-        font_opt = f":font='{settings.subtitle_font}'" if settings.subtitle_font else ""
+        
+        font_file = find_japanese_font_file()
+        if font_file:
+            font_opt = f":fontfile='{font_file}'"
+        else:
+            font_opt = f":font='{settings.subtitle_font}'" if settings.subtitle_font else ""
+            
         drawtext_filter = (
             f"drawtext=text='{escaped_label}'"
             f":x=h/30:y=h/30:fontsize=h/25:fontcolor=white@0.6"
