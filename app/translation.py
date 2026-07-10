@@ -227,6 +227,7 @@ async def translate_srt_with_local_worker(
     target_language: str,
     settings: TranslationSettings,
     run_worker: Callable[[dict[str, Any]], Any],
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> SubtitleTranslationResult:
     subtitles = load_srt(subtitle_path)
     windows = window_subtitles(
@@ -236,8 +237,11 @@ async def translate_srt_with_local_worker(
     )
     translated_subtitles: list[srt.Subtitle] = []
     fallback_used = False
+    total_windows = len(windows)
 
-    for window in windows:
+    for index, window in enumerate(windows):
+        if on_progress:
+            on_progress(index, total_windows)
         translated_map: dict[str, str] | None = None
         for strict in (False, True):
             try:

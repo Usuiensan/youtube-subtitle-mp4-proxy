@@ -26,7 +26,7 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
-from app.translation import TranslationSettings, translate_srt_with_local_worker
+from app.translation import TranslationSettings, translate_srt_with_local_worker, load_srt
 
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -106,6 +106,63 @@ class Settings:
 
 
 settings = Settings()
+
+
+class MetricsManager:
+    def __init__(self, file_path: Path):
+        self.file_path = file_path
+        self.data = {
+            "download_speed": [],      # bytes per second
+            "encode_speed_ratio": [],  # video_duration / encode_time
+            "translate_speed": [],     # subtitle_events / translate_time
+            "archive_speed": []        # bytes per second
+        }
+        self.load()
+
+    def load(self):
+        if self.file_path.exists():
+            try:
+                self.data = json.loads(self.file_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+    def save(self):
+        try:
+            self.file_path.parent.mkdir(parents=True, exist_ok=True)
+            self.file_path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def record_download(self, size_bytes: float, time_seconds: float):
+        if time_seconds > 0:
+            self.data.setdefault("download_speed", []).append(size_bytes / time_seconds)
+            self.save()
+
+    def record_encode(self, duration: float, time_seconds: float):
+        if time_seconds > 0:
+            self.data.setdefault("encode_speed_ratio", []).append(duration / time_seconds)
+            self.save()
+
+    def record_translate(self, events_count: int, time_seconds: float):
+        if time_seconds > 0:
+            self.data.setdefault("translate_speed", []).append(events_count / time_seconds)
+            self.save()
+
+    def record_archive(self, size_bytes: float, time_seconds: float):
+        if time_seconds > 0:
+            self.data.setdefault("archive_speed", []).append(size_bytes / time_seconds)
+            self.save()
+
+    def get_avg(self, key: str, fallback: float) -> float:
+        vals = self.data.get(key)
+        if not vals:
+            return fallback
+        # keep last 50 entries
+        vals = vals[-50:]
+        return sum(vals) / len(vals)
+
+
+metrics_manager = MetricsManager(settings.cache_hot_dir / "metrics.json")
 app = FastAPI(title="YouTube subtitle burned MP4 proxy")
 
 _global_encode_lock = asyncio.Semaphore(1)
@@ -116,6 +173,104 @@ _prepare_lock = asyncio.Lock()
 _prepare_jobs: dict[str, dict] = {}
 _prepare_by_key: dict[str, str] = {}
 _cleanup_lock = asyncio.Lock()
+
+
+def estimate_total_seconds(
+    duration: float,
+    has_sources: bool,
+    needs_translation: bool,
+    subtitle_events_count: int | None = None
+) -> int:
+    dl_speed = metrics_manager.get_avg("download_speed", 3 * 1024 * 1024)
+    enc_ratio = metrics_manager.get_avg("encode_speed_ratio", 3.0)
+    tr_speed = metrics_manager.get_avg("translate_speed", 1.0)
+    
+    # Estimate size as 1.5 Mbps for 720p video
+    est_size = duration * 1.5 * 1024 * 1024 / 8
+    
+    dl_time = 0.0 if has_sources else (est_size / dl_speed)
+    
+    if needs_translation:
+        events = subtitle_events_count if subtitle_events_count is not None else (duration / 2.0)
+        tr_time = events / tr_speed
+    else:
+        tr_time = 0.0
+        
+    enc_time = duration / enc_ratio
+    
+    # add a small buffer (e.g. 10 seconds for process startup)
+    total = dl_time + tr_time + enc_time + 10.0
+    return max(15, int(total))
+
+
+class YtdlpProgressParser:
+    def __init__(self):
+        self.percent = 0.0
+        self.speed = ""
+        self.eta = ""
+        self.percent_re = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
+        self.speed_re = re.compile(r"at\s+(\S+)")
+        self.eta_re = re.compile(r"ETA\s+(\S+)")
+
+    def parse_line(self, line: str):
+        pct_match = self.percent_re.search(line)
+        if pct_match:
+            try:
+                self.percent = float(pct_match.group(1))
+            except ValueError:
+                pass
+        speed_match = self.speed_re.search(line)
+        if speed_match:
+            self.speed = speed_match.group(1)
+        eta_match = self.eta_re.search(line)
+        if eta_match:
+            self.eta = eta_match.group(1)
+
+
+class FfmpegProgressParser:
+    def __init__(self, duration_seconds: float):
+        self.duration = duration_seconds
+        self.out_time_seconds = 0.0
+        self.speed = 1.0
+        self.percent = 0.0
+
+    def parse_line(self, line: str):
+        if "=" in line:
+            parts = line.strip().split("=", 1)
+            if len(parts) == 2:
+                key, val = parts
+                if key == "out_time_us":
+                    try:
+                        us = int(val)
+                        self.out_time_seconds = us / 1000000.0
+                        if self.duration > 0:
+                            self.percent = min(100.0, (self.out_time_seconds / self.duration) * 100.0)
+                    except ValueError:
+                        pass
+                elif key == "speed":
+                    val_str = val.strip().replace("x", "")
+                    try:
+                        self.speed = float(val_str)
+                    except ValueError:
+                        pass
+
+
+def update_job_progress(
+    job_id: str,
+    phase: str,
+    percent: float,
+    eta_seconds: int | None = None,
+    details: str = "",
+):
+    if job_id not in _prepare_jobs:
+        return
+    _prepare_jobs[job_id]["progress"] = {
+        "phase": phase,
+        "percent": percent,
+        "eta_seconds": eta_seconds,
+        "details": details,
+        "updated_at": time.time(),
+    }
 
 
 class CommandError(Exception):
@@ -706,9 +861,138 @@ def is_nvenc_driver_error(message: str) -> bool:
     )
 
 
-async def run_ffmpeg_with_optional_nvenc_fallback(args: list[str]) -> None:
+async def run_yt_dlp_with_progress(args: list[str], job_id: str | None = None, cwd: Path | None = None) -> str:
+    if job_id:
+        if "--newline" not in args:
+            args.insert(1, "--newline")
+
+    process = await asyncio.create_subprocess_exec(
+        *args,
+        cwd=str(cwd) if cwd else None,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    
+    parser = YtdlpProgressParser()
+    stdout_chunks = []
+    
+    async def read_stdout():
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+            line_str = line.decode("utf-8", errors="replace")
+            stdout_chunks.append(line_str)
+            if job_id:
+                parser.parse_line(line_str)
+                eta_sec = None
+                if parser.eta and ":" in parser.eta:
+                    try:
+                        parts = parser.eta.split(":")
+                        if len(parts) == 2:
+                            eta_sec = int(parts[0]) * 60 + int(parts[1])
+                        elif len(parts) == 3:
+                            eta_sec = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+                    except ValueError:
+                        pass
+                
+                details = f"DL速度: {parser.speed} | ETA: {parser.eta}" if parser.speed else ""
+                update_job_progress(job_id, "download", parser.percent, eta_seconds=eta_sec, details=details)
+            
+    async def read_stderr():
+        while True:
+            line = await process.stderr.readline()
+            if not line:
+                break
+            
     try:
-        await run_command(args, raise_http=False)
+        if job_id:
+            await asyncio.wait_for(
+                asyncio.gather(read_stdout(), read_stderr()),
+                timeout=settings.job_timeout_seconds
+            )
+        else:
+            await process.communicate()
+        await process.wait()
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+        raise HTTPException(status_code=504, detail="yt-dlp download timed out")
+        
+    if process.returncode != 0:
+        raise CommandError(args, f"yt-dlp failed with exit code {process.returncode}")
+        
+    return "".join(stdout_chunks)
+
+
+async def run_ffmpeg_with_progress(args: list[str], job_id: str, duration_seconds: float) -> None:
+    args.insert(1, "-progress")
+    args.insert(2, "-")
+    
+    process = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    
+    parser = FfmpegProgressParser(duration_seconds)
+    
+    async def read_stdout():
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+            line_str = line.decode("utf-8", errors="replace")
+            parser.parse_line(line_str)
+            
+            remaining_seconds = None
+            if parser.speed > 0 and duration_seconds > parser.out_time_seconds:
+                remaining_seconds = int((duration_seconds - parser.out_time_seconds) / parser.speed)
+                if job_id in _prepare_jobs:
+                    _prepare_jobs[job_id]["eta_seconds"] = remaining_seconds
+                    _prepare_jobs[job_id]["estimated_ready_at"] = int(time.time()) + remaining_seconds
+            
+            details = f"エンコード速度: {parser.speed:.2f}x" if parser.speed > 0 else ""
+            phase = "hls" if "-f" in args and "hls" in args else "encode"
+            update_job_progress(
+                job_id,
+                phase,
+                parser.percent,
+                eta_seconds=remaining_seconds,
+                details=details
+            )
+            
+    async def read_stderr():
+        while True:
+            line = await process.stderr.readline()
+            if not line:
+                break
+            
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(read_stdout(), read_stderr()),
+            timeout=settings.job_timeout_seconds
+        )
+        await process.wait()
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+        raise HTTPException(status_code=504, detail="ffmpeg timed out")
+        
+    if process.returncode != 0:
+        raise CommandError(args, f"ffmpeg failed with exit status {process.returncode}")
+
+
+async def run_ffmpeg_with_optional_nvenc_fallback(
+    args: list[str],
+    job_id: str | None = None,
+    duration_seconds: float | None = None,
+) -> None:
+    try:
+        if job_id and duration_seconds:
+            await run_ffmpeg_with_progress(args, job_id, duration_seconds)
+        else:
+            await run_command(args, raise_http=False)
         return
     except CommandError as error:
         if not wants_nvenc() or not is_nvenc_driver_error(error.message):
@@ -747,7 +1031,11 @@ async def run_ffmpeg_with_optional_nvenc_fallback(args: list[str]) -> None:
 
     insert_at = fallback_args.index("-c:a")
     fallback_args[insert_at:insert_at] = ffmpeg_video_args("libx264")
-    await run_command(fallback_args)
+    
+    if job_id and duration_seconds:
+        await run_ffmpeg_with_progress(fallback_args, job_id, duration_seconds)
+    else:
+        await run_command(fallback_args)
 
 
 def translation_settings() -> TranslationSettings:
@@ -809,6 +1097,7 @@ async def translate_subtitle_if_needed(
     info: dict,
     selection: dict,
     work_dir: Path,
+    job_id: str | None = None,
 ) -> tuple[Path, dict]:
     if not selection["translated"]:
         return subtitle, selection
@@ -819,6 +1108,23 @@ async def translate_subtitle_if_needed(
         payload["_work_dir"] = str(work_dir)
         return await run_translation_worker(payload)
 
+    on_prog = None
+    start_t = time.time()
+    if job_id:
+        def on_prog(current_window: int, total_windows: int):
+            pct = (current_window / total_windows) * 100.0 if total_windows > 0 else 0.0
+            elapsed = time.time() - start_t
+            remaining = None
+            if current_window > 0:
+                avg_time = elapsed / current_window
+                remaining = int(avg_time * (total_windows - current_window))
+                if job_id in _prepare_jobs:
+                    _prepare_jobs[job_id]["eta_seconds"] = remaining
+                    _prepare_jobs[job_id]["estimated_ready_at"] = int(time.time()) + remaining
+            
+            details = f"翻訳中... {current_window}/{total_windows} ウィンドウ"
+            update_job_progress(job_id, "translate", pct, eta_seconds=remaining, details=details)
+
     result = await translate_srt_with_local_worker(
         subtitle_path=subtitle,
         output_path=translated_path,
@@ -827,12 +1133,26 @@ async def translate_subtitle_if_needed(
         target_language=selection["requested_language"],
         settings=translation_settings(),
         run_worker=worker,
+        on_progress=on_prog,
     )
+    end_t = time.time()
+    try:
+        subtitles = load_srt(translated_path)
+        metrics_manager.record_translate(len(subtitles), end_t - start_t)
+    except Exception:
+        pass
+        
     metadata = {**selection, **result.metadata}
     return result.subtitle_path, metadata
 
 
-async def download_sources(video_id: str, lang: str, work_dir: Path, info: dict) -> tuple[Path, Path, Path, dict]:
+async def download_sources(
+    video_id: str,
+    lang: str,
+    work_dir: Path,
+    info: dict,
+    job_id: str | None = None,
+) -> tuple[Path, Path, Path, dict]:
     url = f"https://www.youtube.com/watch?v={video_id}"
     subtitle_selection = select_subtitle_language(info, lang)
     source_lang = subtitle_selection["source_language"]
@@ -842,41 +1162,56 @@ async def download_sources(video_id: str, lang: str, work_dir: Path, info: dict)
         "bv*+ba/"
         "b"
     )
-    await run_command(
-        yt_dlp_base_args()
-        + [
-            "--no-playlist",
-            "--write-subs",
-            "--sub-langs",
-            source_lang,
-            "--convert-subs",
-            "srt",
-            "--paths",
-            str(work_dir),
-            "-f",
-            format_selector,
-            "--merge-output-format",
-            "mkv",
-            "-o",
-            "%(id)s.%(ext)s",
-            url,
-        ],
-        cwd=work_dir,
-    )
+    
+    start_t = time.time()
+    dl_args = yt_dlp_base_args() + [
+        "--no-playlist",
+        "--write-subs",
+        "--sub-langs",
+        source_lang,
+        "--convert-subs",
+        "srt",
+        "--paths",
+        str(work_dir),
+        "-f",
+        format_selector,
+        "--merge-output-format",
+        "mkv",
+        "-o",
+        "%(id)s.%(ext)s",
+        url,
+    ]
+    if job_id:
+        await run_yt_dlp_with_progress(dl_args, job_id=job_id, cwd=work_dir)
+    else:
+        await run_command(dl_args, cwd=work_dir)
+    end_t = time.time()
+    
     video = find_downloaded_video(work_dir)
     original_subtitle = find_subtitle(work_dir, source_lang)
+    
+    metrics_manager.record_download(video.stat().st_size, end_t - start_t)
+    
     subtitle, subtitle_meta = await translate_subtitle_if_needed(
         key=cache_key(video_id, lang),
         subtitle=original_subtitle,
         info=info,
         selection=subtitle_selection,
         work_dir=work_dir,
+        job_id=job_id,
     )
     return video, original_subtitle, subtitle, subtitle_meta
 
 
-async def burn_subtitles(video: Path, subtitle: Path, destination: Path) -> None:
+async def burn_subtitles(
+    video: Path,
+    subtitle: Path,
+    destination: Path,
+    job_id: str | None = None,
+    duration_seconds: float | None = None,
+) -> None:
     tmp_output = destination.with_suffix(".tmp.mp4")
+    start_t = time.time()
     await run_ffmpeg_with_optional_nvenc_fallback(
         [
             "ffmpeg",
@@ -891,17 +1226,29 @@ async def burn_subtitles(video: Path, subtitle: Path, destination: Path) -> None
             "-movflags",
             "+faststart",
             str(tmp_output),
-        ]
+        ],
+        job_id,
+        duration_seconds
     )
     tmp_output.replace(destination)
+    end_t = time.time()
+    if duration_seconds:
+        metrics_manager.record_encode(duration_seconds, end_t - start_t)
 
 
-async def create_hls(video: Path, subtitle: Path, destination_dir: Path) -> None:
+async def create_hls(
+    video: Path,
+    subtitle: Path,
+    destination_dir: Path,
+    job_id: str | None = None,
+    duration_seconds: float | None = None,
+) -> None:
     destination_dir.mkdir(parents=True, exist_ok=True)
     for old_file in destination_dir.glob("*"):
         if old_file.is_file():
             old_file.unlink()
 
+    start_t = time.time()
     await run_ffmpeg_with_optional_nvenc_fallback(
         [
             "ffmpeg",
@@ -922,8 +1269,13 @@ async def create_hls(video: Path, subtitle: Path, destination_dir: Path) -> None
             "-hls_segment_filename",
             str(destination_dir / "segment_%05d.ts"),
             str(destination_dir / "index.m3u8"),
-        ]
+        ],
+        job_id,
+        duration_seconds
     )
+    end_t = time.time()
+    if duration_seconds:
+        metrics_manager.record_encode(duration_seconds, end_t - start_t)
 
 
 def get_cached_video_info(key: str) -> dict | None:
@@ -968,13 +1320,14 @@ def check_existing_sources(key: str) -> tuple[Path, Path, dict] | None:
 
     return video_path, original_subtitle_path, subtitle_meta
 
-
 async def prepare_sources(
     key: str,
     video_id: str,
     lang: str,
     work_dir: Path,
     info: dict,
+    job_id: str | None = None,
+    duration_seconds: float | None = None,
 ) -> tuple[Path, Path, dict]:
     existing = check_existing_sources(key)
     if existing:
@@ -986,6 +1339,7 @@ async def prepare_sources(
                 info=info,
                 selection=subtitle_meta,
                 work_dir=work_dir,
+                job_id=job_id,
             )
             saved_subtitle = source_dir(key) / f"subtitle.{lang}.translated{subtitle.suffix.lower()}"
             shutil.move(str(subtitle), saved_subtitle)
@@ -1001,7 +1355,9 @@ async def prepare_sources(
         return saved_video, saved_subtitle, new_subtitle_meta
 
     # Normal download path
-    video, original_subtitle, subtitle, subtitle_meta = await download_sources(video_id, lang, work_dir, info)
+    video, original_subtitle, subtitle, subtitle_meta = await download_sources(
+        video_id, lang, work_dir, info, job_id=job_id
+    )
     source_dir(key).mkdir(parents=True, exist_ok=True)
     saved_video = source_dir(key) / f"input{video.suffix.lower()}"
     source_lang = subtitle_meta.get("source_language", lang)
@@ -1024,7 +1380,7 @@ async def prepare_sources(
     return saved_video, saved_subtitle, subtitle_meta
 
 
-async def create_mp4(video_id: str, lang: str) -> Path:
+async def create_mp4(video_id: str, lang: str, job_id: str | None = None) -> Path:
     key = cache_key(video_id, lang)
     final_output = output_path(key)
     prepared = prepared_output_path(key)
@@ -1042,15 +1398,18 @@ async def create_mp4(video_id: str, lang: str) -> Path:
         try:
             info = await fetch_video_info(video_id)
             assert_duration_allowed(info)
-            saved_video, saved_subtitle, subtitle_meta = await prepare_sources(key, video_id, lang, work_dir, info)
-            await burn_subtitles(saved_video, saved_subtitle, final_output)
+            duration = float(info.get("duration") or 0.0)
+            saved_video, saved_subtitle, subtitle_meta = await prepare_sources(
+                key, video_id, lang, work_dir, info, job_id=job_id, duration_seconds=duration
+            )
+            await burn_subtitles(saved_video, saved_subtitle, final_output, job_id=job_id, duration_seconds=duration)
             write_meta(key, video_id, lang, info, "mp4")
             return final_output
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
 
 
-async def create_hls_job(video_id: str, lang: str) -> Path:
+async def create_hls_job(video_id: str, lang: str, job_id: str | None = None) -> Path:
     key = cache_key(video_id, lang)
     playlist = hls_playlist_path(key)
     prepared = prepared_hls_playlist_path(key)
@@ -1068,15 +1427,18 @@ async def create_hls_job(video_id: str, lang: str) -> Path:
         try:
             info = await fetch_video_info(video_id)
             assert_duration_allowed(info)
-            saved_video, saved_subtitle, subtitle_meta = await prepare_sources(key, video_id, lang, work_dir, info)
+            duration = float(info.get("duration") or 0.0)
+            saved_video, saved_subtitle, subtitle_meta = await prepare_sources(
+                key, video_id, lang, work_dir, info, job_id=job_id, duration_seconds=duration
+            )
             write_meta(key, video_id, lang, info, "hls")
-            await create_hls(saved_video, saved_subtitle, playlist.parent)
+            await create_hls(saved_video, saved_subtitle, playlist.parent, job_id=job_id, duration_seconds=duration)
             return playlist
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
 
 
-async def get_or_create_mp4(video_id: str, lang: str) -> Path:
+async def get_or_create_mp4(video_id: str, lang: str, job_id: str | None = None) -> Path:
     key = cache_key(video_id, lang)
     cached = prepared_output_path(key)
     if cached:
@@ -1085,7 +1447,7 @@ async def get_or_create_mp4(video_id: str, lang: str) -> Path:
     async with _inflight_lock:
         task = _inflight.get(key)
         if task is None or task.done():
-            task = asyncio.create_task(create_mp4(video_id, lang))
+            task = asyncio.create_task(create_mp4(video_id, lang, job_id=job_id))
             _inflight[key] = task
 
     try:
@@ -1109,7 +1471,7 @@ async def wait_until_hls_ready(key: str, task: asyncio.Task[Path]) -> Path:
     raise HTTPException(status_code=504, detail="HLS playlist was not ready in time")
 
 
-async def get_or_start_hls(video_id: str, lang: str) -> Path:
+async def get_or_start_hls(video_id: str, lang: str, job_id: str | None = None) -> Path:
     key = cache_key(video_id, lang)
     cached = prepared_hls_playlist_path(key)
     if cached:
@@ -1118,7 +1480,7 @@ async def get_or_start_hls(video_id: str, lang: str) -> Path:
     async with _inflight_lock:
         task = _hls_inflight.get(key)
         if task is None or task.done():
-            task = asyncio.create_task(create_hls_job(video_id, lang))
+            task = asyncio.create_task(create_hls_job(video_id, lang, job_id=job_id))
             _hls_inflight[key] = task
 
     try:
@@ -1130,7 +1492,7 @@ async def get_or_start_hls(video_id: str, lang: str) -> Path:
                     _hls_inflight.pop(key, None)
 
 
-async def get_or_create_hls(video_id: str, lang: str) -> Path:
+async def get_or_create_hls(video_id: str, lang: str, job_id: str | None = None) -> Path:
     key = cache_key(video_id, lang)
     cached = prepared_hls_playlist_path(key)
     if cached:
@@ -1139,7 +1501,7 @@ async def get_or_create_hls(video_id: str, lang: str) -> Path:
     async with _inflight_lock:
         task = _hls_inflight.get(key)
         if task is None or task.done():
-            task = asyncio.create_task(create_hls_job(video_id, lang))
+            task = asyncio.create_task(create_hls_job(video_id, lang, job_id=job_id))
             _hls_inflight[key] = task
 
     try:
@@ -1325,17 +1687,30 @@ async def run_prepare_job(
                 info = cached_info
                 _prepare_jobs[job_id]["title"] = info.get("title")
                 _prepare_jobs[job_id]["duration"] = info.get("duration")
-                update_job_eta(job_id, estimate_conversion_seconds(info.get("duration"), mode))
+                has_sources = check_existing_sources(cache_id) is not None
+                sub_sel = select_subtitle_language(info, lang)
+                needs_translation = sub_sel.get("translated", False)
+                eta = estimate_total_seconds(
+                    duration=float(info.get("duration")),
+                    has_sources=has_sources,
+                    needs_translation=needs_translation
+                )
+                update_job_eta(job_id, eta)
             else:
                 info = await fetch_video_info(video_id)
                 assert_duration_allowed(info)
                 _prepare_jobs[job_id]["title"] = info.get("title")
                 _prepare_jobs[job_id]["duration"] = info.get("duration")
-                update_job_eta(job_id, estimate_conversion_seconds(info.get("duration"), mode))
+                eta = estimate_total_seconds(
+                    duration=float(info.get("duration")),
+                    has_sources=False,
+                    needs_translation=True # assume true by default if not cached
+                )
+                update_job_eta(job_id, eta)
         if mode == "hls":
-            await get_or_create_hls(video_id, lang)
+            await get_or_create_hls(video_id, lang, job_id=job_id)
         else:
-            await get_or_create_mp4(video_id, lang)
+            await get_or_create_mp4(video_id, lang, job_id=job_id)
         now = int(time.time())
         subtitle_meta = read_subtitle_meta(cache_id)
         _prepare_jobs[job_id].update(
@@ -1404,7 +1779,17 @@ async def enqueue_prepare_job(
         if archived_ready_entry_exists(cache_id, mode):
             eta_seconds = estimate_archive_prepare_seconds(cache_id)
         elif cached_info and cached_info.get("duration"):
-            eta_seconds = estimate_conversion_seconds(cached_info.get("duration"), mode)
+            has_sources = check_existing_sources(cache_id) is not None
+            try:
+                sub_sel = select_subtitle_language(cached_info, lang)
+                needs_translation = sub_sel.get("translated", False)
+            except Exception:
+                needs_translation = True
+            eta_seconds = estimate_total_seconds(
+                duration=float(cached_info.get("duration")),
+                has_sources=has_sources,
+                needs_translation=needs_translation
+            )
         else:
             eta_seconds = None
         estimated_ready_at = int(time.time()) + eta_seconds if eta_seconds is not None else None

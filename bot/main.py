@@ -200,6 +200,43 @@ def status_message(body: dict[str, Any], fallback_user_id: int | None = None) ->
         mention = mention_text(body, fallback_user_id)
         prefix = f"{mention} " if mention else ""
         return f"{prefix}準備に失敗しました。{title_part}\n{body.get('error', 'unknown error')}"
+
+    progress = body.get("progress")
+    if isinstance(progress, dict) and progress:
+        phase = progress.get("phase", "")
+        percent = progress.get("percent", 0.0)
+        eta_sec = progress.get("eta_seconds")
+        details = progress.get("details", "")
+
+        phase_names = {
+            "download": "動画・字幕のダウンロード",
+            "translate": "字幕の翻訳 (LLM)",
+            "encode": "動画の再エンコード (字幕焼き込み)",
+            "hls": "HLS配信用の書き出し"
+        }
+        phase_ja = phase_names.get(phase, phase)
+
+        bar_width = 15
+        filled = int(round(percent / 100 * bar_width))
+        bar = "█" * filled + "░" * (bar_width - filled)
+        
+        eta_part = ""
+        if isinstance(eta_sec, (int, float)) and eta_sec > 0:
+            if eta_sec < 60:
+                eta_part = f" (残り {int(eta_sec)}秒)"
+            else:
+                eta_part = f" (残り {max(1, round(eta_sec / 60))}分)"
+
+        progress_bar = f"`[{bar}] {percent:5.1f}%`{eta_part}"
+        details_part = f"\n{details}" if details else ""
+        
+        return (
+            f"{mode.upper()}を準備しています...\n"
+            f"**進捗**: {phase_ja}\n"
+            f"{progress_bar}{details_part}"
+            f"{title_part}{subtitle_part}"
+        )
+
     return f"{mode.upper()}を準備しています。{eta_text(body)}{title_part}{subtitle_part}"
 
 
@@ -261,6 +298,8 @@ async def notify_when_done(
                 pass
 
     is_first_poll = True
+    last_content = None
+    last_edit_time = 0.0
     while time.monotonic() < deadline:
         sleep_time = 2 if is_first_poll else settings.poll_seconds
         await asyncio.sleep(sleep_time)
@@ -281,10 +320,18 @@ async def notify_when_done(
             return
 
         if latest:
-            try:
-                await interaction.edit_original_response(content=status_message(latest, interaction.user.id))
-            except discord.HTTPException:
-                pass
+            content = status_message(latest, interaction.user.id)
+            if content != last_content:
+                now = time.monotonic()
+                elapsed = now - last_edit_time
+                if elapsed < 4.0:
+                    await asyncio.sleep(4.0 - elapsed)
+                try:
+                    await interaction.edit_original_response(content=content)
+                    last_content = content
+                    last_edit_time = time.monotonic()
+                except discord.HTTPException:
+                    pass
 
     await send_notification(
         f"<@{interaction.user.id}> 準備ジョブの確認がタイムアウトしました。status_url={status_url}",
