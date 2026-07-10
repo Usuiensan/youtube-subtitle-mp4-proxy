@@ -26,6 +26,7 @@ param(
     [string]$DiscordBotToken = "",
     [string]$DiscordPrepareToken = "",
     [string]$YoutubeProxyBaseUrl = "http://127.0.0.1:8000",
+    [string]$YoutubeProxyInternalBaseUrl = "http://127.0.0.1:8000",
     [int]$DiscordPreparePollSeconds = 10,
     [int]$DiscordPreparePollTimeoutSeconds = 7200,
     [string]$ApiKey = ""
@@ -80,6 +81,8 @@ if (
             $DiscordPrepareToken = $Matches[1].Trim().Trim('"').Trim("'")
         } elseif (-not $PSBoundParameters.ContainsKey('YoutubeProxyBaseUrl') -and $Line -match '^\s*YOUTUBE_PROXY_BASE_URL\s*=\s*(.+?)\s*$') {
             $YoutubeProxyBaseUrl = $Matches[1].Trim().Trim('"').Trim("'")
+        } elseif (-not $PSBoundParameters.ContainsKey('YoutubeProxyInternalBaseUrl') -and $Line -match '^\s*YOUTUBE_PROXY_INTERNAL_BASE_URL\s*=\s*(.+?)\s*$') {
+            $YoutubeProxyInternalBaseUrl = $Matches[1].Trim().Trim('"').Trim("'")
         }
     }
 }
@@ -151,6 +154,7 @@ if ($DiscordPrepareToken) {
 }
 
 $env:YOUTUBE_PROXY_BASE_URL = $YoutubeProxyBaseUrl
+$env:YOUTUBE_PROXY_INTERNAL_BASE_URL = $YoutubeProxyInternalBaseUrl
 $env:DISCORD_PREPARE_POLL_SECONDS = [string]$DiscordPreparePollSeconds
 $env:DISCORD_PREPARE_POLL_TIMEOUT_SECONDS = [string]$DiscordPreparePollTimeoutSeconds
 
@@ -211,6 +215,7 @@ if ($DiscordPrepareToken) {
     $EnvLines += "DISCORD_PREPARE_TOKEN=$DiscordPrepareToken"
 }
 $EnvLines += "YOUTUBE_PROXY_BASE_URL=$YoutubeProxyBaseUrl"
+$EnvLines += "YOUTUBE_PROXY_INTERNAL_BASE_URL=$YoutubeProxyInternalBaseUrl"
 $EnvLines += "DISCORD_PREPARE_POLL_SECONDS=$DiscordPreparePollSeconds"
 $EnvLines += "DISCORD_PREPARE_POLL_TIMEOUT_SECONDS=$DiscordPreparePollTimeoutSeconds"
 if ($ApiKey) {
@@ -247,6 +252,7 @@ if ($env:DISCORD_PREPARE_TOKEN) {
     Write-Host "DISCORD_PREPARE_TOKEN=(set)"
 }
 Write-Host "YOUTUBE_PROXY_BASE_URL=$env:YOUTUBE_PROXY_BASE_URL"
+Write-Host "YOUTUBE_PROXY_INTERNAL_BASE_URL=$env:YOUTUBE_PROXY_INTERNAL_BASE_URL"
 Write-Host ""
 Write-Host "Start the app with:"
 Write-Host "uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers"

@@ -72,7 +72,7 @@ class Settings:
     subtitle_margin_l = int(os.getenv("SUBTITLE_MARGIN_L", "24"))
     subtitle_margin_r = int(os.getenv("SUBTITLE_MARGIN_R", "24"))
     subtitle_primary_colour = os.getenv("SUBTITLE_PRIMARY_COLOUR", "&H00FFFFFF")
-    subtitle_back_colour = os.getenv("SUBTITLE_BACK_COLOUR", "&H99000000")
+    subtitle_back_colour = os.getenv("SUBTITLE_BACK_COLOUR", "&H40000000")
     hls_segment_seconds = int(os.getenv("HLS_SEGMENT_SECONDS", "6"))
     hls_ready_timeout_seconds = int(os.getenv("HLS_READY_TIMEOUT_SECONDS", "1800"))
     ffmpeg_video_encoder = os.getenv("FFMPEG_VIDEO_ENCODER", "libx264")
@@ -85,6 +85,7 @@ class Settings:
     ytdlp_extra_args = os.getenv("YTDLP_EXTRA_ARGS", "")
     youtube_data_api_key = os.getenv("YOUTUBE_DATA_API_KEY")
     discord_prepare_token = os.getenv("DISCORD_PREPARE_TOKEN")
+    youtube_proxy_base_url = os.getenv("YOUTUBE_PROXY_BASE_URL", "").rstrip("/")
 
 
 settings = Settings()
@@ -867,7 +868,7 @@ def prepare_key(video_id: str, lang: str, mode: str) -> str:
 
 
 def prepared_media_url(request: Request, video_id: str, lang: str, mode: str) -> str:
-    base_url = str(request.base_url).rstrip("/")
+    base_url = settings.youtube_proxy_base_url or str(request.base_url).rstrip("/")
     if mode == "hls":
         return f"{base_url}/youtube-hls/{video_id}/{lang}"
     return f"{base_url}/youtube/{video_id}/{lang}"

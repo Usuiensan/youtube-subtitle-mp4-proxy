@@ -40,6 +40,10 @@ class Settings:
     discord_bot_token = os.getenv("DISCORD_BOT_TOKEN", "")
     discord_prepare_token = os.getenv("DISCORD_PREPARE_TOKEN", "")
     youtube_proxy_base_url = os.getenv("YOUTUBE_PROXY_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+    youtube_proxy_internal_base_url = os.getenv(
+        "YOUTUBE_PROXY_INTERNAL_BASE_URL",
+        "http://127.0.0.1:8000",
+    ).rstrip("/")
     poll_seconds = int(os.getenv("DISCORD_PREPARE_POLL_SECONDS", "10"))
     poll_timeout_seconds = int(os.getenv("DISCORD_PREPARE_POLL_TIMEOUT_SECONDS", "7200"))
 
@@ -116,11 +120,15 @@ async def prepare_video(video_id: str, lang: str, mode: str, discord_user_id: in
             "discordUserId": str(discord_user_id),
         }
     )
-    url = f"{settings.youtube_proxy_base_url}/prepare/youtube/{video_id}/{lang}?{query}"
+    url = f"{settings.youtube_proxy_internal_base_url}/prepare/youtube/{video_id}/{lang}?{query}"
     return await asyncio.to_thread(http_json, "POST", url)
 
 
 async def fetch_job(status_url: str) -> dict[str, Any]:
+    public_base = settings.youtube_proxy_base_url
+    internal_base = settings.youtube_proxy_internal_base_url
+    if public_base and status_url.startswith(public_base):
+        status_url = internal_base + status_url[len(public_base):]
     _status, body = await asyncio.to_thread(http_json, "GET", status_url)
     return body
 
@@ -139,16 +147,48 @@ def eta_text(body: dict[str, Any]) -> str:
     return " / ".join(parts) if parts else "終了予想を計算中"
 
 
-def status_message(body: dict[str, Any]) -> str:
+def public_url(url: Any) -> str:
+    if not isinstance(url, str) or not url:
+        return ""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.hostname in {"127.0.0.1", "localhost"}:
+        public_base = urllib.parse.urlparse(settings.youtube_proxy_base_url)
+        return urllib.parse.urlunparse(
+            (
+                public_base.scheme,
+                public_base.netloc,
+                parsed.path,
+                parsed.params,
+                parsed.query,
+                parsed.fragment,
+            )
+        )
+    return url
+
+
+def mention_text(body: dict[str, Any], fallback_user_id: int | None = None) -> str:
+    mentions = body.get("mentions")
+    if isinstance(mentions, list) and mentions:
+        return " ".join(str(mention) for mention in mentions)
+    if fallback_user_id is not None:
+        return f"<@{fallback_user_id}>"
+    return ""
+
+
+def status_message(body: dict[str, Any], fallback_user_id: int | None = None) -> str:
     status = body.get("status", "unknown")
     mode = body.get("mode", "mp4")
     title = body.get("title")
     title_part = f"\n{title}" if title else ""
 
     if status == "ready":
-        return f"準備できました。{title_part}\n{body.get('url')}"
+        mention = mention_text(body, fallback_user_id)
+        prefix = f"{mention} " if mention else ""
+        return f"{prefix}準備できました。{title_part}\n{public_url(body.get('url'))}"
     if status == "failed":
-        return f"準備に失敗しました。{title_part}\n{body.get('error', 'unknown error')}"
+        mention = mention_text(body, fallback_user_id)
+        prefix = f"{mention} " if mention else ""
+        return f"{prefix}準備に失敗しました。{title_part}\n{body.get('error', 'unknown error')}"
     return f"{mode.upper()}を準備しています。{eta_text(body)}{title_part}"
 
 
@@ -199,13 +239,15 @@ async def notify_when_done(
             continue
         if latest.get("status") in {"ready", "failed"}:
             notification = latest.get("notification") or {}
-            content = notification.get("content") or status_message(latest)
+            content = notification.get("content") or status_message(latest, interaction.user.id)
+            content = content.replace("http://127.0.0.1:8000", settings.youtube_proxy_base_url)
+            content = content.replace("http://localhost:8000", settings.youtube_proxy_base_url)
             await send_notification(content)
             return
 
         if latest:
             try:
-                await interaction.edit_original_response(content=status_message(latest))
+                await interaction.edit_original_response(content=status_message(latest, interaction.user.id))
             except discord.HTTPException:
                 pass
 
@@ -264,7 +306,10 @@ async def prepare_command(
         await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}")
         return
 
-    await interaction.followup.send(status_message(body))
+    await interaction.followup.send(
+        status_message(body, interaction.user.id),
+        allowed_mentions=discord.AllowedMentions(users=True),
+    )
 
     status_url = body.get("status_url")
     if body.get("status") in {"queued", "running"} and isinstance(status_url, str):

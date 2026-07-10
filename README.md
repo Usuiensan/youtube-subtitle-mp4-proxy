@@ -132,6 +132,8 @@ export CACHE_ARCHIVE_DIR=/mnt/hdd/youtube-mp4-archive
 export CACHE_ARCHIVE_AFTER_SECONDS=604800
 export CACHE_HOT_MIN_FREE_BYTES=50000000000
 export CACHE_PROMOTE_ARCHIVE_ON_ACCESS=1
+export YOUTUBE_PROXY_BASE_URL=https://lab.usuiensan.dev
+export YOUTUBE_PROXY_INTERNAL_BASE_URL=http://127.0.0.1:8000
 ```
 
 7 日以上前のエントリは削除せず HDD へ移動します。SSD の空き容量が `CACHE_HOT_MIN_FREE_BYTES` を下回る場合は、7 日未満でも古い順に HDD へ移動します。各エントリには変換済み `output.mp4` / HLS に加えて、元動画、字幕、取得内容をまとめた `source.json` を保存します。
@@ -316,7 +318,7 @@ WantedBy=multi-user.target
 
 ## 字幕デザイン
 
-初期値は白文字、半透明黒背景、下寄せ中央です。720pで自動改行が入りにくいよう、文字サイズは控えめにしています。
+初期値は白文字、約25%透明の黒背景、下寄せ中央です。720pで自動改行が入りにくいよう、文字サイズは控えめにしています。
 
 ```bash
 export SUBTITLE_FONT='BIZ UDGothic'
@@ -325,7 +327,7 @@ export SUBTITLE_MARGIN_V=34
 export SUBTITLE_MARGIN_L=24
 export SUBTITLE_MARGIN_R=24
 export SUBTITLE_PRIMARY_COLOUR='&H00FFFFFF'
-export SUBTITLE_BACK_COLOUR='&H99000000'
+export SUBTITLE_BACK_COLOUR='&H40000000'
 ```
 
 `SUBTITLE_FONT` はサーバーにインストール済みのフォント名を指定してください。候補は `BIZ UDGothic`、`Noto Sans CJK JP`、`Rounded M+ 1c` あたりです。
