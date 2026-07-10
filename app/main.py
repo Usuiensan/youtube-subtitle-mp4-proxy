@@ -807,12 +807,137 @@ def subtitle_force_style() -> str:
     )
 
 
-def ffmpeg_subtitle_arg(path: Path) -> str:
+LANG_NAMES_JA = {
+    "af": "アフリカーンス語",
+    "sq": "アルバニア語",
+    "am": "アムハラ語",
+    "ar": "アラビア語",
+    "hy": "アルメニア語",
+    "as": "アッサム語",
+    "az": "アゼルバイジャン語",
+    "eu": "バスク語",
+    "bn": "ベンガル語",
+    "bg": "ブルガリア語",
+    "my": "ビルマ語",
+    "ca": "カタロニア語",
+    "chr": "チェロキー語",
+    "zh-hk": "中国語(香港)",
+    "zh-cn": "中国語(簡体字)",
+    "zh-tw": "中国語(繁体字)",
+    "zh-hans": "中国語(簡体字)",
+    "zh-hant": "中国語(繁体字)",
+    "zh": "中国語",
+    "hr": "クロアチア語",
+    "cs": "チェコ語",
+    "da": "デンマーク語",
+    "nl": "オランダ語",
+    "en-gb": "英語(英国)",
+    "en": "英語",
+    "et": "エストニア語",
+    "fil": "フィリピノ語",
+    "fi": "フィンランド語",
+    "fr": "フランス語",
+    "fr-ca": "フランス語(カナダ)",
+    "gl": "ガリシア語",
+    "ka": "ジョージア語",
+    "de": "ドイツ語",
+    "el": "ギリシャ語",
+    "gu": "グジャラート語",
+    "iw": "ヘブライ語",
+    "he": "ヘブライ語",
+    "hi": "ヒンディー語",
+    "hu": "ハンガリー語",
+    "is": "アイスランド語",
+    "id": "インドネシア語",
+    "ga": "アイルランド語",
+    "it": "イタリア語",
+    "ja": "日本語",
+    "kn": "カンナダ語",
+    "kk": "カザフ語",
+    "km": "クメール語",
+    "ko": "韓国語",
+    "lo": "ラオ語",
+    "lv": "ラトビア語",
+    "lt": "リトアニア語",
+    "mk": "マケドニア語",
+    "ms": "マレー語",
+    "ml": "マラヤーラム語",
+    "mr": "マラーティー語",
+    "mn": "モンゴル語",
+    "ne": "ネパール語",
+    "no": "ノルウェー語",
+    "or": "オリヤー語",
+    "fa": "ペルシア語",
+    "pl": "ポーランド語",
+    "pt-br": "ポルトガル語(ブラジル)",
+    "pt-pt": "ポルトガル語(ポルトガル)",
+    "pt": "ポルトガル語",
+    "pa": "パンジャーブ語",
+    "ro": "ルーマニア語",
+    "ru": "ロシア語",
+    "sr": "セルビア語",
+    "si": "シンハラ語",
+    "sk": "スロバキア語",
+    "sl": "スロベニア語",
+    "es": "スペイン語",
+    "es-419": "スペイン語(ラテンアメリカ)",
+    "sw": "スワヒリ語",
+    "sv": "スウェーデン語",
+    "ta": "タミル語",
+    "te": "テルグ語",
+    "th": "タイ語",
+    "tr": "トルコ語",
+    "uk": "ウクライナ語",
+    "ur": "ウルドゥー語",
+    "uz": "ウズベク語",
+    "vi": "ベトナム語",
+    "cy": "ウェールズ語",
+    "zu": "ズールー語",
+}
+
+
+def get_lang_name_ja(code: str) -> str:
+    normalized = code.lower().strip()
+    base = normalized.split("-")[0]
+    return LANG_NAMES_JA.get(normalized) or LANG_NAMES_JA.get(base) or code.upper()
+
+
+def get_subtitle_overlay_label(subtitle_meta: dict) -> str:
+    source_lang = subtitle_meta.get("source_language") or ""
+    requested_lang = subtitle_meta.get("requested_language") or ""
+    translated = subtitle_meta.get("translated", False)
+    if translated and source_lang and requested_lang:
+        src_ja = get_lang_name_ja(source_lang)
+        req_ja = get_lang_name_ja(requested_lang)
+        line1 = f"[字幕]{src_ja} → {req_ja}"
+        line2 = f"[SUB]{source_lang.lower()} → {requested_lang.lower()}"
+        return f"{line1}\n{line2}"
+    elif requested_lang:
+        req_ja = get_lang_name_ja(requested_lang)
+        line1 = f"[字幕]{req_ja}"
+        line2 = f"[SUB]{requested_lang.lower()}"
+        return f"{line1}\n{line2}"
+    return "[SUB]"
+
+
+def ffmpeg_subtitle_arg(path: Path, subtitle_meta: dict | None = None) -> str:
     value = path.as_posix()
-    return (
+    filter_str = (
         f"subtitles='{escape_filter_value(value)}':"
         f"force_style='{escape_filter_value(subtitle_force_style())}'"
     )
+    if subtitle_meta:
+        label = get_subtitle_overlay_label(subtitle_meta)
+        escaped_label = label.replace("'", "'\\\\''").replace(":", "\\:")
+        font_opt = f":font='{settings.subtitle_font}'" if settings.subtitle_font else ""
+        drawtext_filter = (
+            f"drawtext=text='{escaped_label}'"
+            f":x=h/30:y=h/30:fontsize=h/25:fontcolor=white@0.6"
+            f":box=1:boxcolor=black@0.4:boxborderw=h/100"
+            f":enable='lt(t,5)'{font_opt}"
+        )
+        filter_str = f"{filter_str},{drawtext_filter}"
+    return filter_str
 
 
 def ffmpeg_video_args(encoder: str | None = None) -> list[str]:
@@ -1209,6 +1334,7 @@ async def burn_subtitles(
     destination: Path,
     job_id: str | None = None,
     duration_seconds: float | None = None,
+    subtitle_meta: dict | None = None,
 ) -> None:
     tmp_output = destination.with_suffix(".tmp.mp4")
     start_t = time.time()
@@ -1219,7 +1345,7 @@ async def burn_subtitles(
             "-i",
             str(video),
             "-vf",
-            ffmpeg_subtitle_arg(subtitle),
+            ffmpeg_subtitle_arg(subtitle, subtitle_meta),
             *ffmpeg_video_args(),
             "-c:a",
             "aac",
@@ -1242,6 +1368,7 @@ async def create_hls(
     destination_dir: Path,
     job_id: str | None = None,
     duration_seconds: float | None = None,
+    subtitle_meta: dict | None = None,
 ) -> None:
     destination_dir.mkdir(parents=True, exist_ok=True)
     for old_file in destination_dir.glob("*"):
@@ -1256,7 +1383,7 @@ async def create_hls(
             "-i",
             str(video),
             "-vf",
-            ffmpeg_subtitle_arg(subtitle),
+            ffmpeg_subtitle_arg(subtitle, subtitle_meta),
             *ffmpeg_video_args(),
             "-c:a",
             "aac",
@@ -1428,7 +1555,14 @@ async def create_mp4(video_id: str, lang: str, job_id: str | None = None) -> Pat
             saved_video, saved_subtitle, subtitle_meta = await prepare_sources(
                 key, video_id, lang, work_dir, info, job_id=job_id, duration_seconds=duration
             )
-            await burn_subtitles(saved_video, saved_subtitle, final_output, job_id=job_id, duration_seconds=duration)
+            await burn_subtitles(
+                saved_video,
+                saved_subtitle,
+                final_output,
+                job_id=job_id,
+                duration_seconds=duration,
+                subtitle_meta=subtitle_meta,
+            )
             write_meta(key, video_id, lang, info, "mp4")
             return final_output
         finally:
@@ -1458,7 +1592,14 @@ async def create_hls_job(video_id: str, lang: str, job_id: str | None = None) ->
                 key, video_id, lang, work_dir, info, job_id=job_id, duration_seconds=duration
             )
             write_meta(key, video_id, lang, info, "hls")
-            await create_hls(saved_video, saved_subtitle, playlist.parent, job_id=job_id, duration_seconds=duration)
+            await create_hls(
+                saved_video,
+                saved_subtitle,
+                playlist.parent,
+                job_id=job_id,
+                duration_seconds=duration,
+                subtitle_meta=subtitle_meta,
+            )
             return playlist
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
