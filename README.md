@@ -147,6 +147,8 @@ bot はスラッシュコマンド `/prepare` を提供します。
 `url` にプレイリスト URL やチャンネル URL を渡した場合は、YouTube Data API v3 で一覧を展開して一括準備します。`max_items` の既定値は `DISCORD_PREPARE_BATCH_MAX_ITEMS`、未設定時は 5000 件です。
 `url` に動画URLまたは動画IDを複数入れた場合も、手動動画リストとして一括準備できます。区切りは改行、空白、カンマに対応します。Web UI の動画準備欄も同じ形式を受け付け、複数件の場合は `/prepare/youtube-batch` に `sourceType=videos` で送信します。
 
+大量一括準備では `PREPARE_JOB_CONCURRENCY` で同時に実行する準備ジョブ数を制限します。既定は `3` です。各ジョブは一時的な `429` / `5xx` / `502` / `504` / タイムアウト系の失敗を `PREPARE_JOB_MAX_ATTEMPTS` 回まで再試行し、待ち時間は `PREPARE_JOB_RETRY_BASE_SECONDS` から指数バックオフします。さらに、YouTube 取得に使う yt-dlp は `YTDLP_CONCURRENCY=1`、`YTDLP_MIN_INTERVAL_SECONDS=8` を既定にして、メタデータ取得・動画DL・字幕DLの開始頻度を制限します。チャンネル全件などで失敗が多い場合は、まず `PREPARE_JOB_CONCURRENCY=1` または `2`、`YTDLP_MIN_INTERVAL_SECONDS=10` 以上に下げ、cookies と yt-dlp の更新状況を確認してください。一括完了通知と `/prepare/batches/:batchId` には代表的な失敗理由が最大5件含まれます。
+
 字幕スタイルやエンコード設定だけを変えて焼き込み直したい場合は、Discord の `/reburn` を使います。入力形式は `/prepare` と同じで、既存の `source/` 配下にある動画・元字幕・翻訳済み字幕を再利用し、YouTubeからの再ダウンロードやLLM/Google再翻訳を行わずにMP4/HLS出力だけを作り直します。
 再利用可能な準備済み動画をまとめて作り直す場合は `/reburn-all` を使います。`lang:all` で全言語、`lang:ja` などで対象言語を絞れます。対象はSSD/HDDに残っていて、かつ `source/` 配下の動画・字幕が残っているものです。
 

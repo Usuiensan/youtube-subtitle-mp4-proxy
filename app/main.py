@@ -85,6 +85,9 @@ class Settings:
     cache_hot_min_free_bytes = int(os.getenv("CACHE_HOT_MIN_FREE_BYTES", "0"))
     cache_promote_archive_on_access = os.getenv("CACHE_PROMOTE_ARCHIVE_ON_ACCESS", "1") != "0"
     prepare_job_retention_seconds = int(os.getenv("PREPARE_JOB_RETENTION_SECONDS", "86400"))
+    prepare_job_concurrency = max(1, int(os.getenv("PREPARE_JOB_CONCURRENCY", "3")))
+    prepare_job_max_attempts = max(1, int(os.getenv("PREPARE_JOB_MAX_ATTEMPTS", "3")))
+    prepare_job_retry_base_seconds = max(0.0, float(os.getenv("PREPARE_JOB_RETRY_BASE_SECONDS", "15")))
     default_lang = os.getenv("DEFAULT_LANG", "ja")
     max_duration_seconds = int(os.getenv("MAX_DURATION_SECONDS", "1800"))
     max_height = int(os.getenv("MAX_HEIGHT", "720"))
@@ -107,6 +110,8 @@ class Settings:
     ytdlp_bin = os.getenv("YTDLP_BIN")
     ytdlp_proxy = os.getenv("YTDLP_PROXY")
     ytdlp_extra_args = os.getenv("YTDLP_EXTRA_ARGS", "")
+    ytdlp_min_interval_seconds = max(0.0, float(os.getenv("YTDLP_MIN_INTERVAL_SECONDS", "8")))
+    ytdlp_concurrency = max(1, int(os.getenv("YTDLP_CONCURRENCY", "1")))
     youtube_data_api_key = os.getenv("YOUTUBE_DATA_API_KEY")
     discord_prepare_token = os.getenv("DISCORD_PREPARE_TOKEN")
     webui_temp_key_secret = os.getenv("WEBUI_TEMP_KEY_SECRET", os.getenv("DISCORD_PREPARE_TOKEN", ""))
@@ -575,6 +580,10 @@ _inflight_lock = asyncio.Lock()
 _inflight: dict[str, asyncio.Task[Path]] = {}
 _hls_inflight: dict[str, asyncio.Task[Path]] = {}
 _prepare_lock = asyncio.Lock()
+_prepare_job_semaphore = asyncio.Semaphore(settings.prepare_job_concurrency)
+_ytdlp_semaphore = asyncio.Semaphore(settings.ytdlp_concurrency)
+_ytdlp_rate_lock = asyncio.Lock()
+_last_ytdlp_started_at = 0.0
 _prepare_jobs: dict[str, dict] = {}
 _prepare_by_key: dict[str, str] = {}
 _prepare_batches: dict[str, dict] = {}
@@ -1381,6 +1390,26 @@ def yt_dlp_executable() -> str:
     return "yt-dlp"
 
 
+def is_yt_dlp_command(args: list[str]) -> bool:
+    if not args:
+        return False
+    executable = Path(args[0]).name.lower()
+    return executable in {"yt-dlp", "yt-dlp.exe"} or executable.startswith("yt-dlp")
+
+
+async def wait_for_ytdlp_rate_limit() -> None:
+    global _last_ytdlp_started_at
+    min_interval = settings.ytdlp_min_interval_seconds
+    if min_interval <= 0:
+        return
+    async with _ytdlp_rate_lock:
+        now = time.monotonic()
+        wait_seconds = (_last_ytdlp_started_at + min_interval) - now
+        if wait_seconds > 0:
+            await asyncio.sleep(wait_seconds)
+        _last_ytdlp_started_at = time.monotonic()
+
+
 def is_fresh(path: Path) -> bool:
     if not path.exists():
         return False
@@ -1437,6 +1466,18 @@ async def cleanup_expired_cache_async() -> None:
 
 
 async def run_command(
+    args: list[str],
+    cwd: Path | None = None,
+    raise_http: bool = True,
+) -> str:
+    if is_yt_dlp_command(args):
+        async with _ytdlp_semaphore:
+            await wait_for_ytdlp_rate_limit()
+            return await run_command_unlimited(args, cwd=cwd, raise_http=raise_http)
+    return await run_command_unlimited(args, cwd=cwd, raise_http=raise_http)
+
+
+async def run_command_unlimited(
     args: list[str],
     cwd: Path | None = None,
     raise_http: bool = True,
@@ -3598,6 +3639,12 @@ def job_response_body(job_id: str, job: dict, request: Request) -> dict:
         "lang": job["lang"],
         "mode": job["mode"],
     }
+    if job.get("attempt") is not None:
+        body["attempt"] = job["attempt"]
+    if job.get("max_attempts") is not None:
+        body["max_attempts"] = job["max_attempts"]
+    if job.get("last_error") is not None:
+        body["last_error"] = job["last_error"]
     if job.get("title") is not None:
         body["title"] = job["title"]
     if job.get("title_variants") is not None:
@@ -3714,6 +3761,17 @@ def batch_response_body(batch_id: str, batch: dict, request: Request, include_it
     mentions = batch.get("mentions") or []
     if mentions:
         body["mentions"] = mentions
+    failed_samples = [
+        {
+            "video_id": item.get("video_id"),
+            "title": item.get("title"),
+            "error": item.get("error"),
+        }
+        for item in item_bodies
+        if item.get("status") == "failed" and item.get("error")
+    ][:5]
+    if failed_samples:
+        body["failed_samples"] = failed_samples
     if include_items:
         body["items"] = item_bodies
 
@@ -3730,6 +3788,12 @@ def batch_response_body(batch_id: str, batch: dict, request: Request, include_it
             content += "\n" + "\n".join(ready_urls[:10])
             if len(ready_urls) > 10:
                 content += f"\n...ほか {len(ready_urls) - 10} 件"
+        if failed_samples:
+            content += "\n失敗例:"
+            for sample in failed_samples[:3]:
+                label = sample.get("title") or sample.get("video_id") or "unknown"
+                error = sample.get("error") or "unknown error"
+                content += f"\n- {label}: {error[:180]}"
         body["notification"] = {"content": content, "mentions": mentions}
     return body
 
@@ -3768,6 +3832,99 @@ def prune_prepare_jobs() -> None:
         _prepare_batches.pop(batch_id, None)
 
 
+def prepare_error_text(error: Exception) -> str:
+    return str(getattr(error, "detail", None) or error)[-1000:]
+
+
+def is_retryable_prepare_error(error: Exception) -> bool:
+    if isinstance(error, HTTPException):
+        return int(error.status_code) in {429, 500, 502, 503, 504}
+    return isinstance(error, (asyncio.TimeoutError, TimeoutError, OSError, ConnectionError, json.JSONDecodeError))
+
+
+async def run_prepare_job_once(
+    job_id: str,
+    video_id: str,
+    lang: str,
+    mode: str,
+    url: str,
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
+    archive_immediately: bool = False,
+    reuse_cached_subtitle: bool = False,
+    reuse_source_video: bool = False,
+) -> None:
+    cache_id = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
+    if archived_ready_entry_exists(cache_id, mode):
+        update_job_eta(job_id, estimate_archive_prepare_seconds(cache_id))
+    else:
+        cached_info = get_cached_video_info(cache_id)
+        if cached_info and cached_info.get("duration"):
+            info = cached_info
+            _prepare_jobs[job_id]["title"] = info.get("title")
+            _prepare_jobs[job_id]["title_variants"] = extract_title_variants(info)
+            _prepare_jobs[job_id]["duration"] = info.get("duration")
+            has_sources = check_existing_sources(cache_id) is not None
+            sub_sel = info.get("subtitle_meta") or {}
+            needs_translation = sub_sel.get("translated", False)
+            eta = estimate_total_seconds(
+                duration=float(info.get("duration")),
+                has_sources=has_sources,
+                needs_translation=needs_translation
+            )
+            update_job_eta(job_id, eta)
+        else:
+            info = await fetch_video_info(video_id)
+            assert_duration_allowed(info)
+            _prepare_jobs[job_id]["title"] = info.get("title")
+            _prepare_jobs[job_id]["title_variants"] = extract_title_variants(info)
+            _prepare_jobs[job_id]["duration"] = info.get("duration")
+            eta = estimate_total_seconds(
+                duration=float(info.get("duration")),
+                has_sources=False,
+                needs_translation=True # assume true by default if not cached
+            )
+            update_job_eta(job_id, eta)
+    update_job_eta(job_id, None)
+    if mode == "hls":
+        await get_or_create_hls(
+            video_id,
+            lang,
+            job_id=job_id,
+            subtitle_source_lang=subtitle_source_lang,
+            translation_engine=translation_engine,
+            reuse_cached_subtitle=reuse_cached_subtitle,
+            reuse_source_video=reuse_source_video,
+        )
+    else:
+        await get_or_create_mp4(
+            video_id,
+            lang,
+            job_id=job_id,
+            subtitle_source_lang=subtitle_source_lang,
+            translation_engine=translation_engine,
+            reuse_cached_subtitle=reuse_cached_subtitle,
+            reuse_source_video=reuse_source_video,
+        )
+    archived = False
+    if archive_immediately:
+        archived = archive_cache_entry(cache_id)
+    now = int(time.time())
+    subtitle_meta = read_subtitle_meta(cache_id)
+    _prepare_jobs[job_id].update(
+        {
+            "status": "ready",
+            "url": url,
+            "subtitle": subtitle_meta,
+            "eta_seconds": 0,
+            "estimated_ready_at": now,
+            "completed_at": now,
+            "archived_immediately": archived,
+            "last_error": None,
+        }
+    )
+
+
 async def run_prepare_job(
     job_id: str,
     job_key: str,
@@ -3781,82 +3938,54 @@ async def run_prepare_job(
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
 ) -> None:
-    _prepare_jobs[job_id]["status"] = "running"
     try:
-        cache_id = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
-        if archived_ready_entry_exists(cache_id, mode):
-            update_job_eta(job_id, estimate_archive_prepare_seconds(cache_id))
-        else:
-            cached_info = get_cached_video_info(cache_id)
-            if cached_info and cached_info.get("duration"):
-                info = cached_info
-                _prepare_jobs[job_id]["title"] = info.get("title")
-                _prepare_jobs[job_id]["title_variants"] = extract_title_variants(info)
-                _prepare_jobs[job_id]["duration"] = info.get("duration")
-                has_sources = check_existing_sources(cache_id) is not None
-                sub_sel = info.get("subtitle_meta") or {}
-                needs_translation = sub_sel.get("translated", False)
-                eta = estimate_total_seconds(
-                    duration=float(info.get("duration")),
-                    has_sources=has_sources,
-                    needs_translation=needs_translation
+        async with _prepare_job_semaphore:
+            max_attempts = settings.prepare_job_max_attempts
+            for attempt in range(1, max_attempts + 1):
+                now = int(time.time())
+                _prepare_jobs[job_id].update(
+                    {
+                        "status": "running",
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                    }
                 )
-                update_job_eta(job_id, eta)
-            else:
-                info = await fetch_video_info(video_id)
-                assert_duration_allowed(info)
-                _prepare_jobs[job_id]["title"] = info.get("title")
-                _prepare_jobs[job_id]["title_variants"] = extract_title_variants(info)
-                _prepare_jobs[job_id]["duration"] = info.get("duration")
-                eta = estimate_total_seconds(
-                    duration=float(info.get("duration")),
-                    has_sources=False,
-                    needs_translation=True # assume true by default if not cached
-                )
-                update_job_eta(job_id, eta)
-        update_job_eta(job_id, None)
-        if mode == "hls":
-            await get_or_create_hls(
-                video_id,
-                lang,
-                job_id=job_id,
-                subtitle_source_lang=subtitle_source_lang,
-                translation_engine=translation_engine,
-                reuse_cached_subtitle=reuse_cached_subtitle,
-                reuse_source_video=reuse_source_video,
-            )
-        else:
-            await get_or_create_mp4(
-                video_id,
-                lang,
-                job_id=job_id,
-                subtitle_source_lang=subtitle_source_lang,
-                translation_engine=translation_engine,
-                reuse_cached_subtitle=reuse_cached_subtitle,
-                reuse_source_video=reuse_source_video,
-            )
-        archived = False
-        if archive_immediately:
-            archived = archive_cache_entry(cache_id)
-        now = int(time.time())
-        subtitle_meta = read_subtitle_meta(cache_id)
-        _prepare_jobs[job_id].update(
-            {
-                "status": "ready",
-                "url": url,
-                "subtitle": subtitle_meta,
-                "eta_seconds": 0,
-                "estimated_ready_at": now,
-                "completed_at": now,
-                "archived_immediately": archived,
-            }
-        )
+                try:
+                    await run_prepare_job_once(
+                        job_id,
+                        video_id,
+                        lang,
+                        mode,
+                        url,
+                        subtitle_source_lang=subtitle_source_lang,
+                        translation_engine=translation_engine,
+                        archive_immediately=archive_immediately,
+                        reuse_cached_subtitle=reuse_cached_subtitle,
+                        reuse_source_video=reuse_source_video,
+                    )
+                    return
+                except Exception as error:
+                    error_text = prepare_error_text(error)
+                    retryable = is_retryable_prepare_error(error)
+                    is_last_attempt = attempt >= max_attempts
+                    if (not retryable) or is_last_attempt:
+                        raise
+                    delay = settings.prepare_job_retry_base_seconds * (2 ** (attempt - 1))
+                    _prepare_jobs[job_id].update(
+                        {
+                            "status": "queued",
+                            "last_error": error_text,
+                            "eta_seconds": int(delay),
+                            "estimated_ready_at": now + int(delay),
+                        }
+                    )
+                    await asyncio.sleep(delay)
     except Exception as error:
         now = int(time.time())
         _prepare_jobs[job_id].update(
             {
                 "status": "failed",
-                "error": str(getattr(error, "detail", None) or error)[-1000:],
+                "error": prepare_error_text(error),
                 "eta_seconds": 0,
                 "estimated_ready_at": now,
                 "completed_at": now,
@@ -3938,6 +4067,8 @@ async def enqueue_prepare_job(
             "created_at": int(time.time()),
             "eta_seconds": eta_seconds,
             "estimated_ready_at": estimated_ready_at,
+            "attempt": 0,
+            "max_attempts": settings.prepare_job_max_attempts,
             "requesters": [],
             "subtitle_source_lang": subtitle_source_lang,
             "translation_engine": normalized_engine,

@@ -532,6 +532,15 @@ def batch_status_message(body: dict[str, Any], fallback_user_id: int | None = No
             lines.extend(urls[:10])
             if len(urls) > 10:
                 lines.append(f"...ほか {len(urls) - 10} 件")
+        failed_samples = body.get("failed_samples") if isinstance(body.get("failed_samples"), list) else []
+        if failed_samples:
+            lines.append("失敗例:")
+            for sample in failed_samples[:3]:
+                if not isinstance(sample, dict):
+                    continue
+                label = sample.get("title") or sample.get("video_id") or "unknown"
+                error = sample.get("error") or "unknown error"
+                lines.append(f"- {label}: {str(error)[:180]}")
         return "\n".join(lines)
 
     return (
