@@ -253,22 +253,50 @@ async def fetch_job(status_url: str) -> dict[str, Any]:
 
 
 def eta_text(body: dict[str, Any]) -> str:
-    parts: list[str] = []
+    lines: list[str] = []
     eta_seconds = body.get("eta_seconds")
     if isinstance(eta_seconds, (int, float)) and eta_seconds > 0:
         seconds = max(1, int(round(eta_seconds)))
         minutes = seconds // 60
         remaining_seconds = seconds % 60
         if minutes:
-            parts.append(f"予想{minutes}分{remaining_seconds}秒")
+            lines.append(f"あと{minutes}分{remaining_seconds}秒で終了（予想）")
         else:
-            parts.append(f"予想{remaining_seconds}秒")
+            lines.append(f"あと{remaining_seconds}秒で終了（予想）")
 
     estimated_ready_at = body.get("estimated_ready_at")
     if isinstance(estimated_ready_at, (int, float)) and estimated_ready_at > 0:
-        parts.append(f"終了予想 <t:{int(estimated_ready_at)}:t>")
+        lines.append(f"終了予想時刻 <t:{int(estimated_ready_at)}:t>")
 
-    return " / ".join(parts) if parts else "終了予想を計算中"
+    return "\n".join(lines) if lines else "終了予想を計算中"
+
+
+def eta_text_from_seconds(seconds: Any, estimated_ready_at: Any = None) -> str:
+    body: dict[str, Any] = {}
+    if isinstance(seconds, (int, float)) and seconds > 0:
+        body["eta_seconds"] = seconds
+    if isinstance(estimated_ready_at, (int, float)) and estimated_ready_at > 0:
+        body["estimated_ready_at"] = estimated_ready_at
+    return eta_text(body)
+
+
+def title_text(title: Any) -> str:
+    if not isinstance(title, str) or not title:
+        return ""
+    escaped = title.replace("`", "'")
+    return f"動画タイトル `{escaped}`"
+
+
+def queue_counts_text(body: dict[str, Any]) -> str:
+    counts = body.get("queue_counts")
+    if not isinstance(counts, dict):
+        return ""
+    download = counts.get("download", 0)
+    translate = counts.get("translate", 0)
+    encode = counts.get("encode", 0)
+    if not any(isinstance(value, (int, float)) and value > 0 for value in (download, translate, encode)):
+        return "順番待ち: ダウンロード0 / 翻訳0 / エンコード0"
+    return f"順番待ち: ダウンロード{int(download)} / 翻訳{int(translate)} / エンコード{int(encode)}"
 
 
 def public_url(url: Any) -> str:
@@ -317,7 +345,7 @@ def status_message(body: dict[str, Any], fallback_user_id: int | None = None) ->
     status = body.get("status", "unknown")
     mode = body.get("mode", "mp4")
     title = body.get("title")
-    title_part = f"\n{title}" if title else ""
+    title_part = f"\n{title_text(title)}" if title else ""
     subtitle_part = subtitle_status_text(body.get("subtitle"))
 
     if status == "ready":
@@ -348,27 +376,29 @@ def status_message(body: dict[str, Any], fallback_user_id: int | None = None) ->
         filled = int(round(percent / 100 * bar_width))
         bar = "█" * filled + "░" * (bar_width - filled)
         
-        eta_part = ""
-        if isinstance(eta_sec, (int, float)) and eta_sec > 0:
-            seconds = max(1, int(round(eta_sec)))
-            minutes = seconds // 60
-            remaining_seconds = seconds % 60
-            if minutes:
-                eta_part = f" (残り {minutes}分{remaining_seconds}秒)"
-            else:
-                eta_part = f" (残り {remaining_seconds}秒)"
-
-        progress_bar = f"`[{bar}] {percent:5.1f}%`{eta_part}"
+        progress_bar = f"`[{bar}] {percent:5.1f}%`"
         details_part = f"\n{details}" if details else ""
+        eta_part = eta_text_from_seconds(eta_sec, body.get("estimated_ready_at"))
         
-        return (
-            f"{mode.upper()}を準備しています...\n"
+        lines = [
+            f"{mode.upper()}を準備しています...",
+        ]
+        if title:
+            lines.append(title_text(title))
+        queue_part = queue_counts_text(body)
+        if queue_part:
+            lines.append(queue_part)
+        lines.extend([
             f"**進捗**: {phase_ja}\n"
-            f"{progress_bar}{details_part}"
-            f"{title_part}{subtitle_part}"
-        )
+            f"{progress_bar}\n"
+            f"{eta_part}{details_part}"
+            f"{subtitle_part}"
+        ])
+        return "\n".join(lines)
 
-    return f"{mode.upper()}を準備しています。{eta_text(body)}{title_part}{subtitle_part}"
+    queue_part = queue_counts_text(body)
+    queue_line = f"\n{queue_part}" if queue_part else ""
+    return f"{mode.upper()}を準備しています。{title_part}{queue_line}\n{eta_text(body)}{subtitle_part}"
 
 
 def batch_status_message(body: dict[str, Any], fallback_user_id: int | None = None) -> str:

@@ -292,6 +292,31 @@ def update_job_progress(
     }
 
 
+def queue_counts_for_job(job_id: str) -> dict[str, int]:
+    counts = {"download": 0, "translate": 0, "encode": 0}
+    phase_order = {"download": 0, "translate": 1, "encode": 2, "hls": 2}
+    for current_id, job in _prepare_jobs.items():
+        if job.get("status") not in {"queued", "running"}:
+            continue
+        if current_id == job_id:
+            continue
+        needs_translation = bool(job.get("subtitle_source_lang") and job.get("translation_engine"))
+        progress = job.get("progress") if isinstance(job.get("progress"), dict) else {}
+        phase = str(progress.get("phase") or "")
+        if job.get("status") == "queued" or phase not in phase_order:
+            counts["download"] += 1
+            if needs_translation:
+                counts["translate"] += 1
+            counts["encode"] += 1
+            continue
+        phase_index = phase_order[phase]
+        if phase_index < 1 and needs_translation:
+            counts["translate"] += 1
+        if phase_index < 2:
+            counts["encode"] += 1
+    return counts
+
+
 class CommandError(Exception):
     def __init__(self, args: list[str], message: str) -> None:
         super().__init__(message)
@@ -1201,6 +1226,9 @@ def get_subtitle_overlay_label(subtitle_meta: dict) -> str:
         req_en = get_lang_name_en(requested_lang)
         line1 = f"[字幕]{src_ja} → {req_ja}"
         line2 = f"[subs]{src_en} → {req_en}"
+        service = subtitle_translation_service_label(subtitle_meta)
+        if service:
+            return f"{line1}\n{line2}\n{service}"
         return f"{line1}\n{line2}"
     elif requested_lang:
         req_ja = get_lang_name_ja(requested_lang)
@@ -1209,6 +1237,24 @@ def get_subtitle_overlay_label(subtitle_meta: dict) -> str:
         line2 = f"[subs]{req_en}"
         return f"{line1}\n{line2}"
     return "[subs]"
+
+
+def subtitle_translation_service_label(subtitle_meta: dict) -> str:
+    engine = str(subtitle_meta.get("translation_engine") or "").strip()
+    requested = str(subtitle_meta.get("translation_engine_requested") or "").strip()
+    model = str(subtitle_meta.get("translation_model") or "").strip()
+    fallback = bool(subtitle_meta.get("translation_fallback_used"))
+    if fallback:
+        return "[translation] Google Cloud fallback"
+    if engine == "google_cloud":
+        return "[translation] Google Cloud"
+    if model:
+        return f"[translation] LLM {model}"
+    if requested == "local_llm" or engine in {"local_llm", settings.local_llm_engine}:
+        return f"[translation] LLM {settings.local_llm_model}"
+    if engine:
+        return f"[translation] {engine}"
+    return ""
 
 
 def find_japanese_font_file() -> str | None:
@@ -1244,7 +1290,12 @@ def ffmpeg_subtitle_arg(path: Path, subtitle_meta: dict | None = None) -> str:
             
         drawtext_filters = []
         for i, line in enumerate(lines):
-            escaped_line = line.replace("'", "'\\\\''").replace(":", "\\:")
+            escaped_line = (
+                line.replace("\\", "\\\\")
+                .replace("'", "'\\\\''")
+                .replace(":", "\\:")
+                .replace(",", "\\,")
+            )
             y_expr = f"h/30+{i}*h/20"
             drawtext_filter = (
                 f"drawtext=text='{escaped_line}'"
@@ -2337,6 +2388,10 @@ def job_response_body(job_id: str, job: dict, request: Request) -> dict:
         body["duration"] = job["duration"]
     if job.get("subtitle") is not None:
         body["subtitle"] = job["subtitle"]
+    if job.get("progress") is not None:
+        body["progress"] = job["progress"]
+    if job["status"] in {"queued", "running"}:
+        body["queue_counts"] = queue_counts_for_job(job_id)
     if job["status"] in {"queued", "running"}:
         body["job_id"] = job_id
         body["status_url"] = prepare_status_url(request, job_id)
