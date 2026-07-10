@@ -22,6 +22,8 @@ from discord import app_commands
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env.local"
 LANG_NAMES_JA = {
+    "default": "既定",
+    "alt": "別名",
     "ar": "アラビア語",
     "de": "ドイツ語",
     "en": "英語",
@@ -280,7 +282,21 @@ def eta_text_from_seconds(seconds: Any, estimated_ready_at: Any = None) -> str:
     return eta_text(body)
 
 
-def title_text(title: Any) -> str:
+def title_text(title: Any, title_variants: Any = None) -> str:
+    if isinstance(title_variants, list) and title_variants:
+        lines = ["動画タイトル :"]
+        for item in title_variants:
+            if not isinstance(item, dict):
+                continue
+            raw_language = item.get("language")
+            raw_title = item.get("title")
+            if not isinstance(raw_title, str) or not raw_title:
+                continue
+            language = lang_name_ja(raw_language) if isinstance(raw_language, str) else "default"
+            escaped = raw_title.replace("`", "'")
+            lines.append(f"[{language}] {escaped}")
+        if len(lines) > 1:
+            return "\n".join(lines)
     if not isinstance(title, str) or not title:
         return ""
     escaped = title.replace("`", "'")
@@ -345,7 +361,8 @@ def status_message(body: dict[str, Any], fallback_user_id: int | None = None) ->
     status = body.get("status", "unknown")
     mode = body.get("mode", "mp4")
     title = body.get("title")
-    title_part = f"\n{title_text(title)}" if title else ""
+    title_block = title_text(title, body.get("title_variants"))
+    title_part = f"\n{title_block}" if title_block else ""
     subtitle_part = subtitle_status_text(body.get("subtitle"))
 
     if status == "ready":

@@ -90,7 +90,7 @@ class Settings:
     max_height = int(os.getenv("MAX_HEIGHT", "720"))
     cache_ttl_seconds = int(os.getenv("CACHE_TTL_SECONDS", "86400"))
     job_timeout_seconds = int(os.getenv("JOB_TIMEOUT_SECONDS", "7200"))
-    subtitle_font = os.getenv("SUBTITLE_FONT", "BIZ UDPGothic")
+    subtitle_font = os.getenv("SUBTITLE_FONT", "Noto Sans JP")
     subtitle_font_size = int(os.getenv("SUBTITLE_FONT_SIZE", "20"))
     subtitle_margin_v = int(os.getenv("SUBTITLE_MARGIN_V", "34"))
     subtitle_margin_l = int(os.getenv("SUBTITLE_MARGIN_L", "24"))
@@ -907,6 +907,42 @@ def read_subtitle_meta(key: str) -> dict:
     return {}
 
 
+def extract_title_variants(info: dict) -> list[dict[str, str]]:
+    variants: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add_variant(language: str | None, title: Any) -> None:
+        if not isinstance(title, str):
+            return
+        clean_title = title.strip()
+        if not clean_title:
+            return
+        clean_language = (language or "").strip() or "default"
+        item = (clean_language, clean_title)
+        if item in seen:
+            return
+        seen.add(item)
+        variants.append({"language": clean_language, "title": clean_title})
+
+    add_variant(str(info.get("language") or info.get("original_language") or "default"), info.get("title"))
+    add_variant("alt", info.get("alt_title"))
+
+    localizations = info.get("localizations")
+    if isinstance(localizations, dict):
+        for language, localized in localizations.items():
+            if isinstance(localized, dict):
+                add_variant(str(language), localized.get("title"))
+            else:
+                add_variant(str(language), localized)
+
+    translated_titles = info.get("translated_titles")
+    if isinstance(translated_titles, dict):
+        for language, title in translated_titles.items():
+            add_variant(str(language), title)
+
+    return variants
+
+
 def write_meta(key: str, video_id: str, lang: str, info: dict, mode: str) -> None:
     meta_path(key).parent.mkdir(parents=True, exist_ok=True)
     meta_path(key).write_text(
@@ -915,6 +951,7 @@ def write_meta(key: str, video_id: str, lang: str, info: dict, mode: str) -> Non
                 "video_id": video_id,
                 "lang": lang,
                 "title": info.get("title"),
+                "title_variants": extract_title_variants(info),
                 "duration": info.get("duration"),
                 "created_at": int(time.time()),
                 "mode": mode,
@@ -941,6 +978,7 @@ def write_source_meta(
                 "video_id": video_id,
                 "lang": lang,
                 "title": info.get("title"),
+                "title_variants": extract_title_variants(info),
                 "duration": info.get("duration"),
                 "webpage_url": info.get("webpage_url")
                 or f"https://www.youtube.com/watch?v={video_id}",
@@ -1856,6 +1894,8 @@ def enrich_translation_metadata(metadata: dict) -> dict:
 
 def find_japanese_font_spec() -> tuple[str | None, str | None]:
     candidates = [
+        ("/usr/share/fonts/opentype/noto/NotoSansJP-Regular.otf", "Noto Sans JP"),
+        ("/usr/share/fonts/truetype/noto/NotoSansJP-Regular.ttf", "Noto Sans JP"),
         ("/usr/local/share/fonts/truetype/form-udp-gothic/FORMUDPGothic-Regular.ttf", "FORM UDPGothic"),
         ("/usr/share/fonts/truetype/fonts-japanese-gothic.ttf", "Japanese Gothic"),
         ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "Noto Sans CJK JP"),
@@ -3170,6 +3210,8 @@ def job_response_body(job_id: str, job: dict, request: Request) -> dict:
     }
     if job.get("title") is not None:
         body["title"] = job["title"]
+    if job.get("title_variants") is not None:
+        body["title_variants"] = job["title_variants"]
     if job.get("duration") is not None:
         body["duration"] = job["duration"]
     if job.get("subtitle") is not None:
@@ -3206,6 +3248,8 @@ def batch_item_body(item: dict, request: Request) -> dict:
             body = job_response_body(job_id, job, request)
             if item.get("title") is not None and body.get("title") is None:
                 body["title"] = item["title"]
+            if item.get("title_variants") is not None and body.get("title_variants") is None:
+                body["title_variants"] = item["title_variants"]
             return body
 
     body = {
@@ -3216,6 +3260,8 @@ def batch_item_body(item: dict, request: Request) -> dict:
     }
     if item.get("title") is not None:
         body["title"] = item["title"]
+    if item.get("title_variants") is not None:
+        body["title_variants"] = item["title_variants"]
     if item.get("url") is not None:
         body["url"] = item["url"]
     if item.get("error") is not None:
@@ -3347,6 +3393,7 @@ async def run_prepare_job(
             if cached_info and cached_info.get("duration"):
                 info = cached_info
                 _prepare_jobs[job_id]["title"] = info.get("title")
+                _prepare_jobs[job_id]["title_variants"] = extract_title_variants(info)
                 _prepare_jobs[job_id]["duration"] = info.get("duration")
                 has_sources = check_existing_sources(cache_id) is not None
                 sub_sel = info.get("subtitle_meta") or {}
@@ -3361,6 +3408,7 @@ async def run_prepare_job(
                 info = await fetch_video_info(video_id)
                 assert_duration_allowed(info)
                 _prepare_jobs[job_id]["title"] = info.get("title")
+                _prepare_jobs[job_id]["title_variants"] = extract_title_variants(info)
                 _prepare_jobs[job_id]["duration"] = info.get("duration")
                 eta = estimate_total_seconds(
                     duration=float(info.get("duration")),
@@ -3487,6 +3535,9 @@ async def enqueue_prepare_job(
         if cached_info:
             if cached_info.get("title"):
                 _prepare_jobs[job_id]["title"] = cached_info.get("title")
+            title_variants = extract_title_variants(cached_info)
+            if title_variants:
+                _prepare_jobs[job_id]["title_variants"] = title_variants
             if cached_info.get("duration"):
                 _prepare_jobs[job_id]["duration"] = cached_info.get("duration")
         add_job_requester(_prepare_jobs[job_id], discord_user_id)
