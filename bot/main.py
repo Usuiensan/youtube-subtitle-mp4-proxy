@@ -46,6 +46,7 @@ class Settings:
     ).rstrip("/")
     poll_seconds = int(os.getenv("DISCORD_PREPARE_POLL_SECONDS", "10"))
     poll_timeout_seconds = int(os.getenv("DISCORD_PREPARE_POLL_TIMEOUT_SECONDS", "7200"))
+    prepare_batch_max_items = int(os.getenv("DISCORD_PREPARE_BATCH_MAX_ITEMS", "5000"))
 
 
 settings = Settings()
@@ -88,6 +89,23 @@ def extract_video_id(value: str) -> str:
     raise ValueError("YouTube URLまたは動画IDを認識できませんでした。")
 
 
+def looks_like_playlist_or_channel(value: str) -> bool:
+    value = value.strip()
+    if value.startswith("@"):
+        return True
+    if value.startswith("UC") and not VIDEO_ID_RE.fullmatch(value):
+        return True
+    if not value.startswith(("http://", "https://")) and ("." in value or "/" in value):
+        parsed = urllib.parse.urlparse("https://" + value)
+    else:
+        parsed = urllib.parse.urlparse(value)
+    query = urllib.parse.parse_qs(parsed.query)
+    if query.get("list"):
+        return True
+    parts = [part for part in parsed.path.split("/") if part]
+    return bool(parts and (parts[0] in {"channel", "c", "user"} or parts[0].startswith("@")))
+
+
 def http_json(method: str, url: str) -> tuple[int, dict[str, Any]]:
     request = urllib.request.Request(
         url,
@@ -121,6 +139,20 @@ async def prepare_video(video_id: str, lang: str, mode: str, discord_user_id: in
         }
     )
     url = f"{settings.youtube_proxy_internal_base_url}/prepare/youtube/{video_id}/{lang}?{query}"
+    return await asyncio.to_thread(http_json, "POST", url)
+
+
+async def prepare_batch(source: str, lang: str, mode: str, discord_user_id: int, max_items: int) -> tuple[int, dict[str, Any]]:
+    query = urllib.parse.urlencode(
+        {
+            "source": source,
+            "sourceType": "auto",
+            "mode": mode,
+            "maxItems": str(max_items),
+            "discordUserId": str(discord_user_id),
+        }
+    )
+    url = f"{settings.youtube_proxy_internal_base_url}/prepare/youtube-batch/{lang}?{query}"
     return await asyncio.to_thread(http_json, "POST", url)
 
 
@@ -186,6 +218,9 @@ def mention_text(body: dict[str, Any], fallback_user_id: int | None = None) -> s
 
 
 def status_message(body: dict[str, Any], fallback_user_id: int | None = None) -> str:
+    if isinstance(body.get("counts"), dict):
+        return batch_status_message(body, fallback_user_id)
+
     status = body.get("status", "unknown")
     mode = body.get("mode", "mp4")
     title = body.get("title")
@@ -238,6 +273,41 @@ def status_message(body: dict[str, Any], fallback_user_id: int | None = None) ->
         )
 
     return f"{mode.upper()}を準備しています。{eta_text(body)}{title_part}{subtitle_part}"
+
+
+def batch_status_message(body: dict[str, Any], fallback_user_id: int | None = None) -> str:
+    status = body.get("status", "unknown")
+    mode = body.get("mode", "mp4")
+    name = body.get("playlist_name") or body.get("playlist_id") or body.get("source") or "playlist/channel"
+    counts = body.get("counts") if isinstance(body.get("counts"), dict) else {}
+    total = counts.get("total", 0)
+    ready = counts.get("ready", 0)
+    failed = counts.get("failed", 0)
+    running = counts.get("running", 0)
+    queued = counts.get("queued", 0)
+    mention = mention_text(body, fallback_user_id)
+    prefix = f"{mention} " if mention and status in {"ready", "failed"} else ""
+
+    if status in {"ready", "failed"}:
+        label = "一括準備が完了しました。" if status == "ready" else "一括準備が終了しました。"
+        lines = [
+            f"{prefix}{label}",
+            str(name),
+            f"ready {ready}/{total} / failed {failed}",
+        ]
+        items = body.get("items") if isinstance(body.get("items"), list) else []
+        urls = [public_url(item.get("url")) for item in items if isinstance(item, dict) and item.get("url")]
+        if urls:
+            lines.extend(urls[:10])
+            if len(urls) > 10:
+                lines.append(f"...ほか {len(urls) - 10} 件")
+        return "\n".join(lines)
+
+    return (
+        f"{mode.upper()}を一括準備しています。{eta_text(body)}\n"
+        f"{name}\n"
+        f"ready {ready}/{total} / running {running} / queued {queued} / failed {failed}"
+    )
 
 
 def subtitle_status_text(meta: Any) -> str:
@@ -353,9 +423,10 @@ client = YoutubeProxyBot()
 
 @client.tree.command(name="prepare", description="YouTube動画を変換またはSSDへ準備します")
 @app_commands.describe(
-    url="YouTube URLまたは動画ID",
+    url="YouTube URL、動画ID、playlist URL、channel URL",
     lang="字幕言語",
     mode="出力形式",
+    max_items="playlist/channel URL の最大準備件数",
 )
 @app_commands.choices(
     mode=[
@@ -368,6 +439,7 @@ async def prepare_command(
     url: str,
     lang: str = "ja",
     mode: app_commands.Choice[str] | None = None,
+    max_items: int | None = None,
 ) -> None:
     await interaction.response.defer(thinking=True)
 
@@ -375,15 +447,36 @@ async def prepare_command(
         await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。")
         return
 
-    try:
-        video_id = extract_video_id(url)
-    except ValueError as error:
-        await interaction.followup.send(str(error))
+    selected_mode = mode.value if mode else "mp4"
+    selected_max_items = max_items if max_items is not None else settings.prepare_batch_max_items
+    if selected_max_items < 1 or selected_max_items > 5000:
+        await interaction.followup.send("max_items は 1 から 5000 の範囲で指定してください。")
         return
 
-    selected_mode = mode.value if mode else "mp4"
     try:
-        _status, body = await prepare_video(video_id, lang, selected_mode, interaction.user.id)
+        if looks_like_playlist_or_channel(url):
+            _status, body = await prepare_batch(
+                url,
+                lang,
+                selected_mode,
+                interaction.user.id,
+                selected_max_items,
+            )
+        else:
+            video_id = extract_video_id(url)
+            _status, body = await prepare_video(video_id, lang, selected_mode, interaction.user.id)
+    except ValueError:
+        try:
+            _status, body = await prepare_batch(
+                url,
+                lang,
+                selected_mode,
+                interaction.user.id,
+                selected_max_items,
+            )
+        except PrepareApiError as error:
+            await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}")
+            return
     except PrepareApiError as error:
         await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}")
         return

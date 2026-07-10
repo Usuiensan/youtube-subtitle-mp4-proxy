@@ -172,6 +172,7 @@ _hls_inflight: dict[str, asyncio.Task[Path]] = {}
 _prepare_lock = asyncio.Lock()
 _prepare_jobs: dict[str, dict] = {}
 _prepare_by_key: dict[str, str] = {}
+_prepare_batches: dict[str, dict] = {}
 _cleanup_lock = asyncio.Lock()
 
 
@@ -1830,6 +1831,11 @@ def prepare_status_url(request: Request, job_id: str) -> str:
     return f"{base_url}/prepare/jobs/{job_id}"
 
 
+def prepare_batch_status_url(request: Request, batch_id: str) -> str:
+    base_url = str(request.base_url).rstrip("/")
+    return f"{base_url}/prepare/batches/{batch_id}"
+
+
 def prepare_ready_path(video_id: str, lang: str, mode: str) -> Path | None:
     key = cache_key(video_id, lang)
     if mode == "hls":
@@ -1934,6 +1940,101 @@ def job_response_body(job_id: str, job: dict, request: Request) -> dict:
     return body
 
 
+def batch_item_body(item: dict, request: Request) -> dict:
+    job_id = item.get("job_id")
+    if job_id:
+        job = _prepare_jobs.get(job_id)
+        if job:
+            body = job_response_body(job_id, job, request)
+            if item.get("title") is not None and body.get("title") is None:
+                body["title"] = item["title"]
+            return body
+
+    body = {
+        "status": item.get("status", "unknown"),
+        "video_id": item["video_id"],
+        "lang": item["lang"],
+        "mode": item["mode"],
+    }
+    if item.get("title") is not None:
+        body["title"] = item["title"]
+    if item.get("url") is not None:
+        body["url"] = item["url"]
+    if item.get("error") is not None:
+        body["error"] = item["error"]
+    return body
+
+
+def batch_response_body(batch_id: str, batch: dict, request: Request, include_items: bool = True) -> dict:
+    item_bodies = [batch_item_body(item, request) for item in batch.get("items", [])]
+    counts = {
+        "total": len(item_bodies),
+        "ready": sum(1 for item in item_bodies if item.get("status") == "ready"),
+        "failed": sum(1 for item in item_bodies if item.get("status") == "failed"),
+        "queued": sum(1 for item in item_bodies if item.get("status") == "queued"),
+        "running": sum(1 for item in item_bodies if item.get("status") == "running"),
+    }
+    terminal_count = counts["ready"] + counts["failed"]
+    if counts["total"] == 0:
+        status = "failed"
+    elif terminal_count < counts["total"]:
+        status = "running" if counts["running"] else "queued"
+    elif counts["failed"]:
+        status = "failed"
+    else:
+        status = "ready"
+
+    pending_etas = [
+        item.get("eta_seconds")
+        for item in item_bodies
+        if item.get("status") in {"queued", "running"} and isinstance(item.get("eta_seconds"), (int, float))
+    ]
+    pending_ready_at = [
+        item.get("estimated_ready_at")
+        for item in item_bodies
+        if item.get("status") in {"queued", "running"}
+        and isinstance(item.get("estimated_ready_at"), (int, float))
+    ]
+    body = {
+        "status": status,
+        "batch_id": batch_id,
+        "source_type": batch.get("source_type"),
+        "source": batch.get("source"),
+        "playlist_id": batch.get("playlist_id"),
+        "playlist_name": batch.get("playlist_name"),
+        "lang": batch.get("lang"),
+        "mode": batch.get("mode"),
+        "counts": counts,
+        "status_url": prepare_batch_status_url(request, batch_id),
+    }
+    if pending_etas:
+        body["eta_seconds"] = int(sum(pending_etas))
+        body["estimated_ready_at"] = int(time.time()) + int(sum(pending_etas))
+    elif pending_ready_at:
+        body["estimated_ready_at"] = int(max(pending_ready_at))
+    mentions = batch.get("mentions") or []
+    if mentions:
+        body["mentions"] = mentions
+    if include_items:
+        body["items"] = item_bodies
+
+    if status in {"ready", "failed"} and mentions:
+        prefix = " ".join(mentions)
+        ready_count = counts["ready"]
+        failed_count = counts["failed"]
+        if status == "ready":
+            content = f"{prefix} 一括準備が完了しました。{ready_count}/{counts['total']} 件 ready。"
+        else:
+            content = f"{prefix} 一括準備が終了しました。ready {ready_count}/{counts['total']} 件、failed {failed_count} 件。"
+        ready_urls = [public_url for public_url in (item.get("url") for item in item_bodies) if public_url]
+        if ready_urls:
+            content += "\n" + "\n".join(ready_urls[:10])
+            if len(ready_urls) > 10:
+                content += f"\n...ほか {len(ready_urls) - 10} 件"
+        body["notification"] = {"content": content, "mentions": mentions}
+    return body
+
+
 def prune_prepare_jobs() -> None:
     now = int(time.time())
     expired = [
@@ -1958,6 +2059,14 @@ def prune_prepare_jobs() -> None:
     )
     for _timestamp, job_id in completed[: max(0, len(_prepare_jobs) - 1000)]:
         _prepare_jobs.pop(job_id, None)
+
+    expired_batches = [
+        batch_id
+        for batch_id, batch in _prepare_batches.items()
+        if now - int(batch.get("created_at") or now) > settings.prepare_job_retention_seconds
+    ]
+    for batch_id in expired_batches:
+        _prepare_batches.pop(batch_id, None)
 
 
 async def run_prepare_job(
@@ -2190,11 +2299,18 @@ def require_youtube_data_api_key() -> str:
     return settings.youtube_data_api_key
 
 
+def parse_youtube_url(value: str) -> urllib.parse.ParseResult:
+    value = value.strip()
+    if not value.startswith(("http://", "https://")) and ("." in value or "/" in value):
+        return urllib.parse.urlparse("https://" + value)
+    return urllib.parse.urlparse(value)
+
+
 def extract_playlist_id(value: str) -> str:
     value = value.strip()
     if YOUTUBE_ID_RE.fullmatch(value):
         return value
-    parsed = urllib.parse.urlparse(value)
+    parsed = parse_youtube_url(value)
     query = urllib.parse.parse_qs(parsed.query)
     playlist_id = query.get("list", [""])[0]
     if YOUTUBE_ID_RE.fullmatch(playlist_id):
@@ -2209,7 +2325,7 @@ def extract_channel_lookup(value: str) -> tuple[str, str]:
     if value.startswith("UC") and YOUTUBE_ID_RE.fullmatch(value):
         return "id", value
 
-    parsed = urllib.parse.urlparse(value)
+    parsed = parse_youtube_url(value)
     parts = [part for part in parsed.path.split("/") if part]
     if len(parts) >= 2 and parts[0] == "channel" and YOUTUBE_ID_RE.fullmatch(parts[1]):
         return "id", parts[1]
@@ -2408,7 +2524,7 @@ def detect_yamaplayer_source_type(source: str) -> str:
     if YOUTUBE_ID_RE.fullmatch(value):
         return "playlist"
 
-    parsed = urllib.parse.urlparse(value)
+    parsed = parse_youtube_url(value)
     parts = [part for part in parsed.path.split("/") if part]
     if urllib.parse.parse_qs(parsed.query).get("list"):
         return "playlist"
@@ -2460,6 +2576,86 @@ async def build_yamaplayer_playlist(
             base_url,
         )
     raise HTTPException(status_code=400, detail=f"Invalid source type for: {source}")
+
+
+async def expand_prepare_source(source_type: str, source: str, max_items: int) -> tuple[str, str, str, list[dict[str, str]]]:
+    if source_type == "auto":
+        source_type = detect_yamaplayer_source_type(source)
+    if source_type == "playlist":
+        playlist_id = extract_playlist_id(source)
+        playlist_name = await fetch_playlist_title(playlist_id) or playlist_id
+        tracks = await fetch_playlist_tracks(playlist_id, max_items)
+        return source_type, playlist_id, playlist_name, tracks
+    if source_type == "channel":
+        uploads_playlist_id, channel_title = await fetch_channel_uploads_playlist(source)
+        tracks = await fetch_playlist_tracks(uploads_playlist_id, max_items)
+        return source_type, uploads_playlist_id, channel_title, tracks
+    raise HTTPException(status_code=400, detail="sourceType must be auto, playlist, or channel")
+
+
+async def enqueue_prepare_batch(
+    request: Request,
+    source: str,
+    source_type: str,
+    lang: str,
+    mode: str,
+    max_items: int,
+    discord_user_id: str | None,
+) -> tuple[int, dict]:
+    resolved_type, playlist_id, playlist_name, tracks = await expand_prepare_source(
+        source_type,
+        source,
+        max_items,
+    )
+    if not tracks:
+        raise HTTPException(status_code=404, detail="No videos found in source")
+
+    mentions = [discord_mention(discord_user_id)] if discord_user_id else []
+    batch_id = uuid.uuid4().hex
+    items = []
+    any_pending = False
+    for track in tracks:
+        video_id = track["video_id"]
+        status_code, body = await enqueue_prepare_job(
+            request,
+            video_id,
+            lang,
+            mode,
+            discord_user_id,
+        )
+        if body.get("status") in {"queued", "running"}:
+            any_pending = True
+        items.append(
+            {
+                "video_id": video_id,
+                "title": track.get("title") or body.get("title") or video_id,
+                "lang": lang,
+                "mode": mode,
+                "status": body.get("status", "unknown"),
+                "job_id": body.get("job_id"),
+                "url": body.get("url"),
+                "error": body.get("error"),
+                "status_code": status_code,
+            }
+        )
+
+    batch = {
+        "source_type": resolved_type,
+        "source": source,
+        "playlist_id": playlist_id,
+        "playlist_name": playlist_name,
+        "lang": lang,
+        "mode": mode,
+        "created_at": int(time.time()),
+        "mentions": mentions,
+        "items": items,
+    }
+    async with _prepare_lock:
+        prune_prepare_jobs()
+        _prepare_batches[batch_id] = batch
+
+    status_code = 202 if any_pending else 200
+    return status_code, batch_response_body(batch_id, batch, request, include_items=True)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -3063,6 +3259,47 @@ async def prepare_job_status(job_id: str, request: Request) -> JSONResponse:
     return JSONResponse(job_response_body(job_id, job, request))
 
 
+@app.post("/prepare/youtube-batch/{lang}")
+async def prepare_youtube_batch(
+    lang: str,
+    request: Request,
+    source: str = Query(...),
+    source_type: str = Query("auto", alias="sourceType"),
+    mode: str = Query("mp4"),
+    max_items: int = Query(5000, alias="maxItems"),
+    discord_user_id: str | None = Query(None, alias="discordUserId"),
+) -> JSONResponse:
+    require_prepare_auth(request)
+    if not LANG_RE.fullmatch(lang):
+        raise HTTPException(status_code=400, detail="Invalid language code")
+    if mode not in {"mp4", "hls"}:
+        raise HTTPException(status_code=400, detail="mode must be mp4 or hls")
+    if source_type not in {"auto", "playlist", "channel"}:
+        raise HTTPException(status_code=400, detail="sourceType must be auto, playlist, or channel")
+    max_items = normalize_max_items(max_items)
+    discord_user_id = validate_discord_user_id(discord_user_id)
+    await cleanup_expired_cache_async()
+    status_code, body = await enqueue_prepare_batch(
+        request,
+        source,
+        source_type,
+        lang,
+        mode,
+        max_items,
+        discord_user_id,
+    )
+    return JSONResponse(body, status_code=status_code)
+
+
+@app.get("/prepare/batches/{batch_id}")
+async def prepare_batch_status(batch_id: str, request: Request) -> JSONResponse:
+    require_prepare_auth(request)
+    batch = _prepare_batches.get(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="Prepare batch not found")
+    return JSONResponse(batch_response_body(batch_id, batch, request, include_items=True))
+
+
 @app.post("/prepare/youtube/clear-all")
 async def clear_all_youtube(
     request: Request,
@@ -3084,6 +3321,7 @@ async def clear_all_youtube(
     async with _prepare_lock:
         _prepare_jobs.clear()
         _prepare_by_key.clear()
+        _prepare_batches.clear()
 
     deleted_count = 0
     dirs_to_clean = []

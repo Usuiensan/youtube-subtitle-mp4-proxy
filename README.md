@@ -7,6 +7,7 @@ GET /youtube/:videoId
 GET /youtube/:videoId/:lang
 GET /youtube-hls/:videoId
 GET /youtube-hls/:videoId/:lang
+POST /prepare/youtube-batch/:lang?source=:playlistOrChannelUrl
 GET /yamaplayer/playlist?list=:playlistIdOrUrl
 GET /yamaplayer/channel?channel=:channelIdOrHandleOrUrl
 GET /yamaplayer/batch?sources=:newlineSeparatedSources
@@ -95,9 +96,15 @@ curl -X POST \
 
 curl -H "Authorization: Bearer $DISCORD_PREPARE_TOKEN" \
   "http://127.0.0.1:8000/prepare/jobs/JOB_ID"
+
+curl -X POST \
+  -H "Authorization: Bearer $DISCORD_PREPARE_TOKEN" \
+  "http://127.0.0.1:8000/prepare/youtube-batch/ja?source=https%3A%2F%2Fwww.youtube.com%2F%40ikeaireland&mode=mp4&maxItems=5000&discordUserId=123456789012345678"
 ```
 
 `POST /prepare/youtube/:videoId/:lang?mode=mp4|hls` は、準備済みなら `200 {"status":"ready","url":"..."}` を返します。準備が必要なら `202` と `job_id` / `status_url` を返すので、Discord bot 側で `GET /prepare/jobs/:jobId` をポーリングし、`ready` になってから `url` を投稿します。
+
+`POST /prepare/youtube-batch/:lang?source=:playlistOrChannelUrl&sourceType=auto&mode=mp4|hls&maxItems=5000` は、YouTube Data API v3 でプレイリストまたはチャンネル投稿一覧を展開し、含まれる動画をすべて準備ジョブへ投入します。返却される `batch_id` / `status_url` は `GET /prepare/batches/:batchId` でポーリングできます。`source` はプレイリスト URL/ID、`@handle`、`https://www.youtube.com/@handle`、`https://www.youtube.com/channel/...` に対応します。
 
 `discordUserId` を渡すと、ジョブ状態に `mentions` と `notification.content` が含まれます。bot は `ready` または `failed` になったときに `notification.content` を投稿すれば、変換コマンドを実行したユーザーへメンションできます。同じ動画の準備ジョブが既に動いている場合、後から来た `discordUserId` も同じジョブの通知対象に追加されます。
 
@@ -118,9 +125,12 @@ bot はスラッシュコマンド `/prepare` を提供します。
 
 ```text
 /prepare url:https://www.youtube.com/watch?v=dQw4w9WgXcQ lang:ja mode:MP4
+/prepare url:https://www.youtube.com/@ikeaireland lang:ja mode:MP4 max_items:5000
 ```
 
-準備開始時は `予想N分 / 終了予想 <t:1783619520:t>` の形式で返信します。ジョブが完了または失敗すると、コマンドを実行したユーザーにメンションして結果を投稿します。
+`url` にプレイリスト URL やチャンネル URL を渡した場合は、YouTube Data API v3 で一覧を展開して一括準備します。`max_items` の既定値は `DISCORD_PREPARE_BATCH_MAX_ITEMS`、未設定時は 5000 件です。
+
+準備開始時は `予想N分 / 終了予想 <t:1783619520:t>` の形式で返信します。ジョブが完了または失敗すると、コマンドを実行したユーザーにメンションして結果を投稿します。一括準備では完了時に先頭 10 件の配信 URL と残り件数を投稿します。
 
 ### SSD/HDD アーカイブキャッシュ
 
@@ -140,7 +150,7 @@ export YOUTUBE_PROXY_INTERNAL_BASE_URL=http://127.0.0.1:8000
 
 準備 API が HDD 側のエントリを見つけた場合は SSD へ昇格コピーします。通常の MP4 配信 URL は HDD からも直接返せるため、一人で観る用途では再準備なしで再生できます。HDD 直配信は初回スピンアップやシークで待ちが出やすいため、複数人に共有する前は Discord bot から準備して SSD へ戻す運用を推奨します。
 
-Google の API キーが必要なのは、YouTube Data API v3 を使う `/yamaplayer/playlist`、`/yamaplayer/channel`、`/yamaplayer/batch` だけです。
+Google の API キーが必要なのは、YouTube Data API v3 を使う `/prepare/youtube-batch`、`/yamaplayer/playlist`、`/yamaplayer/channel`、`/yamaplayer/batch` です。
 
 ### 日本語字幕がない動画の翻訳
 
