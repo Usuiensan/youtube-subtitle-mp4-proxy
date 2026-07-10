@@ -7,64 +7,11 @@ import sys
 import urllib.parse
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 
-def build_prompt(payload: dict[str, Any]) -> str:
-    strict = payload.get("strict")
-    extra = (
-        "\nThis is a retry. Be stricter: preserve every id and output exactly one item per TARGET."
-        if strict
-        else ""
-    )
-    return f"""You are translating subtitles into natural Japanese.
-
-Rules:
-- Translate TARGET only.
-- CONTEXT_BEFORE and CONTEXT_AFTER are reference only.
-- PREVIOUS_JAPANESE is reference only for terminology and style.
-- Prefer the original source text over PREVIOUS_JAPANESE.
-- Do not add information not present in the source.
-- Do not change numbers, URLs, names, product names, or technical terms without reason.
-- Preserve subtitle ids.
-- Output count must match TARGET count.
-- Output JSON only. No markdown.
-- Use concise Japanese suitable for subtitles.
-{extra}
-
-Return this JSON shape:
-{{"translations":[{{"id":"...","text":"..."}}]}}
-
-VIDEO_TITLE:
-{payload.get("video_title") or ""}
-
-TOPIC:
-{payload.get("topic") or ""}
-
-GLOSSARY:
-{payload.get("glossary") or ""}
-
-SOURCE_LANGUAGE:
-{payload.get("source_language")}
-
-TARGET_LANGUAGE:
-{payload.get("target_language")}
-
-CONTEXT_BEFORE:
-{json.dumps(payload.get("context_before", []), ensure_ascii=False)}
-
-TARGET:
-{json.dumps(payload.get("target", []), ensure_ascii=False)}
-
-CONTEXT_AFTER:
-{json.dumps(payload.get("context_after", []), ensure_ascii=False)}
-
-PREVIOUS_JAPANESE:
-{json.dumps(payload.get("previous_japanese", []), ensure_ascii=False)}
-"""
-
-
-def call_openai_compatible(prompt: str, payload: dict[str, Any]) -> dict[str, Any]:
+def translate_single_text_openai(text: str, payload: dict[str, Any]) -> tuple[str, dict[str, int]]:
     endpoint = os.getenv("LOCAL_LLM_ENDPOINT", "http://127.0.0.1:11434/v1/chat/completions")
     model = str(payload.get("model_name") or os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M"))
     timeout = int(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "300"))
@@ -72,19 +19,16 @@ def call_openai_compatible(prompt: str, payload: dict[str, Any]) -> dict[str, An
     max_tokens = int(os.getenv("LOCAL_LLM_MAX_OUTPUT_TOKENS", "2048"))
     api_key = os.getenv("LOCAL_LLM_API_KEY", "")
 
+    prompt = f"この字幕の一部を翻訳せよ。訳文以外は一文字も入れるな\n\n{text}"
+
     body = json.dumps(
         {
             "model": model,
             "messages": [
-                {
-                    "role": "system",
-                    "content": "You are a precise subtitle translation engine. Return JSON only.",
-                },
                 {"role": "user", "content": prompt},
             ],
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "response_format": {"type": "json_object"},
         }
     ).encode("utf-8")
     headers = {"Content-Type": "application/json"}
@@ -99,18 +43,22 @@ def call_openai_compatible(prompt: str, payload: dict[str, Any]) -> dict[str, An
         message = error.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"local llm http error {error.code}: {message}") from error
 
-    content = data["choices"][0]["message"]["content"]
-    result = json.loads(content)
+    content = data["choices"][0]["message"]["content"].strip()
+    if content.startswith('"') and content.endswith('"'):
+        content = content[1:-1].strip()
+    elif content.startswith("'") and content.endswith("'"):
+        content = content[1:-1].strip()
+
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
-    result["_usage"] = {
+    usage_dict = {
         "input_tokens": int(usage.get("prompt_tokens") or 0),
         "output_tokens": int(usage.get("completion_tokens") or 0),
         "total_tokens": int(usage.get("total_tokens") or 0),
     }
-    return result
+    return content, usage_dict
 
 
-def call_gemini_api(prompt: str, payload: dict[str, Any]) -> dict[str, Any]:
+def translate_single_text_gemini(text: str, payload: dict[str, Any]) -> tuple[str, dict[str, int]]:
     model = str(payload.get("model_name") or os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
     api_key = os.getenv("GEMINI_API_KEY", "")
     if not api_key:
@@ -123,13 +71,11 @@ def call_gemini_api(prompt: str, payload: dict[str, Any]) -> dict[str, Any]:
         "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
     ).format(model=urllib.parse.quote(model, safe=""))
     url = f"{endpoint}?key={urllib.parse.quote(api_key, safe='')}"
+
+    prompt = f"この字幕の一部を翻訳せよ。訳文以外は一文字も入れるな\n\n{text}"
+
     body = json.dumps(
         {
-            "system_instruction": {
-                "parts": [
-                    {"text": "You are a precise subtitle translation engine. Return JSON only."}
-                ]
-            },
             "contents": [
                 {
                     "role": "user",
@@ -139,7 +85,6 @@ def call_gemini_api(prompt: str, payload: dict[str, Any]) -> dict[str, Any]:
             "generationConfig": {
                 "temperature": temperature,
                 "maxOutputTokens": max_tokens,
-                "responseMimeType": "application/json",
             },
         }
     ).encode("utf-8")
@@ -163,15 +108,20 @@ def call_gemini_api(prompt: str, payload: dict[str, Any]) -> dict[str, Any]:
     parts = content.get("parts") if isinstance(content, dict) else None
     if not isinstance(parts, list) or not parts or not isinstance(parts[0], dict) or not parts[0].get("text"):
         raise RuntimeError("gemini api returned no text part")
-    result = json.loads(str(parts[0]["text"]))
+    
+    translated_text = str(parts[0]["text"]).strip()
+    if translated_text.startswith('"') and translated_text.endswith('"'):
+        translated_text = translated_text[1:-1].strip()
+    elif translated_text.startswith("'") and translated_text.endswith("'"):
+        translated_text = translated_text[1:-1].strip()
+
     usage = data.get("usageMetadata") if isinstance(data.get("usageMetadata"), dict) else {}
-    result["_usage"] = {
+    usage_dict = {
         "input_tokens": int(usage.get("promptTokenCount") or 0),
         "output_tokens": int(usage.get("candidatesTokenCount") or 0),
         "total_tokens": int(usage.get("totalTokenCount") or 0),
     }
-    result["_gemini_model_version"] = data.get("modelVersion")
-    return result
+    return translated_text, usage_dict
 
 
 def main() -> int:
@@ -184,11 +134,39 @@ def main() -> int:
         payload = json.load(file)
 
     provider = str(payload.get("translation_provider") or os.getenv("LOCAL_LLM_ENGINE", "openai_compatible")).strip().lower()
-    prompt = build_prompt(payload)
-    if provider == "gemini_api":
-        result = call_gemini_api(prompt, payload)
-    else:
-        result = call_openai_compatible(prompt, payload)
+    target = payload.get("target", [])
+    
+    translations = []
+    usage_totals = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+    }
+
+    def process_item(item: dict[str, Any]) -> tuple[dict[str, Any], dict[str, int]]:
+        text = item.get("text", "")
+        if not text or not text.strip():
+            return {"id": item.get("id"), "text": text}, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        
+        if provider == "gemini_api":
+            translated_text, usage = translate_single_text_gemini(text, payload)
+        else:
+            translated_text, usage = translate_single_text_openai(text, payload)
+        
+        return {"id": item.get("id"), "text": translated_text}, usage
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        results = list(executor.map(process_item, target))
+
+    for trans, usage in results:
+        translations.append(trans)
+        for key in usage_totals:
+            usage_totals[key] += usage.get(key, 0)
+
+    result = {
+        "translations": translations,
+        "_usage": usage_totals,
+    }
 
     with open(args.output, "w", encoding="utf-8") as file:
         json.dump(result, file, ensure_ascii=False, indent=2)

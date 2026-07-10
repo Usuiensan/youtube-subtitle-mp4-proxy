@@ -152,7 +152,7 @@ class Settings:
     gemini_flash_input_price_per_million = float(os.getenv("GEMINI_FLASH_INPUT_PRICE_PER_MILLION", "0.30"))
     gemini_flash_output_price_per_million = float(os.getenv("GEMINI_FLASH_OUTPUT_PRICE_PER_MILLION", "2.50"))
     usd_to_jpy_rate = float(os.getenv("USD_TO_JPY_RATE", "160.0"))
-    translation_provider = os.getenv("TRANSLATION_PROVIDER", "google_cloud").strip().lower()
+    translation_provider = os.getenv("TRANSLATION_PROVIDER", "local_llm").strip().lower()
     nllb_model = os.getenv("NLLB_MODEL", "facebook/nllb-200-distilled-600M")
     nllb_device = os.getenv("NLLB_DEVICE", "auto")
     nllb_batch_size = int(os.getenv("NLLB_BATCH_SIZE", "16"))
@@ -1207,10 +1207,7 @@ def validate_lang(lang: str) -> None:
 
 def validate_translation_variant(source_lang: str, translation_engine: str) -> str:
     validate_lang(source_lang)
-    normalized = normalize_translation_engine(translation_engine)
-    if normalized != "google_cloud":
-        raise HTTPException(status_code=400, detail="Only google_cloud is temporarily allowed for translation")
-    return normalized
+    return normalize_translation_engine(translation_engine)
 
 
 def yt_dlp_base_args() -> list[str]:
@@ -1434,15 +1431,35 @@ def normalize_translation_engine(value: str | None) -> str:
 
 
 def translation_profile_options() -> list[dict]:
-    return [
+    options = [
+        {
+            "value": profile_id,
+            "label": settings.local_llm_profile_labels.get(profile_id, profile_id),
+            "model": model,
+            "default": profile_id == settings.translation_provider,
+            "kind": "local",
+        }
+        for profile_id, model in settings.local_llm_profile_models.items()
+    ]
+    options.append(
+        {
+            "value": "nllb",
+            "label": "NLLB-200 distilled 600M",
+            "model": settings.nllb_model,
+            "default": settings.translation_provider == "nllb",
+            "kind": "nllb",
+        }
+    )
+    options.append(
         {
             "value": "google_cloud",
             "label": "Google翻訳",
             "model": None,
-            "default": True,
+            "default": settings.translation_provider == "google_cloud",
             "kind": "cloud",
         }
-    ]
+    )
+    return options
 
 
 def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
@@ -2284,8 +2301,6 @@ async def translate_subtitle_if_needed(
 
     translated_path = work_dir / f"{subtitle.stem}.ja.translated.srt"
     requested_engine = normalize_translation_engine(selection.get("translation_engine_requested"))
-    if requested_engine != "google_cloud":
-        raise HTTPException(status_code=400, detail="Only google_cloud is temporarily allowed for translation")
     selected_settings = translation_settings(requested_engine)
 
     if requested_engine == "google_cloud":
