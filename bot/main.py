@@ -523,18 +523,18 @@ class SubtitleChoiceView(discord.ui.View):
 
     async def on_source_selected(self, interaction: discord.Interaction) -> None:
         self.source_lang = self.source_select.values[0]
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
 
     async def on_engine_selected(self, interaction: discord.Interaction) -> None:
         self.translation_engine = self.engine_select.values[0]
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
 
     @discord.ui.button(label="この設定で準備", style=discord.ButtonStyle.primary)
     async def start_prepare(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
         if not self.source_lang:
             await interaction.response.send_message("先に翻訳元字幕を選択してください。", ephemeral=True)
             return
-        await interaction.response.defer(thinking=True)
+        await interaction.response.defer(thinking=True, ephemeral=True)
         for child in self.children:
             child.disabled = True
         if interaction.message is not None:
@@ -553,13 +553,23 @@ class SubtitleChoiceView(discord.ui.View):
                 translation_engine=self.translation_engine,
             )
         except PrepareApiError as error:
-            await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}")
+            await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}", ephemeral=True)
             return
 
-        await interaction.followup.send(
-            status_message(body, interaction.user.id),
-            allowed_mentions=discord.AllowedMentions(users=True),
-        )
+        content = status_message(body, interaction.user.id)
+        if body.get("status") == "ready":
+            posted = await send_public_completion(interaction, content)
+            await interaction.followup.send(
+                "準備済みURLを投稿しました。" if posted else content,
+                allowed_mentions=discord.AllowedMentions(users=True),
+                ephemeral=posted,
+            )
+        else:
+            await interaction.followup.send(
+                content,
+                allowed_mentions=discord.AllowedMentions(users=True),
+                ephemeral=True,
+            )
         status_url = body.get("status_url")
         if body.get("status") in {"queued", "running"} and isinstance(status_url, str):
             asyncio.create_task(notify_when_done(interaction, status_url))
@@ -579,7 +589,7 @@ async def notify_when_done(
     deadline = time.monotonic() + settings.poll_timeout_seconds
     latest: dict[str, Any] | None = None
 
-    async def send_notification(content: str) -> None:
+    async def send_notification(content: str, *, public: bool) -> None:
         channel = interaction.channel
         if channel is None and interaction.channel_id is not None:
             try:
@@ -588,7 +598,7 @@ async def notify_when_done(
                     channel = fetched
             except Exception:
                 pass
-        if channel is not None:
+        if public and channel is not None:
             try:
                 await channel.send(
                     content,
@@ -601,6 +611,7 @@ async def notify_when_done(
             await interaction.followup.send(
                 content,
                 allowed_mentions=discord.AllowedMentions(users=True),
+                ephemeral=not public,
             )
         except discord.HTTPException:
             try:
@@ -630,7 +641,7 @@ async def notify_when_done(
                 content += subtitle_part
             content = content.replace("http://127.0.0.1:8000", settings.youtube_proxy_base_url)
             content = content.replace("http://localhost:8000", settings.youtube_proxy_base_url)
-            await send_notification(content)
+            await send_notification(content, public=latest.get("status") == "ready")
             return
 
         if latest:
@@ -649,7 +660,29 @@ async def notify_when_done(
 
     await send_notification(
         f"<@{interaction.user.id}> 準備ジョブの確認がタイムアウトしました。status_url={status_url}",
+        public=False,
     )
+
+
+async def send_public_completion(interaction: discord.Interaction, content: str) -> bool:
+    channel = interaction.channel
+    if channel is None and interaction.channel_id is not None:
+        try:
+            fetched = await interaction.client.fetch_channel(interaction.channel_id)
+            if isinstance(fetched, discord.abc.Messageable):
+                channel = fetched
+        except Exception:
+            pass
+    if channel is None:
+        return False
+    try:
+        await channel.send(
+            content,
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
+        return True
+    except discord.HTTPException:
+        return False
 
 
 class YoutubeProxyBot(discord.Client):
@@ -685,16 +718,16 @@ async def prepare_command(
     mode: app_commands.Choice[str] | None = None,
     max_items: int | None = None,
 ) -> None:
-    await interaction.response.defer(thinking=True)
+    await interaction.response.defer(thinking=True, ephemeral=True)
 
     if not settings.discord_prepare_token:
-        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。")
+        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=True)
         return
 
     selected_mode = mode.value if mode else "mp4"
     selected_max_items = max_items if max_items is not None else settings.prepare_batch_max_items
     if selected_max_items < 1 or selected_max_items > 5000:
-        await interaction.followup.send("max_items は 1 から 5000 の範囲で指定してください。")
+        await interaction.followup.send("max_items は 1 から 5000 の範囲で指定してください。", ephemeral=True)
         return
 
     try:
@@ -712,12 +745,12 @@ async def prepare_command(
                 try:
                     options_body = await fetch_subtitle_options(video_id, lang, selected_mode)
                 except PrepareApiError as error:
-                    await interaction.followup.send(f"字幕候補取得APIエラー ({error.status_code}): {error.detail}")
+                    await interaction.followup.send(f"字幕候補取得APIエラー ({error.status_code}): {error.detail}", ephemeral=True)
                     return
                 if options_body.get("requires_choice"):
                     candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
                     if not candidates:
-                        await interaction.followup.send(str(options_body.get("error") or "翻訳可能な手動字幕がありません。"))
+                        await interaction.followup.send(str(options_body.get("error") or "翻訳可能な手動字幕がありません。"), ephemeral=True)
                         return
                     title = options_body.get("title") or video_id
                     view = SubtitleChoiceView(
@@ -730,10 +763,11 @@ async def prepare_command(
                     await interaction.followup.send(
                         f"日本語字幕が見つかりませんでした。\n{title}\n翻訳元字幕と翻訳エンジンを選択してください。既定は LLM 翻訳です。",
                         view=view,
+                        ephemeral=True,
                     )
                     return
                 if options_body.get("error"):
-                    await interaction.followup.send(str(options_body["error"]))
+                    await interaction.followup.send(str(options_body["error"]), ephemeral=True)
                     return
             _status, body = await prepare_video(video_id, lang, selected_mode, interaction.user.id)
     except ValueError:
@@ -746,16 +780,26 @@ async def prepare_command(
                 selected_max_items,
             )
         except PrepareApiError as error:
-            await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}")
+            await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}", ephemeral=True)
             return
     except PrepareApiError as error:
-        await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}")
+        await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}", ephemeral=True)
         return
 
-    await interaction.followup.send(
-        status_message(body, interaction.user.id),
-        allowed_mentions=discord.AllowedMentions(users=True),
-    )
+    content = status_message(body, interaction.user.id)
+    if body.get("status") == "ready":
+        posted = await send_public_completion(interaction, content)
+        await interaction.followup.send(
+            "準備済みURLを投稿しました。" if posted else content,
+            allowed_mentions=discord.AllowedMentions(users=True),
+            ephemeral=posted,
+        )
+    else:
+        await interaction.followup.send(
+            content,
+            allowed_mentions=discord.AllowedMentions(users=True),
+            ephemeral=True,
+        )
 
     status_url = body.get("status_url")
     if body.get("status") in {"queued", "running"} and isinstance(status_url, str):
@@ -820,10 +864,10 @@ async def clear_all_command(
 async def reset_eta_command(
     interaction: discord.Interaction,
 ) -> None:
-    await interaction.response.defer(thinking=True)
+    await interaction.response.defer(thinking=True, ephemeral=True)
 
     if not settings.discord_prepare_token:
-        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。")
+        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=True)
         return
 
     try:
