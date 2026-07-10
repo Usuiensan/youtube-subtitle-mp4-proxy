@@ -80,7 +80,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```bash
 export CACHE_DIR=/var/cache/youtube-mp4
 export DEFAULT_LANG=ja
-export SUBTITLE_FONT='BIZ UDGothic'
+export SUBTITLE_FONT='BIZ UDPGothic'
 ```
 
 ### Discord bot からの準備ジョブ
@@ -462,7 +462,7 @@ Environment=DEFAULT_LANG=ja
 Environment=MAX_DURATION_SECONDS=1800
 Environment=MAX_HEIGHT=720
 Environment=CACHE_TTL_SECONDS=86400
-Environment=SUBTITLE_FONT=BIZ UDGothic
+Environment=SUBTITLE_FONT=BIZ UDPGothic
 ExecStart=/opt/youtube-mp4-proxy/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 Restart=on-failure
 RestartSec=5
@@ -487,7 +487,7 @@ WantedBy=multi-user.target
 初期値は白文字、約25%透明の黒背景、下寄せ中央です。720pで自動改行が入りにくいよう、文字サイズは控えめにしています。
 
 ```bash
-export SUBTITLE_FONT='BIZ UDGothic'
+export SUBTITLE_FONT='BIZ UDPGothic'
 export SUBTITLE_FONT_SIZE=20
 export SUBTITLE_MARGIN_V=34
 export SUBTITLE_MARGIN_L=24
@@ -496,6 +496,6 @@ export SUBTITLE_PRIMARY_COLOUR='&H00FFFFFF'
 export SUBTITLE_BACK_COLOUR='&H40000000'
 ```
 
-`SUBTITLE_FONT` はサーバーにインストール済みのフォント名を指定してください。候補は `BIZ UDGothic`、`Noto Sans CJK JP`、`Rounded M+ 1c` あたりです。
+`SUBTITLE_FONT` はサーバーにインストール済みのフォント名を指定してください。候補は `BIZ UDPGothic`、`Noto Sans CJK JP`、`Rounded M+ 1c` あたりです。
 
 字幕スタイルを変えると内部キャッシュキーも変わるため、古い見た目のキャッシュとは混ざりません。

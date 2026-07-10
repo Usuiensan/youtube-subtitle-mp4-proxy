@@ -84,7 +84,7 @@ class Settings:
     max_height = int(os.getenv("MAX_HEIGHT", "720"))
     cache_ttl_seconds = int(os.getenv("CACHE_TTL_SECONDS", "86400"))
     job_timeout_seconds = int(os.getenv("JOB_TIMEOUT_SECONDS", "7200"))
-    subtitle_font = os.getenv("SUBTITLE_FONT", "BIZ UDGothic")
+    subtitle_font = os.getenv("SUBTITLE_FONT", "BIZ UDPGothic")
     subtitle_font_size = int(os.getenv("SUBTITLE_FONT_SIZE", "20"))
     subtitle_margin_v = int(os.getenv("SUBTITLE_MARGIN_V", "34"))
     subtitle_margin_l = int(os.getenv("SUBTITLE_MARGIN_L", "24"))
@@ -1439,10 +1439,11 @@ def escape_filter_value(value: str) -> str:
     return value.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
 
 
-def subtitle_force_style() -> str:
+def subtitle_force_style(font_name: str | None = None) -> str:
+    resolved_font = font_name or settings.subtitle_font
     return ",".join(
         [
-            f"FontName={settings.subtitle_font}",
+            f"FontName={resolved_font}",
             f"FontSize={settings.subtitle_font_size}",
             f"PrimaryColour={settings.subtitle_primary_colour}",
             f"BackColour={settings.subtitle_back_colour}",
@@ -1693,36 +1694,37 @@ def subtitle_translation_service_label(subtitle_meta: dict) -> str:
     return ""
 
 
-def find_japanese_font_file() -> str | None:
+def find_japanese_font_spec() -> tuple[str | None, str | None]:
     candidates = [
-        "/usr/local/share/fonts/truetype/form-udp-gothic/FORMUDPGothic-Regular.ttf",
-        "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/ipaexfont/ipaexg.ttf",
-        "/usr/share/fonts/truetype/vlgothic/VL-PGothic-Regular.ttf",
+        ("/usr/local/share/fonts/truetype/form-udp-gothic/FORMUDPGothic-Regular.ttf", "FORM UDPGothic"),
+        ("/usr/share/fonts/truetype/fonts-japanese-gothic.ttf", "Japanese Gothic"),
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "Noto Sans CJK JP"),
+        ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", "Noto Sans CJK JP"),
+        ("/usr/share/fonts/truetype/ipaexfont/ipaexg.ttf", "IPAexGothic"),
+        ("/usr/share/fonts/truetype/vlgothic/VL-PGothic-Regular.ttf", "VL PGothic"),
     ]
-    for path in candidates:
+    for path, name in candidates:
         if os.path.exists(path):
-            return path
-    return None
+            return path, name
+    return None, None
 
 
 def ffmpeg_subtitle_arg(path: Path, subtitle_meta: dict | None = None) -> str:
     value = path.as_posix()
+    font_file, font_name = find_japanese_font_spec()
+    subtitle_font_name = font_name or settings.subtitle_font
     filter_str = (
         f"subtitles='{escape_filter_value(value)}':"
-        f"force_style='{escape_filter_value(subtitle_force_style())}'"
+        f"force_style='{escape_filter_value(subtitle_force_style(subtitle_font_name))}'"
     )
     if subtitle_meta:
         label = get_subtitle_overlay_label(subtitle_meta)
         lines = label.split("\n")
 
-        font_file = find_japanese_font_file()
         if font_file:
             font_opt = f":fontfile='{font_file}'"
         else:
-            font_opt = f":font='{settings.subtitle_font}'" if settings.subtitle_font else ""
+            font_opt = f":font='{subtitle_font_name}'" if subtitle_font_name else ""
 
         drawtext_filters = []
         for i, line in enumerate(lines):

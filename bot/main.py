@@ -362,7 +362,7 @@ def status_message(body: dict[str, Any], fallback_user_id: int | None = None) ->
         phase = progress.get("phase", "")
         percent = progress.get("percent", 0.0)
         eta_sec = progress.get("eta_seconds")
-        details = progress.get("details", "")
+        details = sanitize_progress_details(progress.get("details", ""))
 
         phase_names = {
             "download": "動画・字幕のダウンロード",
@@ -460,6 +460,17 @@ def subtitle_status_text(meta: Any) -> str:
     if source:
         return f"\n字幕: {lang_name_ja(source)}"
     return ""
+
+
+def sanitize_progress_details(details: Any) -> str:
+    if not isinstance(details, str):
+        return ""
+    text = details.strip()
+    if not text:
+        return ""
+    if text.startswith("stage=") or " completed_items=" in text or " total_items=" in text:
+        return ""
+    return text
 
 
 def option_label(value: str, limit: int = 100) -> str:
