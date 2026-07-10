@@ -142,6 +142,30 @@ export YOUTUBE_PROXY_INTERNAL_BASE_URL=http://127.0.0.1:8000
 
 Google の API キーが必要なのは、YouTube Data API v3 を使う `/yamaplayer/playlist`、`/yamaplayer/channel`、`/yamaplayer/batch` だけです。
 
+### 日本語字幕がない動画の翻訳
+
+`TRANSLATION_ENABLED=1` の場合、要求言語が `ja` で日本語の手動字幕がない動画は、動画情報の字幕一覧から外国語の手動字幕を選び、日本語へ翻訳してから焼き込みます。選択順は、動画の原言語、英語、韓国語、中国語、`TRANSLATION_SOURCE_LANGS` の順です。
+
+翻訳は FastAPI プロセス内にモデルをロードせず、字幕windowごとに `app.translation_worker` を別プロセスで起動します。worker終了後にffmpeg/NVENCを開始するため、GTX 1050 Ti 4GB環境でもローカルLLM翻訳とNVENCを同時実行しません。ローカルLLMが失敗したwindowだけ Google Cloud Translation API へフォールバックします。初期実装のGoogle fallbackは字幕イベントごとに1 APIリクエストを行います。
+
+```bash
+export TRANSLATION_ENABLED=1
+export TRANSLATION_SOURCE_LANGS=en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW
+export LOCAL_LLM_ENGINE=openai_compatible
+export LOCAL_LLM_ENDPOINT=http://127.0.0.1:11434/v1/chat/completions
+export LOCAL_LLM_MODEL=qwen2.5:3b-instruct-q4_K_M
+export LOCAL_LLM_TIMEOUT_SECONDS=300
+export LOCAL_LLM_TARGET_WINDOW_SECONDS=60
+export LOCAL_LLM_TARGET_MAX_EVENTS=25
+export LOCAL_LLM_CONTEXT_SECONDS=60
+export LOCAL_LLM_TEMPERATURE=0
+export TRANSLATION_FALLBACK_ENGINE=google_cloud
+export GOOGLE_APPLICATION_CREDENTIALS=/etc/youtube-mp4-google-credentials.json
+export GOOGLE_CLOUD_PROJECT=your-google-cloud-project-id
+```
+
+翻訳済み字幕は `source/subtitle.ja.translated.srt`、元字幕は `source/subtitle.SOURCE.original.srt`、翻訳メタデータは `source/translation.json` に保存します。翻訳設定とモデル名はキャッシュキーへ含まれるため、モデルやwindow設定を変えた場合に古いMP4を誤再利用しません。
+
 ## YamaPlayer JSON 書き出し
 
 YouTube Data API v3 を使って、YouTube のプレイリストまたはチャンネルの投稿一覧を YamaPlayer の JSON インポート形式で返します。環境変数 `YOUTUBE_DATA_API_KEY` が必要です。

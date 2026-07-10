@@ -158,6 +158,20 @@ YOUTUBE_PROXY_INTERNAL_BASE_URL=http://127.0.0.1:8000
 DISCORD_PREPARE_POLL_SECONDS=10
 DISCORD_PREPARE_POLL_TIMEOUT_SECONDS=7200
 
+TRANSLATION_ENABLED=1
+TRANSLATION_SOURCE_LANGS=en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW
+TRANSLATION_FALLBACK_ENGINE=google_cloud
+LOCAL_LLM_ENGINE=openai_compatible
+LOCAL_LLM_ENDPOINT=http://127.0.0.1:11434/v1/chat/completions
+LOCAL_LLM_MODEL=qwen2.5:3b-instruct-q4_K_M
+LOCAL_LLM_TIMEOUT_SECONDS=300
+LOCAL_LLM_TARGET_WINDOW_SECONDS=60
+LOCAL_LLM_TARGET_MAX_EVENTS=25
+LOCAL_LLM_CONTEXT_SECONDS=60
+LOCAL_LLM_TEMPERATURE=0
+# GOOGLE_APPLICATION_CREDENTIALS=/etc/youtube-mp4-google-credentials.json
+# GOOGLE_CLOUD_PROJECT=your-google-cloud-project-id
+
 # Required only for /yamaplayer/playlist, /yamaplayer/channel, /yamaplayer/batch
 # YOUTUBE_DATA_API_KEY=AIza...
 EOF
@@ -323,7 +337,20 @@ MP4を準備しています。予想8分 / 終了予想 <t:1783619520:t>
 <@123456789012345678> 準備できました: https://YOUR_DOMAIN/youtube/dQw4w9WgXcQ/ja
 ```
 
-## 9. 動作確認
+## 9. ローカルLLM翻訳
+
+日本語字幕がない動画では、外国語の手動字幕を選んで日本語へ翻訳できます。翻訳workerはジョブごとに起動・終了するため、FastAPI本体へモデルをロードしません。翻訳が終わってworkerが終了してからNVENCを開始します。
+
+GTX 1050 Ti 4GBでは、小型の量子化モデルをOpenAI互換HTTP APIやOllama互換エンドポイントで動かす想定です。ローカルLLMが失敗した字幕windowだけ、Google Cloud Translation APIへフォールバックします。初期実装ではGoogle翻訳を字幕イベントごとに1回呼びます。
+
+Google fallbackを使う場合は、認証JSONをリポジトリ外へ置きます。
+
+```bash
+sudo install -o app -g app -m 600 google-credentials.json /etc/youtube-mp4-google-credentials.json
+sudo systemctl restart youtube-mp4-proxy
+```
+
+## 10. 動作確認
 
 NVENC:
 
@@ -347,7 +374,7 @@ MP4配信URLは、SSDまたはHDDアーカイブに `output.mp4` があれば `2
 curl -I http://127.0.0.1:8000/youtube/dQw4w9WgXcQ/ja
 ```
 
-## 10. トラブルシュート
+## 11. トラブルシュート
 
 ### `No NVENC capable devices found`
 

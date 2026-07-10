@@ -180,16 +180,35 @@ def status_message(body: dict[str, Any], fallback_user_id: int | None = None) ->
     mode = body.get("mode", "mp4")
     title = body.get("title")
     title_part = f"\n{title}" if title else ""
+    subtitle_part = subtitle_status_text(body.get("subtitle"))
 
     if status == "ready":
         mention = mention_text(body, fallback_user_id)
         prefix = f"{mention} " if mention else ""
-        return f"{prefix}準備できました。{title_part}\n{public_url(body.get('url'))}"
+        return f"{prefix}準備できました。{title_part}{subtitle_part}\n{public_url(body.get('url'))}"
     if status == "failed":
         mention = mention_text(body, fallback_user_id)
         prefix = f"{mention} " if mention else ""
         return f"{prefix}準備に失敗しました。{title_part}\n{body.get('error', 'unknown error')}"
-    return f"{mode.upper()}を準備しています。{eta_text(body)}{title_part}"
+    return f"{mode.upper()}を準備しています。{eta_text(body)}{title_part}{subtitle_part}"
+
+
+def subtitle_status_text(meta: Any) -> str:
+    if not isinstance(meta, dict) or not meta:
+        return ""
+    source = meta.get("source_language")
+    requested = meta.get("requested_language")
+    translated = meta.get("translated")
+    kind = meta.get("source_kind")
+    engine = meta.get("translation_engine")
+    fallback = meta.get("translation_fallback_used")
+    if translated:
+        engine_text = "Google翻訳フォールバック" if fallback else (engine or "local_llm")
+        kind_text = "手動" if kind == "manual" else str(kind or "")
+        return f"\n字幕: {source}（{kind_text}）→{requested}（{engine_text}）"
+    if source:
+        return f"\n字幕: {source}"
+    return ""
 
 
 async def notify_when_done(
@@ -240,6 +259,9 @@ async def notify_when_done(
         if latest.get("status") in {"ready", "failed"}:
             notification = latest.get("notification") or {}
             content = notification.get("content") or status_message(latest, interaction.user.id)
+            subtitle_part = subtitle_status_text(latest.get("subtitle"))
+            if subtitle_part and subtitle_part not in content:
+                content += subtitle_part
             content = content.replace("http://127.0.0.1:8000", settings.youtube_proxy_base_url)
             content = content.replace("http://localhost:8000", settings.youtube_proxy_base_url)
             await send_notification(content)

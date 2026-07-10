@@ -26,6 +26,8 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
+from app.translation import TranslationSettings, translate_srt_with_local_worker
+
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 LANG_RE = re.compile(r"^[A-Za-z0-9_-]{2,12}$")
@@ -86,6 +88,18 @@ class Settings:
     youtube_data_api_key = os.getenv("YOUTUBE_DATA_API_KEY")
     discord_prepare_token = os.getenv("DISCORD_PREPARE_TOKEN")
     youtube_proxy_base_url = os.getenv("YOUTUBE_PROXY_BASE_URL", "").rstrip("/")
+    translation_enabled = os.getenv("TRANSLATION_ENABLED", "1") != "0"
+    translation_source_langs = os.getenv("TRANSLATION_SOURCE_LANGS", "en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW")
+    local_llm_engine = os.getenv("LOCAL_LLM_ENGINE", "openai_compatible")
+    local_llm_model = os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M")
+    local_llm_timeout_seconds = int(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "300"))
+    local_llm_target_window_seconds = int(os.getenv("LOCAL_LLM_TARGET_WINDOW_SECONDS", "60"))
+    local_llm_target_max_events = int(os.getenv("LOCAL_LLM_TARGET_MAX_EVENTS", "25"))
+    local_llm_context_seconds = int(os.getenv("LOCAL_LLM_CONTEXT_SECONDS", "60"))
+    translation_fallback_engine = os.getenv("TRANSLATION_FALLBACK_ENGINE", "google_cloud")
+    translation_topic = os.getenv("TRANSLATION_TOPIC", "")
+    translation_glossary = os.getenv("TRANSLATION_GLOSSARY", "")
+    google_cloud_project = os.getenv("GOOGLE_CLOUD_PROJECT", "")
 
 
 settings = Settings()
@@ -114,8 +128,25 @@ def cache_key(video_id: str, lang: str) -> str:
 
 def render_profile_id() -> str:
     return hashlib.sha1(
-        "\n".join([subtitle_force_style(), *ffmpeg_video_args()]).encode("utf-8")
+        "\n".join([subtitle_force_style(), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
     ).hexdigest()[:8]
+
+
+def translation_profile_id() -> str:
+    return json.dumps(
+        {
+            "enabled": settings.translation_enabled,
+            "target": "ja",
+            "source_langs": settings.translation_source_langs,
+            "engine": settings.local_llm_engine,
+            "fallback": settings.translation_fallback_engine,
+            "model": settings.local_llm_model,
+            "window_seconds": settings.local_llm_target_window_seconds,
+            "max_events": settings.local_llm_target_max_events,
+            "context_seconds": settings.local_llm_context_seconds,
+        },
+        sort_keys=True,
+    )
 
 
 def entry_dir(key: str) -> Path:
@@ -152,6 +183,26 @@ def source_meta_path(key: str) -> Path:
     return entry_dir(key) / "source.json"
 
 
+def translation_meta_path(key: str) -> Path:
+    return entry_dir(key) / "source" / "translation.json"
+
+
+def read_subtitle_meta(key: str) -> dict:
+    for base in (entry_dir(key), archive_entry_dir(key)):
+        if base is None:
+            continue
+        path = base / "source" / "translation.json"
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+        source_json = base / "source.json"
+        if source_json.exists():
+            data = json.loads(source_json.read_text(encoding="utf-8"))
+            meta = data.get("subtitle_meta")
+            if isinstance(meta, dict):
+                return meta
+    return {}
+
+
 def write_meta(key: str, video_id: str, lang: str, info: dict, mode: str) -> None:
     meta_path(key).parent.mkdir(parents=True, exist_ok=True)
     meta_path(key).write_text(
@@ -178,6 +229,7 @@ def write_source_meta(
     info: dict,
     video: Path,
     subtitle: Path,
+    subtitle_meta: dict | None = None,
 ) -> None:
     source_meta_path(key).write_text(
         json.dumps(
@@ -190,6 +242,7 @@ def write_source_meta(
                 or f"https://www.youtube.com/watch?v={video_id}",
                 "source_video": str(video.relative_to(entry_dir(key))).replace("\\", "/"),
                 "subtitle": str(subtitle.relative_to(entry_dir(key))).replace("\\", "/"),
+                "subtitle_meta": subtitle_meta or {},
                 "downloaded_at": int(time.time()),
                 "yt_dlp": {
                     "id": info.get("id"),
@@ -511,6 +564,66 @@ def find_subtitle(work_dir: Path, lang: str) -> Path:
     return subtitles[0]
 
 
+def normalize_lang(value: str | None) -> str:
+    return (value or "").split("-")[0].lower()
+
+
+def subtitle_lang_available(subtitles: dict, lang: str) -> str | None:
+    if lang in subtitles:
+        return lang
+    wanted = normalize_lang(lang)
+    for candidate in subtitles.keys():
+        if normalize_lang(candidate) == wanted:
+            return candidate
+    return None
+
+
+def configured_translation_source_langs() -> list[str]:
+    return [lang.strip() for lang in settings.translation_source_langs.split(",") if lang.strip()]
+
+
+def select_subtitle_language(info: dict, requested_lang: str) -> dict:
+    manual_subtitles = info.get("subtitles") or {}
+    if not isinstance(manual_subtitles, dict):
+        manual_subtitles = {}
+
+    requested = subtitle_lang_available(manual_subtitles, requested_lang)
+    if requested:
+        return {
+            "requested_language": requested_lang,
+            "source_language": requested,
+            "translated": False,
+            "source_kind": "manual",
+        }
+
+    if requested_lang != "ja" or not settings.translation_enabled:
+        raise HTTPException(status_code=422, detail=f"No subtitle found for language: {requested_lang}")
+
+    priorities: list[str] = []
+    video_language = info.get("language")
+    if isinstance(video_language, str) and video_language:
+        priorities.append(video_language)
+    priorities.extend(["en", "ko", "zh-Hans", "zh-Hant", "zh", "zh-CN", "zh-TW"])
+    priorities.extend(configured_translation_source_langs())
+
+    seen: set[str] = set()
+    for lang in priorities:
+        normalized = lang.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        selected = subtitle_lang_available(manual_subtitles, lang)
+        if selected:
+            return {
+                "requested_language": requested_lang,
+                "source_language": selected,
+                "translated": True,
+                "source_kind": "manual",
+            }
+
+    raise HTTPException(status_code=422, detail="No translatable manual subtitle found")
+
+
 def escape_filter_value(value: str) -> str:
     return value.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
 
@@ -631,8 +744,89 @@ async def run_ffmpeg_with_optional_nvenc_fallback(args: list[str]) -> None:
     await run_command(fallback_args)
 
 
-async def download_sources(video_id: str, lang: str, work_dir: Path) -> tuple[Path, Path]:
+def translation_settings() -> TranslationSettings:
+    return TranslationSettings(
+        enabled=settings.translation_enabled,
+        target_window_seconds=settings.local_llm_target_window_seconds,
+        target_max_events=settings.local_llm_target_max_events,
+        context_seconds=settings.local_llm_context_seconds,
+        model_name=settings.local_llm_model,
+        engine=settings.local_llm_engine,
+        fallback_engine=settings.translation_fallback_engine,
+        glossary=settings.translation_glossary,
+        topic=settings.translation_topic,
+        google_project=settings.google_cloud_project,
+    )
+
+
+async def run_translation_worker(payload: dict) -> dict:
+    work_dir = Path(payload["_work_dir"])
+    input_path = work_dir / f"translation-input-{uuid.uuid4().hex}.json"
+    output_path = work_dir / f"translation-output-{uuid.uuid4().hex}.json"
+    clean_payload = {key: value for key, value in payload.items() if key != "_work_dir"}
+    input_path.write_text(json.dumps(clean_payload, ensure_ascii=False), encoding="utf-8")
+
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "app.translation_worker",
+        "--input",
+        str(input_path),
+        "--output",
+        str(output_path),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _stdout, stderr = await asyncio.wait_for(
+            process.communicate(),
+            timeout=settings.local_llm_timeout_seconds,
+        )
+    except asyncio.TimeoutError as error:
+        process.kill()
+        await process.communicate()
+        raise RuntimeError("local llm translation timed out") from error
+
+    if process.returncode != 0:
+        message = stderr.decode("utf-8", errors="replace")
+        raise RuntimeError(message[-1000:] or "local llm translation failed")
+    return json.loads(output_path.read_text(encoding="utf-8"))
+
+
+async def translate_subtitle_if_needed(
+    *,
+    key: str,
+    subtitle: Path,
+    info: dict,
+    selection: dict,
+    work_dir: Path,
+) -> tuple[Path, dict]:
+    if not selection["translated"]:
+        return subtitle, selection
+
+    translated_path = work_dir / f"{subtitle.stem}.ja.translated.srt"
+
+    async def worker(payload: dict) -> dict:
+        payload["_work_dir"] = str(work_dir)
+        return await run_translation_worker(payload)
+
+    result = await translate_srt_with_local_worker(
+        subtitle_path=subtitle,
+        output_path=translated_path,
+        video_title=str(info.get("title") or ""),
+        source_language=selection["source_language"],
+        target_language=selection["requested_language"],
+        settings=translation_settings(),
+        run_worker=worker,
+    )
+    metadata = {**selection, **result.metadata}
+    return result.subtitle_path, metadata
+
+
+async def download_sources(video_id: str, lang: str, work_dir: Path, info: dict) -> tuple[Path, Path, Path, dict]:
     url = f"https://www.youtube.com/watch?v={video_id}"
+    subtitle_selection = select_subtitle_language(info, lang)
+    source_lang = subtitle_selection["source_language"]
     format_selector = (
         f"bv*[height<={settings.max_height}]+ba/"
         f"b[height<={settings.max_height}]/"
@@ -644,9 +838,8 @@ async def download_sources(video_id: str, lang: str, work_dir: Path) -> tuple[Pa
         + [
             "--no-playlist",
             "--write-subs",
-            "--write-auto-subs",
             "--sub-langs",
-            lang,
+            source_lang,
             "--convert-subs",
             "srt",
             "--paths",
@@ -661,7 +854,16 @@ async def download_sources(video_id: str, lang: str, work_dir: Path) -> tuple[Pa
         ],
         cwd=work_dir,
     )
-    return find_downloaded_video(work_dir), find_subtitle(work_dir, lang)
+    video = find_downloaded_video(work_dir)
+    original_subtitle = find_subtitle(work_dir, source_lang)
+    subtitle, subtitle_meta = await translate_subtitle_if_needed(
+        key=cache_key(video_id, lang),
+        subtitle=original_subtitle,
+        info=info,
+        selection=subtitle_selection,
+        work_dir=work_dir,
+    )
+    return video, original_subtitle, subtitle, subtitle_meta
 
 
 async def burn_subtitles(video: Path, subtitle: Path, destination: Path) -> None:
@@ -733,13 +935,26 @@ async def create_mp4(video_id: str, lang: str) -> Path:
         try:
             info = await fetch_video_info(video_id)
             assert_duration_allowed(info)
-            video, subtitle = await download_sources(video_id, lang, work_dir)
+            video, original_subtitle, subtitle, subtitle_meta = await download_sources(video_id, lang, work_dir, info)
             source_dir(key).mkdir(parents=True, exist_ok=True)
             saved_video = source_dir(key) / f"input{video.suffix.lower()}"
-            saved_subtitle = source_dir(key) / f"subtitle.{lang}{subtitle.suffix.lower()}"
+            source_lang = subtitle_meta.get("source_language", lang)
+            saved_original_subtitle = source_dir(key) / f"subtitle.{source_lang}.original{original_subtitle.suffix.lower()}"
+            saved_subtitle = (
+                source_dir(key) / f"subtitle.{lang}.translated{subtitle.suffix.lower()}"
+                if subtitle_meta.get("translated")
+                else source_dir(key) / f"subtitle.{lang}{subtitle.suffix.lower()}"
+            )
             shutil.move(str(video), saved_video)
+            if original_subtitle != subtitle:
+                shutil.move(str(original_subtitle), saved_original_subtitle)
             shutil.move(str(subtitle), saved_subtitle)
-            write_source_meta(key, video_id, lang, info, saved_video, saved_subtitle)
+            if subtitle_meta.get("translated"):
+                translation_meta_path(key).write_text(
+                    json.dumps(subtitle_meta, ensure_ascii=True, indent=2),
+                    encoding="utf-8",
+                )
+            write_source_meta(key, video_id, lang, info, saved_video, saved_subtitle, subtitle_meta)
             await burn_subtitles(saved_video, saved_subtitle, final_output)
             write_meta(key, video_id, lang, info, "mp4")
             return final_output
@@ -765,13 +980,26 @@ async def create_hls_job(video_id: str, lang: str) -> Path:
         try:
             info = await fetch_video_info(video_id)
             assert_duration_allowed(info)
-            video, subtitle = await download_sources(video_id, lang, work_dir)
+            video, original_subtitle, subtitle, subtitle_meta = await download_sources(video_id, lang, work_dir, info)
             source_dir(key).mkdir(parents=True, exist_ok=True)
             saved_video = source_dir(key) / f"input{video.suffix.lower()}"
-            saved_subtitle = source_dir(key) / f"subtitle.{lang}{subtitle.suffix.lower()}"
+            source_lang = subtitle_meta.get("source_language", lang)
+            saved_original_subtitle = source_dir(key) / f"subtitle.{source_lang}.original{original_subtitle.suffix.lower()}"
+            saved_subtitle = (
+                source_dir(key) / f"subtitle.{lang}.translated{subtitle.suffix.lower()}"
+                if subtitle_meta.get("translated")
+                else source_dir(key) / f"subtitle.{lang}{subtitle.suffix.lower()}"
+            )
             shutil.move(str(video), saved_video)
+            if original_subtitle != subtitle:
+                shutil.move(str(original_subtitle), saved_original_subtitle)
             shutil.move(str(subtitle), saved_subtitle)
-            write_source_meta(key, video_id, lang, info, saved_video, saved_subtitle)
+            if subtitle_meta.get("translated"):
+                translation_meta_path(key).write_text(
+                    json.dumps(subtitle_meta, ensure_ascii=True, indent=2),
+                    encoding="utf-8",
+                )
+            write_source_meta(key, video_id, lang, info, saved_video, saved_subtitle, subtitle_meta)
             write_meta(key, video_id, lang, info, "hls")
             await create_hls(saved_video, saved_subtitle, playlist.parent)
             return playlist
@@ -961,6 +1189,8 @@ def job_response_body(job_id: str, job: dict, request: Request) -> dict:
         body["title"] = job["title"]
     if job.get("duration") is not None:
         body["duration"] = job["duration"]
+    if job.get("subtitle") is not None:
+        body["subtitle"] = job["subtitle"]
     if job["status"] in {"queued", "running"}:
         body["job_id"] = job_id
         body["status_url"] = prepare_status_url(request, job_id)
@@ -1031,10 +1261,12 @@ async def run_prepare_job(
         else:
             await get_or_create_mp4(video_id, lang)
         now = int(time.time())
+        subtitle_meta = read_subtitle_meta(cache_id)
         _prepare_jobs[job_id].update(
             {
                 "status": "ready",
                 "url": url,
+                "subtitle": subtitle_meta,
                 "eta_seconds": 0,
                 "estimated_ready_at": now,
                 "completed_at": now,
@@ -1067,12 +1299,14 @@ async def enqueue_prepare_job(
     ready = prepare_ready_path(video_id, lang, mode)
     url = prepared_media_url(request, video_id, lang, mode)
     if ready:
+        cache_id = cache_key(video_id, lang)
         job = {
             "status": "ready",
             "video_id": video_id,
             "lang": lang,
             "mode": mode,
             "url": url,
+            "subtitle": read_subtitle_meta(cache_id),
             "requesters": [],
         }
         add_job_requester(job, discord_user_id)
