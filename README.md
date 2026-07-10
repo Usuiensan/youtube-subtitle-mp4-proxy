@@ -149,6 +149,8 @@ bot はスラッシュコマンド `/prepare` を提供します。
 
 大量一括準備では `PREPARE_JOB_CONCURRENCY` で同時に実行する準備ジョブ数を制限します。既定は `3` です。各ジョブは一時的な `429` / `5xx` / `502` / `504` / タイムアウト系の失敗を `PREPARE_JOB_MAX_ATTEMPTS` 回まで再試行し、待ち時間は `PREPARE_JOB_RETRY_BASE_SECONDS` から指数バックオフします。さらに、YouTube 取得に使う yt-dlp は `YTDLP_CONCURRENCY=1`、`YTDLP_MIN_INTERVAL_SECONDS=8` を既定にして、メタデータ取得・動画DL・字幕DLの開始頻度を制限します。チャンネル全件などで失敗が多い場合は、まず `PREPARE_JOB_CONCURRENCY=1` または `2`、`YTDLP_MIN_INTERVAL_SECONDS=10` 以上に下げ、cookies と yt-dlp の更新状況を確認してください。一括完了通知と `/prepare/batches/:batchId` には代表的な失敗理由が最大5件含まれます。
 
+Discord bot の完了待ちは単体ジョブでは `DISCORD_PREPARE_POLL_TIMEOUT_SECONDS`、一括ジョブでは `DISCORD_PREPARE_BATCH_POLL_TIMEOUT_SECONDS` を使います。既定では一括ジョブを24時間まで追跡し、サーバー側の `estimated_ready_at` が後ろへ伸びた場合は `DISCORD_PREPARE_POLL_TIMEOUT_GRACE_SECONDS` 分の余裕を足して待機期限も延長します。タイムアウトしても準備ジョブ自体はサーバー側で継続している可能性があります。`/prepare/batches/:batchId` は認証付きAPIなので、Discord上のリンクとして直接開く用途には使いません。
+
 字幕スタイルやエンコード設定だけを変えて焼き込み直したい場合は、Discord の `/reburn` を使います。入力形式は `/prepare` と同じで、既存の `source/` 配下にある動画・元字幕・翻訳済み字幕を再利用し、YouTubeからの再ダウンロードやLLM/Google再翻訳を行わずにMP4/HLS出力だけを作り直します。
 再利用可能な準備済み動画をまとめて作り直す場合は `/reburn-all` を使います。`lang:all` で全言語、`lang:ja` などで対象言語を絞れます。対象はSSD/HDDに残っていて、かつ `source/` 配下の動画・字幕が残っているものです。
 

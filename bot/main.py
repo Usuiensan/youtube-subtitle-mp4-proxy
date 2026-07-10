@@ -80,6 +80,8 @@ class Settings:
     ).rstrip("/")
     poll_seconds = int(os.getenv("DISCORD_PREPARE_POLL_SECONDS", "10"))
     poll_timeout_seconds = int(os.getenv("DISCORD_PREPARE_POLL_TIMEOUT_SECONDS", "7200"))
+    batch_poll_timeout_seconds = int(os.getenv("DISCORD_PREPARE_BATCH_POLL_TIMEOUT_SECONDS", "86400"))
+    poll_timeout_grace_seconds = int(os.getenv("DISCORD_PREPARE_POLL_TIMEOUT_GRACE_SECONDS", "3600"))
     prepare_batch_max_items = int(os.getenv("DISCORD_PREPARE_BATCH_MAX_ITEMS", "5000"))
     translation_source_langs = os.getenv("TRANSLATION_SOURCE_LANGS", "en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW")
     webui_temp_key_secret = os.getenv("WEBUI_TEMP_KEY_SECRET", os.getenv("DISCORD_PREPARE_TOKEN", ""))
@@ -792,7 +794,12 @@ async def notify_when_done(
     interaction: discord.Interaction,
     status_url: str,
 ) -> None:
-    deadline = time.monotonic() + settings.poll_timeout_seconds
+    timeout_seconds = (
+        settings.batch_poll_timeout_seconds
+        if "/prepare/batches/" in status_url
+        else settings.poll_timeout_seconds
+    )
+    deadline = time.monotonic() + timeout_seconds
     latest: dict[str, Any] | None = None
 
     async def send_notification(content: str, *, public: bool) -> None:
@@ -839,6 +846,14 @@ async def notify_when_done(
             latest = await fetch_job(status_url)
         except Exception:
             continue
+        estimated_ready_at = latest.get("estimated_ready_at")
+        if isinstance(estimated_ready_at, (int, float)) and estimated_ready_at > time.time():
+            eta_deadline = (
+                time.monotonic()
+                + max(0, float(estimated_ready_at) - time.time())
+                + settings.poll_timeout_grace_seconds
+            )
+            deadline = max(deadline, eta_deadline)
         if latest.get("status") in {"ready", "failed"}:
             notification = latest.get("notification") or {}
             if isinstance(latest.get("counts"), dict):
@@ -868,7 +883,7 @@ async def notify_when_done(
                     pass
 
     await send_notification(
-        f"<@{interaction.user.id}> 準備ジョブの確認がタイムアウトしました。status_url={status_url}",
+        f"<@{interaction.user.id}> 準備ジョブの確認がタイムアウトしました。ジョブ自体はサーバー側で継続している可能性があります。Web UIのMonitorまたは準備済み一覧で確認してください。",
         public=False,
     )
 
