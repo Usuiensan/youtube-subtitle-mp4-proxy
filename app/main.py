@@ -43,6 +43,12 @@ from app.nllb_provider import (
     TranslationError as NllbTranslationError,
     translate_texts_async,
 )
+from app.opus_mt_provider import (
+    OpusMtConfig,
+    OpusMtTranslationProvider,
+    TranslationError as OpusTranslationError,
+    translate_texts_async as translate_opus_texts_async,
+)
 
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -112,6 +118,7 @@ class Settings:
     local_llm_profile_models = {
         "local_llm": os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M"),
         "gemini_2_5_flash": os.getenv("LOCAL_LLM_MODEL_GEMINI_2_5_FLASH", "gemini-2.5-flash"),
+        "opus_mt_en_jap": os.getenv("LOCAL_LLM_MODEL_OPUS_MT_EN_JAP", "Helsinki-NLP/opus-mt-en-jap"),
         "qwen3_1_7b": os.getenv("LOCAL_LLM_MODEL_QWEN3_1_7B", "qwen3:1.7b"),
         "gemma3_1b": os.getenv("LOCAL_LLM_MODEL_GEMMA3_1B", "gemma3:1b"),
         "gemma3_4b": os.getenv("LOCAL_LLM_MODEL_GEMMA3_4B", "gemma3:4b"),
@@ -123,6 +130,7 @@ class Settings:
     local_llm_profile_labels = {
         "local_llm": os.getenv("LOCAL_LLM_LABEL", "Default LLM"),
         "gemini_2_5_flash": "Gemini Flash",
+        "opus_mt_en_jap": "Opus MT en->ja",
         "qwen3_1_7b": "Qwen 3 1.7B",
         "gemma3_1b": "Gemma 3 1B",
         "gemma3_4b": "Gemma 3 4B",
@@ -152,6 +160,13 @@ class Settings:
     nllb_max_new_tokens = int(os.getenv("NLLB_MAX_NEW_TOKENS", "128"))
     nllb_num_beams = int(os.getenv("NLLB_NUM_BEAMS", "1"))
     nllb_keep_loaded = os.getenv("NLLB_KEEP_LOADED", "1") != "0"
+    opus_mt_model = os.getenv("OPUS_MT_MODEL", "Helsinki-NLP/opus-mt-en-jap")
+    opus_mt_device = os.getenv("OPUS_MT_DEVICE", "auto")
+    opus_mt_batch_size = int(os.getenv("OPUS_MT_BATCH_SIZE", "16"))
+    opus_mt_max_input_tokens = int(os.getenv("OPUS_MT_MAX_INPUT_TOKENS", "512"))
+    opus_mt_max_new_tokens = int(os.getenv("OPUS_MT_MAX_NEW_TOKENS", "128"))
+    opus_mt_num_beams = int(os.getenv("OPUS_MT_NUM_BEAMS", "1"))
+    opus_mt_keep_loaded = os.getenv("OPUS_MT_KEEP_LOADED", "1") != "0"
     translation_failure_dir = Path(
         os.getenv("TRANSLATION_FAILURE_DIR", str(cache_hot_dir / ".translation-attempts"))
     )
@@ -167,6 +182,8 @@ _last_cpu_times: tuple[int, int] | None = None
 _metrics_task: asyncio.Task | None = None
 _nllb_lock = asyncio.Lock()
 _nllb_provider: NllbTranslationProvider | None = None
+_opus_mt_lock = asyncio.Lock()
+_opus_mt_provider: OpusMtTranslationProvider | None = None
 
 
 class MetricsManager:
@@ -1332,6 +1349,8 @@ def normalize_translation_engine(value: str | None) -> str:
         return "google_cloud"
     if engine in {"nllb", "nllb200_distilled_600m"}:
         return "nllb"
+    if engine in {"opus", "opus_mt", "opus_mt_en_jap", "helsinki_nlp_opus_mt_en_jap"}:
+        return "opus_mt_en_jap"
     if engine in settings.local_llm_profile_models:
         return engine
     raise HTTPException(status_code=400, detail="translationEngine must be a known translation profile")
@@ -1373,6 +1392,8 @@ def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
     normalized = normalize_translation_engine(profile_id)
     if normalized == "nllb":
         model_name = settings.nllb_model
+    elif normalized == "opus_mt_en_jap":
+        model_name = settings.opus_mt_model
     else:
         model_name = settings.local_llm_profile_models.get(normalized, settings.local_llm_model)
     provider_name = "gemini_api" if normalized == "gemini_2_5_flash" else settings.local_llm_engine
@@ -1413,6 +1434,27 @@ async def get_nllb_provider() -> NllbTranslationProvider:
             if _nllb_provider is None:
                 _nllb_provider = await asyncio.to_thread(NllbTranslationProvider.load, nllb_translation_config())
     return _nllb_provider
+
+
+def opus_mt_translation_config() -> OpusMtConfig:
+    return OpusMtConfig(
+        model_name=settings.opus_mt_model,
+        device=settings.opus_mt_device,
+        batch_size=max(1, settings.opus_mt_batch_size),
+        max_input_tokens=settings.opus_mt_max_input_tokens,
+        max_new_tokens=settings.opus_mt_max_new_tokens,
+        num_beams=max(1, settings.opus_mt_num_beams),
+        keep_loaded=settings.opus_mt_keep_loaded,
+    )
+
+
+async def get_opus_mt_provider() -> OpusMtTranslationProvider:
+    global _opus_mt_provider
+    if _opus_mt_provider is None:
+        async with _opus_mt_lock:
+            if _opus_mt_provider is None:
+                _opus_mt_provider = await asyncio.to_thread(OpusMtTranslationProvider.load, opus_mt_translation_config())
+    return _opus_mt_provider
 
 
 def manual_subtitle_candidates(info: dict, requested_lang: str) -> list[dict]:
@@ -1790,6 +1832,8 @@ def subtitle_translation_service_label(subtitle_meta: dict) -> str:
         return "[translation] Google Cloud"
     if engine == "nllb":
         return f"[translation] NLLB-200 distilled 600M ({settings.nllb_model})"
+    if engine == "opus_mt_en_jap":
+        return f"[translation] Opus MT en->ja ({settings.opus_mt_model})"
     if model:
         label = settings.local_llm_profile_labels.get(engine) or settings.local_llm_profile_labels.get(requested) or "LLM"
         return f"[translation] {label} {model}"
@@ -2291,6 +2335,78 @@ async def translate_subtitle_if_needed(
         }
         if not settings.nllb_keep_loaded:
             NllbTranslationProvider.unload()
+        return translated_path, metadata
+
+    if requested_engine == "opus_mt_en_jap":
+        provider = await get_opus_mt_provider()
+        subtitles = load_srt(subtitle)
+        total_items = len(subtitles)
+        if job_id:
+            update_job_progress(
+                job_id,
+                "translate",
+                0.0,
+                details=f"Opus MT 翻訳中... 0/{total_items} 字幕",
+            )
+        if total_items == 0:
+            save_srt(translated_path, [])
+            metadata = {
+                **selection,
+                "translation_engine": "opus_mt_en_jap",
+                "translation_model": settings.opus_mt_model,
+                "translation_fallback_used": False,
+                "translation_created_at": int(time.time()),
+            }
+            return translated_path, metadata
+
+        translated_subtitles: list[srt.Subtitle] = []
+        batch_size = max(1, provider.config.batch_size)
+        start_t = time.time()
+        async with _opus_mt_lock:
+            for start in range(0, total_items, batch_size):
+                chunk = subtitles[start : start + batch_size]
+                translated_texts = await translate_opus_texts_async(
+                    provider,
+                    [item.content for item in chunk],
+                    selection["source_language"],
+                    selection["requested_language"],
+                )
+                for item, translated_text in zip(chunk, translated_texts):
+                    translated_subtitles.append(
+                        srt.Subtitle(
+                            index=item.index,
+                            start=item.start,
+                            end=item.end,
+                            content=translated_text,
+                            proprietary=item.proprietary,
+                        )
+                    )
+                if job_id:
+                    completed_items = len(translated_subtitles)
+                    elapsed = time.time() - start_t
+                    remaining = None
+                    if completed_items > 0:
+                        avg = elapsed / completed_items
+                        remaining = int(max(0, avg * (total_items - completed_items)))
+                    update_job_progress(
+                        job_id,
+                        "translate",
+                        completed_items / total_items * 100.0,
+                        eta_seconds=remaining,
+                        details=f"Opus MT 翻訳中... {completed_items}/{total_items} 字幕",
+                    )
+
+        save_srt(translated_path, translated_subtitles)
+        metrics_manager.record_translate(total_items, time.time() - start_t)
+        metadata = {
+            **selection,
+            "translation_engine": "opus_mt_en_jap",
+            "translation_model": settings.opus_mt_model,
+            "translation_fallback_used": False,
+            "translation_created_at": int(time.time()),
+        }
+        if not settings.opus_mt_keep_loaded:
+            OpusMtTranslationProvider.unload()
         return translated_path, metadata
 
     async def worker(payload: dict) -> dict:

@@ -196,6 +196,7 @@ export LOCAL_LLM_ENGINE=openai_compatible
 export LOCAL_LLM_ENDPOINT=http://127.0.0.1:11434/v1/chat/completions
 export LOCAL_LLM_MODEL=qwen2.5:3b-instruct-q4_K_M
 export LOCAL_LLM_MODEL_GEMINI_2_5_FLASH=gemini-2.5-flash
+export LOCAL_LLM_MODEL_OPUS_MT_EN_JAP=Helsinki-NLP/opus-mt-en-jap
 export LOCAL_LLM_MODEL_QWEN3_1_7B=qwen3:1.7b
 export LOCAL_LLM_MODEL_GEMMA3_1B=gemma3:1b
 export LOCAL_LLM_MODEL_GEMMA3_4B=gemma3:4b
@@ -206,6 +207,13 @@ export GEMINI_BILLING_MODE=free_tier
 export GEMINI_FLASH_INPUT_PRICE_PER_MILLION=0.30
 export GEMINI_FLASH_OUTPUT_PRICE_PER_MILLION=2.50
 export USD_TO_JPY_RATE=160.0
+export OPUS_MT_MODEL=Helsinki-NLP/opus-mt-en-jap
+export OPUS_MT_DEVICE=auto
+export OPUS_MT_BATCH_SIZE=16
+export OPUS_MT_MAX_INPUT_TOKENS=512
+export OPUS_MT_MAX_NEW_TOKENS=128
+export OPUS_MT_NUM_BEAMS=1
+export OPUS_MT_KEEP_LOADED=1
 export LOCAL_LLM_TIMEOUT_SECONDS=300
 export LOCAL_LLM_TARGET_WINDOW_SECONDS=120
 export LOCAL_LLM_TARGET_MAX_EVENTS=10
@@ -221,9 +229,11 @@ export GOOGLE_CLOUD_PROJECT=your-google-cloud-project-id
 
 翻訳済み字幕は `source/subtitle.ja.translated.srt`、元字幕は `source/subtitle.SOURCE.original.srt`、翻訳メタデータは `source/translation.json` に保存します。翻訳設定とモデル名はキャッシュキーへ含まれるため、モデルやwindow設定を変えた場合に古いMP4を誤再利用しません。
 
-翻訳プロファイルはURLの `translationEngine` 部分でも指定できます。例: `/youtube/RSTNhvDGbYI/ja/en-US/gemini_2_5_flash`、`/youtube/RSTNhvDGbYI/ja/en-US/qwen3_1_7b`、`/youtube/RSTNhvDGbYI/ja/en-US/gemma3_4b`。Web UI の「字幕比較」タブでは複数プロファイルを準備し、動画を一時停止またはシークしながら同じ時刻の字幕テキストを横並びで比較できます。
+翻訳プロファイルはURLの `translationEngine` 部分でも指定できます。例: `/youtube/RSTNhvDGbYI/ja/en-US/gemini_2_5_flash`、`/youtube/RSTNhvDGbYI/ja/en-US/opus_mt_en_jap`、`/youtube/RSTNhvDGbYI/ja/en-US/qwen3_1_7b`、`/youtube/RSTNhvDGbYI/ja/en-US/gemma3_4b`。Web UI の「字幕比較」タブでは複数プロファイルを準備し、動画を一時停止またはシークしながら同じ時刻の字幕テキストを横並びで比較できます。
 
 Gemini Flash を使う場合は `LOCAL_LLM_MODEL_GEMINI_2_5_FLASH=gemini-2.5-flash` と `GEMINI_API_KEY` を設定し、翻訳エンジンで `gemini_2_5_flash` を選びます。Discord の完了報告には、Gemini Flash の翻訳文字数、入力トークン、出力トークン、無料枠超過時の概算料金を表示します。`GEMINI_BILLING_MODE=free_tier` の間は `API料金: ¥0` / `課金区分: Gemini API Free Tier` として扱い、超過時の概算は `GEMINI_FLASH_INPUT_PRICE_PER_MILLION`、`GEMINI_FLASH_OUTPUT_PRICE_PER_MILLION`、`USD_TO_JPY_RATE` から計算します。
+
+`Helsinki-NLP/opus-mt-en-jap` を使う場合は `OPUS_MT_MODEL=Helsinki-NLP/opus-mt-en-jap` を設定し、翻訳エンジンで `opus_mt_en_jap` を選びます。これは英語から日本語への専用モデルなので、`source_language` は `en` 系、`target_language` は `ja` 系である必要があります。CUDA が使えるなら GPU、そうでなければ CPU で動きます。NLLB と同様に batch 単位で推論し、OOM 時は半分ずつ再試行します。
 
 ### NLLB-200 distilled 600M
 

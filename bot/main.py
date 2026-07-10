@@ -452,6 +452,8 @@ def subtitle_status_text(meta: Any) -> str:
             engine_text = "Google翻訳フォールバック"
         elif engine == "nllb":
             engine_text = f"NLLB-200 distilled 600M{f' ({model})' if model else ''}"
+        elif engine == "opus_mt_en_jap":
+            engine_text = f"Opus MT en->ja{f' ({model})' if model else ''}"
         elif engine == "gemini_2_5_flash":
             engine_text = "Gemini Flash"
         elif model:
@@ -558,6 +560,7 @@ class SubtitleChoiceView(discord.ui.View):
         if not engine_options:
             engine_options = [
                 discord.SelectOption(label="Gemini Flash", value="gemini_2_5_flash", default=True),
+                discord.SelectOption(label="Opus MT en->ja", value="opus_mt_en_jap"),
                 discord.SelectOption(label="Qwen 3 1.7B", value="qwen3_1_7b"),
                 discord.SelectOption(label="Gemma 3 1B", value="gemma3_1b"),
                 discord.SelectOption(label="Gemma 3 4B", value="gemma3_4b"),
