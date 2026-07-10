@@ -93,9 +93,12 @@ class Settings:
     local_llm_engine = os.getenv("LOCAL_LLM_ENGINE", "openai_compatible")
     local_llm_model = os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M")
     local_llm_timeout_seconds = int(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "300"))
-    local_llm_target_window_seconds = int(os.getenv("LOCAL_LLM_TARGET_WINDOW_SECONDS", "60"))
-    local_llm_target_max_events = int(os.getenv("LOCAL_LLM_TARGET_MAX_EVENTS", "25"))
-    local_llm_context_seconds = int(os.getenv("LOCAL_LLM_CONTEXT_SECONDS", "60"))
+    local_llm_target_window_seconds = int(os.getenv("LOCAL_LLM_TARGET_WINDOW_SECONDS", "120"))
+    local_llm_target_max_events = int(os.getenv("LOCAL_LLM_TARGET_MAX_EVENTS", "10"))
+    local_llm_context_before_seconds = int(os.getenv("LOCAL_LLM_CONTEXT_BEFORE_SECONDS", os.getenv("LOCAL_LLM_CONTEXT_SECONDS", "120")))
+    local_llm_context_before_max_events = int(os.getenv("LOCAL_LLM_CONTEXT_BEFORE_MAX_EVENTS", "25"))
+    local_llm_context_after_seconds = int(os.getenv("LOCAL_LLM_CONTEXT_AFTER_SECONDS", os.getenv("LOCAL_LLM_CONTEXT_SECONDS", "120")))
+    local_llm_context_after_max_events = int(os.getenv("LOCAL_LLM_CONTEXT_AFTER_MAX_EVENTS", "25"))
     translation_fallback_engine = os.getenv("TRANSLATION_FALLBACK_ENGINE", "google_cloud")
     translation_topic = os.getenv("TRANSLATION_TOPIC", "")
     translation_glossary = os.getenv("TRANSLATION_GLOSSARY", "")
@@ -143,7 +146,10 @@ def translation_profile_id() -> str:
             "model": settings.local_llm_model,
             "window_seconds": settings.local_llm_target_window_seconds,
             "max_events": settings.local_llm_target_max_events,
-            "context_seconds": settings.local_llm_context_seconds,
+            "context_before_seconds": settings.local_llm_context_before_seconds,
+            "context_before_max_events": settings.local_llm_context_before_max_events,
+            "context_after_seconds": settings.local_llm_context_after_seconds,
+            "context_after_max_events": settings.local_llm_context_after_max_events,
         },
         sort_keys=True,
     )
@@ -749,7 +755,10 @@ def translation_settings() -> TranslationSettings:
         enabled=settings.translation_enabled,
         target_window_seconds=settings.local_llm_target_window_seconds,
         target_max_events=settings.local_llm_target_max_events,
-        context_seconds=settings.local_llm_context_seconds,
+        context_before_seconds=settings.local_llm_context_before_seconds,
+        context_before_max_events=settings.local_llm_context_before_max_events,
+        context_after_seconds=settings.local_llm_context_after_seconds,
+        context_after_max_events=settings.local_llm_context_after_max_events,
         model_name=settings.local_llm_model,
         engine=settings.local_llm_engine,
         fallback_engine=settings.translation_fallback_engine,

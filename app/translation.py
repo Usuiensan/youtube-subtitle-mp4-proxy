@@ -18,7 +18,10 @@ class TranslationSettings:
     enabled: bool
     target_window_seconds: int
     target_max_events: int
-    context_seconds: int
+    context_before_seconds: int
+    context_before_max_events: int
+    context_after_seconds: int
+    context_after_max_events: int
     model_name: str
     engine: str
     fallback_engine: str
@@ -83,31 +86,45 @@ def window_subtitles(
 def context_for_window(
     all_subtitles: list[srt.Subtitle],
     target: list[srt.Subtitle],
-    context_seconds: int,
+    context_before_seconds: int,
+    context_before_max_events: int,
+    context_after_seconds: int,
+    context_after_max_events: int,
     previous_japanese: list[srt.Subtitle],
 ) -> dict[str, list[dict[str, Any]]]:
     target_start = target[0].start
     target_end = target[-1].end
-    before_start = target_start - timedelta(seconds=context_seconds)
-    after_end = target_end + timedelta(seconds=context_seconds)
-    previous_start = target_start - timedelta(seconds=context_seconds)
+    before_start = target_start - timedelta(seconds=context_before_seconds)
+    after_end = target_end + timedelta(seconds=context_after_seconds)
+    previous_start = target_start - timedelta(seconds=context_before_seconds)
+
+    # Get context before (sorted by start time, latest first, then limited, then sorted chronologically)
+    before_events = [
+        sub for sub in all_subtitles
+        if before_start <= sub.start < target_start
+    ]
+    before_events = sorted(before_events, key=lambda s: s.start, reverse=True)[:context_before_max_events]
+    before_events = sorted(before_events, key=lambda s: s.start)
+
+    # Get context after (sorted by start time, earliest first, then limited)
+    after_events = [
+        sub for sub in all_subtitles
+        if target_end < sub.start <= after_end
+    ]
+    after_events = sorted(after_events, key=lambda s: s.start)[:context_after_max_events]
+
+    # Get previous japanese (sorted by start time, latest first, then limited, then sorted chronologically)
+    prev_ja_events = [
+        sub for sub in previous_japanese
+        if previous_start <= sub.start < target_start
+    ]
+    prev_ja_events = sorted(prev_ja_events, key=lambda s: s.start, reverse=True)[:context_before_max_events]
+    prev_ja_events = sorted(prev_ja_events, key=lambda s: s.start)
 
     return {
-        "context_before": [
-            event_to_json(sub)
-            for sub in all_subtitles
-            if before_start <= sub.start < target_start
-        ],
-        "context_after": [
-            event_to_json(sub)
-            for sub in all_subtitles
-            if target_end < sub.start <= after_end
-        ],
-        "previous_japanese": [
-            event_to_json(sub)
-            for sub in previous_japanese
-            if previous_start <= sub.start < target_start
-        ],
+        "context_before": [event_to_json(sub) for sub in before_events],
+        "context_after": [event_to_json(sub) for sub in after_events],
+        "previous_japanese": [event_to_json(sub) for sub in prev_ja_events],
     }
 
 
@@ -134,7 +151,10 @@ def build_worker_payload(
     context = context_for_window(
         all_subtitles,
         target,
-        settings.context_seconds,
+        settings.context_before_seconds,
+        settings.context_before_max_events,
+        settings.context_after_seconds,
+        settings.context_after_max_events,
         previous_japanese,
     )
     return {
