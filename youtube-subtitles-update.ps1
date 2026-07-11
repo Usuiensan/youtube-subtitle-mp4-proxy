@@ -31,31 +31,44 @@ $OllamaScript = Join-Path $PSScriptRoot "start-ollama.ps1"
 
 # Write-Host "Ollama start process launched."
 
-# API 起動確認
-$OllamaReady = $false
-
-for ($i = 1; $i -le 3; $i++) {
-    Start-Sleep -Seconds 1
+function Test-ServiceHealth {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [Parameter(Mandatory = $true)]
+        [string]$Uri,
+        [int]$TimeoutSec = 2
+    )
 
     try {
-        $null = Invoke-RestMethod `
-            -Uri "http://127.0.0.1:11434/api/version" `
-            -TimeoutSec 2
-
-        $OllamaReady = $true
-        break
+        $null = Invoke-RestMethod -Uri $Uri -TimeoutSec $TimeoutSec
+        Write-Host "$Name: OK"
+        return $true
     }
     catch {
-        Write-Host "Waiting for Ollama... ($i/15)"
-        break
+        Write-Warning "$Name: unavailable ($Uri) - $($_.Exception.Message)"
+        return $false
     }
 }
 
-if ($OllamaReady) {
-    Write-Host "Ollama API is ready."
+# API 起動確認
+$healthResults = @(
+    [pscustomobject]@{ Name = "Ollama API"; Uri = "http://127.0.0.1:11434/api/version" },
+    [pscustomobject]@{ Name = "Ollama Models"; Uri = "http://127.0.0.1:11434/api/tags" }
+)
+
+$healthyCount = 0
+foreach ($health in $healthResults) {
+    if (Test-ServiceHealth -Name $health.Name -Uri $health.Uri) {
+        $healthyCount++
+    }
+}
+
+if ($healthyCount -eq 0) {
+    Write-Warning "Ollama related health checks failed, but update will continue."
 }
 else {
-    Write-Warning "Ollama process was launched, but the API did not become ready within 15 seconds."
+    Write-Host "Ollama related health checks: $healthyCount/$($healthResults.Count) OK"
 }
 
 Write-Host ""
