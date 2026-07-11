@@ -4205,6 +4205,7 @@ def prepare_ready_path(
     mode: str,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
+    subtitle_font_size: int | None = None,
 ) -> Path | None:
     key = cache_key(video_id, lang, subtitle_source_lang, translation_engine, subtitle_font_size)
     if mode == "hls":
