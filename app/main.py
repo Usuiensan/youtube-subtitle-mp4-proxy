@@ -7661,18 +7661,25 @@ async def prepare_youtube_subtitles(
                 "prepared": True,
             }
         )
-    info = await fetch_video_info(video_id)
-    assert_duration_allowed(info)
-    body = subtitle_choice_body(info, lang)
-    if body.get("requires_choice"):
-        llm_available, llm_error, available_models = await remote_llm_status()
-        body = restrict_translation_engines(
-            body,
-            llm_available=llm_available,
-            llm_error=llm_error,
-            available_models=available_models,
-        )
-    return JSONResponse(body)
+    try:
+        info = await fetch_video_info(video_id)
+        assert_duration_allowed(info)
+        body = subtitle_choice_body(info, lang)
+        if body.get("requires_choice"):
+            llm_available, llm_error, available_models = await remote_llm_status()
+            body = restrict_translation_engines(
+                body,
+                llm_available=llm_available,
+                llm_error=llm_error,
+                available_models=available_models,
+            )
+        return JSONResponse(body)
+    except HTTPException:
+        raise
+    except CommandError as error:
+        raise HTTPException(status_code=502, detail=error.stderr[-1000:] or str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=str(error) or "Failed to fetch subtitle candidates") from error
 
 
 @app.get("/prepare/youtube/{video_id}/{lang}/{source_lang}/{translation_engine}/subtitle-events")
