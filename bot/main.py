@@ -183288,7 +183288,7 @@ async def handle_prepare_request(
 
 
 
-    await interaction.response.defer(thinking=True, ephemeral=False)
+    await interaction.response.send_message("準備リクエストを受け付けました。処理を開始します...", ephemeral=False)
 
 
 
