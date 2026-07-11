@@ -59135,6 +59135,7 @@ async def prepare_video(
 
 
     archive_immediately: bool = False,
+
     _forced_scope: str | None = None,
 
 
@@ -177157,76 +177158,6 @@ def default_source_language(candidates: list[dict[str, Any]]) -> str | None:
 
 
 
-
-
-class PrepareScopeChoiceView(discord.ui.View):
-    def __init__(
-        self,
-        *,
-        requester_id: int,
-        source: str,
-        lang: str,
-        mode: app_commands.Choice[str] | None,
-        max_items: int | None,
-        archive_immediately: bool,
-    ) -> None:
-        super().__init__(timeout=300)
-        self.requester_id = requester_id
-        self.source = source
-        self.lang = lang
-        self.mode = mode
-        self.max_items = max_items
-        self.archive_immediately = archive_immediately
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.requester_id:
-            await interaction.response.send_message("この選択は実行者のみ操作できます。", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="再生リストとして全部処理", style=discord.ButtonStyle.primary)
-    async def playlist_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await prepare_command(
-            interaction,
-            self.source,
-            self.lang,
-            self.mode,
-            self.max_items,
-            self.archive_immediately,
-            _forced_scope="playlist",
-        )
-
-    @discord.ui.button(label="動画1件だけ処理", style=discord.ButtonStyle.secondary)
-    async def single_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await prepare_command(
-            interaction,
-            self.source,
-            self.lang,
-            self.mode,
-            self.max_items,
-            self.archive_immediately,
-            _forced_scope="single",
-        )
-
-
-def is_ambiguous_prepare_input(value: str) -> bool:
-    value = value.strip()
-    if not value or looks_like_manual_video_list(value):
-        return False
-    try:
-        extract_video_id(value)
-        has_video = True
-    except ValueError:
-        has_video = False
-    has_playlist = looks_like_playlist_or_channel(value)
-    if not value.startswith(("http://", "https://")) and ("." in value or "/" in value):
-        parsed = urllib.parse.urlparse("https://" + value)
-    else:
-        parsed = urllib.parse.urlparse(value)
-    query = urllib.parse.parse_qs(parsed.query)
-    if query.get("list") and has_video:
-        has_playlist = True
-    return has_video and has_playlist
 
 
 class SubtitleChoiceView(discord.ui.View):
@@ -328249,6 +328180,8 @@ async def prepare_command(
 
 
 
+
+
 ) -> None:
 
 
@@ -330042,277 +329975,6 @@ async def prepare_command(
 
 
     selected_mode = mode.value if mode else "mp4"
-    if _forced_scope == "single":
-        url = extract_video_id(url)
-    elif _forced_scope is None and is_ambiguous_prepare_input(url):
-        view = PrepareScopeChoiceView(
-            requester_id=interaction.user.id,
-            source=url,
-            lang=lang,
-            mode=mode,
-            max_items=max_items,
-            archive_immediately=archive_immediately,
-        )
-        await interaction.followup.send(
-            "入力が動画URLと再生リスト/チャンネルURLの両方に見えます。処理方法を選んでください。",
-            view=view,
-            ephemeral=False,
-        )
-        return
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     selected_max_items = max_items if max_items is not None else settings.prepare_batch_max_items
 
@@ -396875,65 +396537,45 @@ async def clear_command(
 
 
 @client.tree.command(name="clear-all", description="すべての動画の再エンコード出力だけを削除します。翻訳済み字幕は保持します")
-
-async def clear_all_command(
-
-    interaction: discord.Interaction,
-
-) -> None:
-
-    await interaction.response.defer(thinking=True)
-
-
+async def clear_all_command(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(thinking=True, ephemeral=True)
 
     if not settings.discord_prepare_token:
-
-        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。")
-
+        await interaction.edit_original_response(content="DISCORD_PREPARE_TOKEN が設定されていません。")
         return
-
-
 
     channel = interaction.channel
-
     if channel is None and interaction.channel_id is not None:
-
         try:
-
             fetched = await interaction.client.fetch_channel(interaction.channel_id)
-
             if isinstance(fetched, discord.abc.Messageable):
-
                 channel = fetched
-
-        except Exception:
-
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
             channel = None
 
-    await delete_bot_messages_in_channel(channel if isinstance(channel, discord.abc.Messageable) else None, interaction.client.user.id if interaction.client.user else None)
-
-
-
     try:
-
         _status, body = await clear_all_videos()
-
     except PrepareApiError as error:
-
-        await interaction.followup.send(f"初期化APIエラー ({error.status_code}): {error.detail}")
-
+        await interaction.edit_original_response(content=f"初期化APIエラー ({error.status_code}): {error.detail}")
         return
 
+    message = str(body.get("message", "すべての動画を初期化しました。"))
 
+    try:
+        await delete_bot_messages_in_channel(
+            channel if isinstance(channel, discord.abc.Messageable) else None,
+            interaction.client.user.id if interaction.client.user else None,
+        )
+    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+        pass
 
-    await interaction.followup.send(
-
-        body.get("message", "すべての動画を初期化しました。"),
-
-    )
-
-
-
+    try:
+        await interaction.edit_original_response(content=message)
+    except discord.NotFound:
+        if isinstance(channel, discord.abc.Messageable):
+            await channel.send(message)
+        else:
+            await interaction.followup.send(message, ephemeral=True)
 
 
 @client.tree.command(name="archive-all", description="SSD上の準備済み動画をすべてHDDアーカイブへ退避します")
