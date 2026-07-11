@@ -16,7 +16,7 @@ def test_extract_video_id_accepts_common_formats() -> None:
 def test_playlist_and_ambiguous_detection() -> None:
     assert looks_like_playlist_or_channel("https://www.youtube.com/playlist?list=PL123")
     assert looks_like_playlist_or_channel("@GoogleDevelopers")
+    assert looks_like_playlist_or_channel("https://www.youtube.com/@GoogleDevelopers")
     assert is_manual_video_list("dQw4w9WgXcQ eY52Zsg-KVI")
     assert is_ambiguous_prepare_input("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL123")
     assert not is_ambiguous_prepare_input("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
-
