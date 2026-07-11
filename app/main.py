@@ -3111,10 +3111,25 @@ def cached_subtitle_path(key: str) -> Path | None:
     return None
 
 
-def subtitle_events_for_key(key: str) -> list[dict]:
-    subtitle_path = cached_subtitle_path(key)
-    if not subtitle_path:
-        raise HTTPException(status_code=404, detail="Subtitle is not prepared")
+def cached_original_subtitle_path(key: str) -> Path | None:
+    source_meta = get_cached_video_info(key)
+    if not source_meta:
+        return None
+    subtitle_meta = source_meta.get("subtitle_meta") or {}
+    source_lang = subtitle_meta.get("source_language")
+    if not isinstance(source_lang, str) or not source_lang:
+        return None
+    for base_dir in (entry_dir(key), archive_entry_dir(key)):
+        if not base_dir or not base_dir.exists():
+            continue
+        candidates = sorted((base_dir / "source").glob(f"subtitle.{source_lang}.original.*"))
+        for subtitle_path in candidates:
+            if subtitle_path.exists() and subtitle_path.stat().st_size > 0:
+                return subtitle_path
+    return None
+
+
+def subtitle_events_from_path(subtitle_path: Path) -> list[dict]:
     events = []
     for item in load_srt(subtitle_path):
         events.append(
@@ -3126,6 +3141,32 @@ def subtitle_events_for_key(key: str) -> list[dict]:
             }
         )
     return events
+
+
+def subtitle_events_for_key(key: str) -> list[dict]:
+    subtitle_path = cached_subtitle_path(key)
+    if not subtitle_path:
+        raise HTTPException(status_code=404, detail="Subtitle is not prepared")
+    return subtitle_events_from_path(subtitle_path)
+
+
+def prepared_subtitle_bundle_for_key(key: str) -> dict:
+    subtitle_meta = read_subtitle_meta(key)
+    translated_path = cached_subtitle_path(key)
+    original_path = cached_original_subtitle_path(key)
+    translated_events = subtitle_events_from_path(translated_path) if translated_path else []
+    if subtitle_meta.get("translated") and original_path and original_path != translated_path:
+        source_events = subtitle_events_from_path(original_path)
+    else:
+        source_events = translated_events
+    return {
+        "key": key,
+        "subtitle": subtitle_meta,
+        "source_subtitle_path": str(original_path) if original_path else None,
+        "translated_subtitle_path": str(translated_path) if translated_path else None,
+        "source_events": source_events,
+        "translated_events": translated_events,
+    }
 
 
 async def prepare_sources(
@@ -5168,6 +5209,9 @@ async def index() -> str:
       background: var(--color-gray-50);
       padding: calc(8 / 16 * 1rem) calc(12 / 16 * 1rem);
     }}
+    select[multiple] {{
+      min-height: calc(140 / 16 * 1rem);
+    }}
     .profile-grid input {{
       width: auto;
       min-height: auto;
@@ -5275,7 +5319,7 @@ async def index() -> str:
         </label>
       <label>
         Translation
-        <select id="translationEngine" name="translationEngine">
+        <select id="translationEngine" name="translationEngine" multiple size="4">
             <option value="google_cloud">Google</option>
         </select>
       </label>
@@ -5396,6 +5440,10 @@ async def index() -> str:
           <button type="button" id="compareLoadVariantsButton" class="secondary">字幕候補を読み込む</button>
           <button type="button" id="comparePrepareButton">比較用に準備</button>
         </div>
+        <label>
+          再生する動画
+          <select id="comparePlaybackSource" name="comparePlaybackSource"></select>
+        </label>
         <output id="compareStatus"></output>
       </form>
       <div id="compareVariants" class="job-list"></div>
@@ -5501,6 +5549,7 @@ async def index() -> str:
     const compareTargetLang = document.getElementById("compareTargetLang");
     const compareLoadVariantsButton = document.getElementById("compareLoadVariantsButton");
     const comparePrepareButton = document.getElementById("comparePrepareButton");
+    const comparePlaybackSource = document.getElementById("comparePlaybackSource");
     const compareStatus = document.getElementById("compareStatus");
     const compareVideo = document.getElementById("compareVideo");
     const compareResults = document.getElementById("compareResults");
@@ -5658,6 +5707,10 @@ async def index() -> str:
           if (option.default) chatOption.selected = true;
           chatModel.appendChild(chatOption);
         }}
+      }}
+      if (!Array.from(translationEngine.selectedOptions).length) {{
+        const fallback = translationEngine.querySelector('option[value="google_cloud"]') || translationEngine.options[0];
+        if (fallback) fallback.selected = true;
       }}
     }}
 
@@ -5989,7 +6042,8 @@ async def index() -> str:
       const updateTexts = () => {{
         const time = compareVideo.currentTime || 0;
         for (const item of profileBodies) {{
-          item.text.textContent = currentSubtitle(item.events, time) || "（この時刻の字幕なし）";
+          item.sourceText.textContent = currentSubtitle(item.sourceEvents, time) || "（この時刻の原字幕なし）";
+          item.translatedText.textContent = currentSubtitle(item.translatedEvents, time) || "（この時刻の翻訳字幕なし）";
         }}
       }};
       for (const item of profileBodies) {{
@@ -5997,10 +6051,22 @@ async def index() -> str:
         box.className = "compare-result";
         const title = document.createElement("strong");
         title.textContent = item.label;
-        const text = document.createElement("div");
-        item.text = text;
+        const sourceTitle = document.createElement("div");
+        sourceTitle.textContent = "元字幕";
+        sourceTitle.style.fontWeight = "700";
+        const sourceText = document.createElement("div");
+        sourceText.style.marginBottom = "calc(8 / 16 * 1rem)";
+        const translatedTitle = document.createElement("div");
+        translatedTitle.textContent = "翻訳字幕";
+        translatedTitle.style.fontWeight = "700";
+        const translatedText = document.createElement("div");
+        item.sourceText = sourceText;
+        item.translatedText = translatedText;
         box.appendChild(title);
-        box.appendChild(text);
+        box.appendChild(sourceTitle);
+        box.appendChild(sourceText);
+        box.appendChild(translatedTitle);
+        box.appendChild(translatedText);
         compareResults.appendChild(box);
       }}
       compareVideo.ontimeupdate = updateTexts;
@@ -6078,10 +6144,16 @@ async def index() -> str:
     function renderVariantList(items) {{
       compareVariants.innerHTML = "";
       compareResults.innerHTML = "";
+      comparePlaybackSource.innerHTML = "";
       if (!items.length) {{
         compareVariants.textContent = "この動画IDに対応する字幕キャッシュはありません。";
+        const emptyOption = document.createElement("option");
+        emptyOption.value = "";
+        emptyOption.textContent = "再生可能な動画なし";
+        comparePlaybackSource.appendChild(emptyOption);
         return;
       }}
+      const playbackOptions = [];
       for (const item of items) {{
         const row = document.createElement("div");
         row.className = "job-item";
@@ -6099,12 +6171,40 @@ async def index() -> str:
         const meta = document.createElement("div");
         meta.textContent = `${{item.title || item.video_id || "-"}} / ${{item.source_language || "-"}} → ${{item.requested_language || "-"}} / ${{item.storage || "-"}}`;
         row.appendChild(meta);
-        if (Array.isArray(item.outputs) && item.outputs.length && !compareVideo.src) {{
-          const preferred = item.outputs.find((output) => output.mode === "mp4") || item.outputs[0];
-          if (preferred?.url) compareVideo.src = publicUrl(preferred.url);
+        if (item.source_ready) {{
+          playbackOptions.push({{
+            label: `${{item.label || item.key}} / 字幕なし`,
+            url: `/prepared/${{encodeURIComponent(item.key)}}/source.mp4`,
+          }});
+        }}
+        for (const output of item.outputs || []) {{
+          if (output?.url) {{
+            playbackOptions.push({{
+              label: `${{item.label || item.key}} / ${{String(output.mode || "").toUpperCase()}}`,
+              url: publicUrl(output.url),
+            }});
+          }}
         }}
         compareVariants.appendChild(row);
       }}
+      if (!playbackOptions.length) {{
+        const emptyOption = document.createElement("option");
+        emptyOption.value = "";
+        emptyOption.textContent = "再生可能な動画なし";
+        comparePlaybackSource.appendChild(emptyOption);
+      }} else {{
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "再生する動画を選択";
+        comparePlaybackSource.appendChild(placeholder);
+        for (const option of playbackOptions) {{
+          const item = document.createElement("option");
+          item.value = option.url;
+          item.textContent = option.label;
+          comparePlaybackSource.appendChild(item);
+        }}
+      }}
+      compareVideo.src = comparePlaybackSource.value || "";
     }}
 
     async function loadCompareVariants() {{
@@ -6119,7 +6219,7 @@ async def index() -> str:
         const items = Array.isArray(body.variants) ? body.variants : [];
         renderVariantList(items);
         compareSourceLang.value = compareSourceLang.value || (items[0]?.source_language || "");
-        const hasPlayable = items.some((item) => Array.isArray(item.outputs) && item.outputs.length);
+        const hasPlayable = items.some((item) => Array.isArray(item.outputs) && item.outputs.length) || items.some((item) => item.source_ready);
         compareStatus.textContent = hasPlayable
           ? `${{items.length}} 件の字幕候補を読み込みました。`
           : `${{items.length}} 件の字幕候補を読み込みましたが、再生できるMP4/HLSがありません。先に準備してください。`;
@@ -6221,11 +6321,15 @@ async def index() -> str:
           const sourceLang = checkbox.dataset.source || compareSourceLang.value.trim();
           const engine = checkbox.dataset.engine || "";
           compareStatus.textContent = `${{key}} を読み込んでいます。`;
-          const eventsBody = await apiFetch(`/prepare/subtitle-events/${{encodeURIComponent(key)}}`);
-          profileBodies.push({{ label: checkbox.parentElement?.textContent?.trim() || key, events: eventsBody.events || [] }});
+          const bundleBody = await apiFetch(`/prepare/subtitle-bundle/${{encodeURIComponent(key)}}`);
+          profileBodies.push({{
+            label: checkbox.parentElement?.textContent?.trim() || key,
+            sourceEvents: bundleBody.source_events || [],
+            translatedEvents: bundleBody.translated_events || [],
+          }});
           if (engine) {{
             const body = await apiFetch(`/prepare/youtube/${{videoId}}/${{target}}/${{encodeURIComponent(sourceLang)}}/${{encodeURIComponent(engine)}}?mode=mp4`, {{ method: "POST" }});
-            if (!compareVideo.src && body.url) compareVideo.src = publicUrl(body.url);
+            if (!comparePlaybackSource.value && body.url) comparePlaybackSource.value = publicUrl(body.url);
           }}
         }}
         renderCompareResults(profileBodies);
@@ -6253,11 +6357,12 @@ async def index() -> str:
         }}
         if (body.status === "failed") {{
           notify("YouTube準備失敗", body.error || "unknown error");
-          return;
+          return body;
         }}
       }}
       stopEtaTimer();
       notify("YouTube準備確認タイムアウト", latest ? prepareMessage(latest) : "status polling timeout");
+      return latest;
     }}
 
     async function loadSubtitleChoices(videoId, language, selectedMode) {{
@@ -6295,6 +6400,7 @@ async def index() -> str:
       const language = (lang.value || defaultLang).trim();
       const token = prepareToken.value.trim();
       const selectedMode = prepareMode();
+      const selectedEngines = Array.from(translationEngine.selectedOptions).map((option) => option.value).filter(Boolean);
       if (!token) {{
         prepareStatus.textContent = "Prepare token を入力してください。";
         return;
@@ -6323,7 +6429,31 @@ async def index() -> str:
           if (needsChoice) return;
         }}
         if (!prepareOptions.hidden && subtitleSource.value) {{
-          path += `/${{encodeURIComponent(subtitleSource.value)}}/${{encodeURIComponent(translationEngine.value)}}`;
+          const sourceLang = subtitleSource.value;
+          const engines = selectedEngines.length ? selectedEngines : [translationEngine.value || "google_cloud"];
+          const results = [];
+          for (let index = 0; index < engines.length; index += 1) {{
+            const engine = engines[index];
+            const variantPath = `${{path}}/${{encodeURIComponent(sourceLang)}}/${{encodeURIComponent(engine)}}`;
+            const params = new URLSearchParams({{ mode: selectedMode }});
+            prepareStatus.textContent = `準備中 ${{index + 1}}/${{engines.length}}: ${{sourceLang}} → ${{engine}}`;
+            const body = await apiFetch(`${{variantPath}}?${{params.toString()}}`, {{ method: "POST" }});
+            results.push(body);
+            setPrepareStatus(body);
+            if (body.status === "ready" && !result.textContent) {{
+              result.textContent = publicUrl(body.url);
+              notify("YouTube準備完了", result.textContent);
+            }} else if (body.status_url) {{
+              const latest = await pollPrepare(body.status_url);
+              results[results.length - 1] = latest || body;
+              if (latest?.status === "ready" && !result.textContent) {{
+                result.textContent = publicUrl(latest.url);
+                notify("YouTube準備完了", result.textContent);
+              }}
+            }}
+          }}
+          prepareStatus.textContent = `${{results.length}} 件の翻訳パターンを準備しました。`;
+          return;
         }}
         const params = new URLSearchParams({{ mode: selectedMode }});
         const body = await apiFetch(`${{path}}?${{params.toString()}}`, {{ method: "POST" }});
@@ -6432,6 +6562,9 @@ async def index() -> str:
     notifyButton.addEventListener("click", requestNotifications);
     compareLoadVariantsButton.addEventListener("click", loadCompareVariants);
     comparePrepareButton.addEventListener("click", prepareCompare);
+    comparePlaybackSource.addEventListener("change", () => {{
+      compareVideo.src = comparePlaybackSource.value || "";
+    }});
     sourceUrl.addEventListener("input", updateJson);
     sourceType.addEventListener("change", updateJson);
     playerMode.addEventListener("change", updateJson);
@@ -6555,6 +6688,11 @@ def _list_cached_variants_for_video(request: Request, video_id: str) -> list[dic
             if translated:
                 label += f" / {subtitle_translation_service_label(subtitle_meta) or engine or 'translation'}"
             outputs = []
+            source_playable = False
+            source_video_rel = source_meta.get("source_video")
+            if isinstance(source_video_rel, str) and source_video_rel:
+                source_video_path = child / source_video_rel
+                source_playable = is_usable_file(source_video_path)
             if is_usable_file(child / "output.mp4"):
                 outputs.append({"mode": "mp4", "url": prepared_media_url(request, video_id, str(source_meta.get("lang") or "ja"), "mp4", source_lang, engine)})
             playlist = child / "hls" / "index.m3u8"
@@ -6574,6 +6712,7 @@ def _list_cached_variants_for_video(request: Request, video_id: str) -> list[dic
                 "translation_model": model,
                 "label": label,
                 "outputs": outputs,
+                "source_ready": source_playable,
             }
             existing = by_key.get(key)
             if existing is None or existing.get("storage") != "hot":
@@ -6904,6 +7043,14 @@ async def prepared_subtitle_events_by_key(key: str, request: Request) -> JSONRes
     )
 
 
+@app.get("/prepare/subtitle-bundle/{key}")
+async def prepared_subtitle_bundle_by_key(key: str, request: Request) -> JSONResponse:
+    require_prepare_auth(request)
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", key):
+        raise HTTPException(status_code=400, detail="Invalid cache key")
+    return JSONResponse(prepared_subtitle_bundle_for_key(key))
+
+
 @app.get("/prepare/jobs/{job_id}")
 async def prepare_job_status(job_id: str, request: Request) -> JSONResponse:
     require_prepare_auth(request)
@@ -6911,6 +7058,18 @@ async def prepare_job_status(job_id: str, request: Request) -> JSONResponse:
     if job is None:
         raise HTTPException(status_code=404, detail="Prepare job not found")
     return JSONResponse(job_response_body(job_id, job, request))
+
+
+@app.get("/prepared/{key}/source.mp4")
+async def prepared_source_video(key: str, request: Request) -> Response:
+    require_prepare_auth(request)
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", key):
+        raise HTTPException(status_code=400, detail="Invalid cache key")
+    existing = check_existing_source_video(key)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Source video is not prepared")
+    video_path, _source_meta, _base_dir = existing
+    return mp4_response(request, video_path)
 
 
 @app.post("/prepare/eta/reset")
