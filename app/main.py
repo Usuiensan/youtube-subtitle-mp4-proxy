@@ -72,6 +72,10 @@ def read_text_file(path: str | None) -> str:
         return ""
 
 
+def default_translation_prompt_file() -> Path:
+    return Path(__file__).resolve().parent.parent / "prompts" / "translation-prompt.txt"
+
+
 load_env_file(ENV_FILE)
 
 
@@ -153,7 +157,11 @@ class Settings:
     translation_fallback_engine = os.getenv("TRANSLATION_FALLBACK_ENGINE", "")
     translation_topic = os.getenv("TRANSLATION_TOPIC", "")
     translation_glossary = os.getenv("TRANSLATION_GLOSSARY", "")
-    translation_prompt_template = read_text_file(os.getenv("TRANSLATION_PROMPT_TEMPLATE_FILE")) or os.getenv("TRANSLATION_PROMPT_TEMPLATE", "")
+    translation_prompt_template = (
+        read_text_file(os.getenv("TRANSLATION_PROMPT_TEMPLATE_FILE"))
+        or read_text_file(str(default_translation_prompt_file()))
+        or os.getenv("TRANSLATION_PROMPT_TEMPLATE", "")
+    )
     google_cloud_project = os.getenv("GOOGLE_CLOUD_PROJECT", "")
     gemini_api_key = os.getenv("GEMINI_API_KEY", "")
     gemini_billing_mode = os.getenv("GEMINI_BILLING_MODE", "free_tier").strip().lower()
@@ -3135,6 +3143,13 @@ def check_existing_sources(key: str) -> tuple[Path, Path, dict] | None:
 
 
 def build_ass_from_srt(subtitle_path: Path, output_path: Path, *, align: int, margin_l: int, margin_r: int, margin_v: int) -> None:
+    def ass_time(value: Any) -> str:
+        total = int(round(value.total_seconds() * 100))
+        hours, remainder = divmod(total, 3600 * 100)
+        minutes, remainder = divmod(remainder, 60 * 100)
+        seconds, centiseconds = divmod(remainder, 100)
+        return f"{hours}:{minutes:02d}:{seconds:02d}.{centiseconds:02d}"
+
     subtitles = load_srt(subtitle_path)
     lines = [
         "[Script Info]",
@@ -3151,11 +3166,18 @@ def build_ass_from_srt(subtitle_path: Path, output_path: Path, *, align: int, ma
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     for sub in subtitles:
-        text = sub.content.replace("\r\n", "\n").replace("\r", "\n").replace("\n", r"\N")
+        text = (
+            sub.content.replace("\r\n", "\n")
+            .replace("\r", "\n")
+            .replace("\\", r"\\")
+            .replace("{", r"\{")
+            .replace("}", r"\}")
+            .replace("\n", r"\N")
+        )
         lines.append(
             "Dialogue: 0,"
-            f"{sub.start},"
-            f"{sub.end},"
+            f"{ass_time(sub.start)},"
+            f"{ass_time(sub.end)},"
             f"Default,,0,0,0,,{text}"
         )
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

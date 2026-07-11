@@ -83,7 +83,7 @@ export DEFAULT_LANG=ja
 export SUBTITLE_FONT='Noto Sans JP'
 ```
 
-翻訳プロンプトを調整したい場合は `TRANSLATION_PROMPT_TEMPLATE` か `TRANSLATION_PROMPT_TEMPLATE_FILE` を設定します。長文は `.txt` を `TRANSLATION_PROMPT_TEMPLATE_FILE` で読むほうが扱いやすいです。`{source_language}` `{target_language}` `{video_title}` `{channel_name}` `{topic}` `{glossary}` `{previous_subtitles}` `{current_subtitle}` `{next_subtitles}` を埋め込めます。
+翻訳プロンプトを調整したい場合は `TRANSLATION_PROMPT_TEMPLATE` か `TRANSLATION_PROMPT_TEMPLATE_FILE` を設定します。長文は `.txt` を `TRANSLATION_PROMPT_TEMPLATE_FILE` で読むほうが扱いやすいです。既定のリポジトリ管理版は [prompts/translation-prompt.txt](/C:/private/youtube-subtitle-mp4-proxy/prompts/translation-prompt.txt) に置いてあります。`{source_language}` `{target_language}` `{video_title}` `{channel_name}` `{topic}` `{glossary}` `{previous_subtitles}` `{current_subtitle}` `{next_subtitles}` を埋め込めます。
 
 ```bash
 export TRANSLATION_PROMPT_TEMPLATE='You are a subtitle translator.
@@ -107,7 +107,7 @@ Rules:
 ```
 
 ```bash
-export TRANSLATION_PROMPT_TEMPLATE_FILE=/path/to/translation-prompt.txt
+export TRANSLATION_PROMPT_TEMPLATE_FILE=/home/masato/youtube-subtitle-mp4-proxy/prompts/translation-prompt.txt
 ```
 
 ### Discord bot からの準備ジョブ
