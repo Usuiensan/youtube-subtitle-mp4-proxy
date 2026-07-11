@@ -106,6 +106,7 @@ class Settings:
     subtitle_back_colour = os.getenv("SUBTITLE_BACK_COLOUR", "&H40000000")
     hls_segment_seconds = int(os.getenv("HLS_SEGMENT_SECONDS", "6"))
     hls_ready_timeout_seconds = int(os.getenv("HLS_READY_TIMEOUT_SECONDS", "1800"))
+    ffmpeg_encode_concurrency = max(1, int(os.getenv("FFMPEG_ENCODE_CONCURRENCY", "1")))
     ffmpeg_video_encoder = os.getenv("FFMPEG_VIDEO_ENCODER", "libx264")
     ffmpeg_video_preset = os.getenv("FFMPEG_VIDEO_PRESET")
     ffmpeg_video_crf = os.getenv("FFMPEG_VIDEO_CRF", "23")
@@ -574,7 +575,7 @@ async def start_system_metrics() -> None:
     if _metrics_task is None or _metrics_task.done():
         _metrics_task = asyncio.create_task(system_metrics_loop())
 
-_global_encode_lock = asyncio.Semaphore(1)
+_global_encode_lock = asyncio.Semaphore(settings.ffmpeg_encode_concurrency)
 _inflight_lock = asyncio.Lock()
 _inflight: dict[str, asyncio.Task[Path]] = {}
 _hls_inflight: dict[str, asyncio.Task[Path]] = {}
@@ -3547,32 +3548,31 @@ async def create_mp4(
     if prepared:
         return prepared
 
-    async with _global_encode_lock:
-        prepared = prepared_output_path(key)
-        if prepared:
-            return prepared
-
-        work_dir = settings.cache_hot_dir / f".work-{key}-{uuid.uuid4().hex}"
-        final_output.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            info = await fetch_video_info(video_id)
-            assert_duration_allowed(info)
-            duration = float(info.get("duration") or 0.0)
-            await ensure_prepare_workspace_capacity(estimate_workspace_bytes(duration))
-            work_dir.mkdir(parents=True, exist_ok=True)
-            saved_video, original_subtitle, saved_subtitle, subtitle_meta = await prepare_sources(
-                key,
-                video_id,
-                lang,
-                work_dir,
-                info,
-                job_id=job_id,
-                duration_seconds=duration,
-                subtitle_source_lang=subtitle_source_lang,
-                translation_engine=translation_engine,
-                reuse_cached_subtitle=reuse_cached_subtitle,
-                reuse_source_video=reuse_source_video,
-            )
+    work_dir = settings.cache_hot_dir / f".work-{key}-{uuid.uuid4().hex}"
+    final_output.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        info = await fetch_video_info(video_id)
+        assert_duration_allowed(info)
+        duration = float(info.get("duration") or 0.0)
+        await ensure_prepare_workspace_capacity(estimate_workspace_bytes(duration))
+        work_dir.mkdir(parents=True, exist_ok=True)
+        saved_video, original_subtitle, saved_subtitle, subtitle_meta = await prepare_sources(
+            key,
+            video_id,
+            lang,
+            work_dir,
+            info,
+            job_id=job_id,
+            duration_seconds=duration,
+            subtitle_source_lang=subtitle_source_lang,
+            translation_engine=translation_engine,
+            reuse_cached_subtitle=reuse_cached_subtitle,
+            reuse_source_video=reuse_source_video,
+        )
+        async with _global_encode_lock:
+            prepared = prepared_output_path(key)
+            if prepared:
+                return prepared
             await burn_subtitles(
                 saved_video,
                 saved_subtitle,
@@ -3584,8 +3584,8 @@ async def create_mp4(
             )
             write_meta(key, video_id, lang, info, "mp4")
             return final_output
-        finally:
-            shutil.rmtree(work_dir, ignore_errors=True)
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 async def create_hls_job(
@@ -3603,32 +3603,31 @@ async def create_hls_job(
     if prepared:
         return prepared
 
-    async with _global_encode_lock:
-        prepared = prepared_hls_playlist_path(key)
-        if prepared:
-            return prepared
-
-        work_dir = settings.cache_hot_dir / f".work-{key}-{uuid.uuid4().hex}"
-        playlist.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            info = await fetch_video_info(video_id)
-            assert_duration_allowed(info)
-            duration = float(info.get("duration") or 0.0)
-            await ensure_prepare_workspace_capacity(estimate_workspace_bytes(duration))
-            work_dir.mkdir(parents=True, exist_ok=True)
-            saved_video, original_subtitle, saved_subtitle, subtitle_meta = await prepare_sources(
-                key,
-                video_id,
-                lang,
-                work_dir,
-                info,
-                job_id=job_id,
-                duration_seconds=duration,
-                subtitle_source_lang=subtitle_source_lang,
-                translation_engine=translation_engine,
-                reuse_cached_subtitle=reuse_cached_subtitle,
-                reuse_source_video=reuse_source_video,
-            )
+    work_dir = settings.cache_hot_dir / f".work-{key}-{uuid.uuid4().hex}"
+    playlist.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        info = await fetch_video_info(video_id)
+        assert_duration_allowed(info)
+        duration = float(info.get("duration") or 0.0)
+        await ensure_prepare_workspace_capacity(estimate_workspace_bytes(duration))
+        work_dir.mkdir(parents=True, exist_ok=True)
+        saved_video, original_subtitle, saved_subtitle, subtitle_meta = await prepare_sources(
+            key,
+            video_id,
+            lang,
+            work_dir,
+            info,
+            job_id=job_id,
+            duration_seconds=duration,
+            subtitle_source_lang=subtitle_source_lang,
+            translation_engine=translation_engine,
+            reuse_cached_subtitle=reuse_cached_subtitle,
+            reuse_source_video=reuse_source_video,
+        )
+        async with _global_encode_lock:
+            prepared = prepared_hls_playlist_path(key)
+            if prepared:
+                return prepared
             write_meta(key, video_id, lang, info, "hls")
             await create_hls(
                 saved_video,
@@ -3640,8 +3639,8 @@ async def create_hls_job(
                 original_subtitle=original_subtitle,
             )
             return playlist
-        finally:
-            shutil.rmtree(work_dir, ignore_errors=True)
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 async def get_or_create_mp4(
