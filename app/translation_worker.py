@@ -167,6 +167,37 @@ def format_context_lines(items: list[dict[str, Any]], *, include_translation: bo
     return "\n".join(lines) if lines else "なし"
 
 
+DEFAULT_SINGLE_SUBTITLE_PROMPT_TEMPLATE = """You are a subtitle translator.
+Translate exactly one subtitle from {source_language} to {target_language}.
+Video title: {video_title}
+Topic: {topic}
+Glossary: {glossary}
+
+Previous subtitles:
+{previous_subtitles}
+
+Current subtitle:
+{current_subtitle}
+
+Next subtitles:
+{next_subtitles}
+
+Rules:
+- Output only the translation of the current subtitle.
+- Do not add explanations, numbering, quotes, or labels.
+- Preserve names, numbers, URLs, and line breaks when needed.
+"""
+
+
+def render_prompt_template(template: str, variables: dict[str, str]) -> str:
+    safe_variables = {key: value if value.strip() else "なし" for key, value in variables.items()}
+    try:
+        return template.format_map(safe_variables).strip()
+    except KeyError as error:
+        missing = error.args[0]
+        raise RuntimeError(f"prompt template missing placeholder: {missing}") from error
+
+
 def build_single_subtitle_prompt(item: dict[str, Any], payload: dict[str, Any]) -> str:
     before = []
     context_before = payload.get("context_before")
@@ -183,18 +214,22 @@ def build_single_subtitle_prompt(item: dict[str, Any], payload: dict[str, Any]) 
     title = str(payload.get("video_title") or "").strip() or "不明"
     source_language = str(payload.get("source_language") or "").strip() or "unknown"
     target_language = str(payload.get("target_language") or "").strip() or "ja"
+    topic = str(payload.get("topic") or "").strip()
+    glossary = str(payload.get("glossary") or "").strip()
+    template = str(payload.get("prompt_template") or "").strip() or DEFAULT_SINGLE_SUBTITLE_PROMPT_TEMPLATE
     text = str(item.get("text") or "")
-    return (
-        f"You are a subtitle translator.\n"
-        f"Translate exactly one subtitle from {source_language} to {target_language}.\n"
-        f"Video title: {title}\n\n"
-        f"Previous subtitles:\n{format_context_lines(before)}\n\n"
-        f"Current subtitle:\n{text}\n\n"
-        f"Next subtitles:\n{format_context_lines(after)}\n\n"
-        "Rules:\n"
-        "- Output only the translation of the current subtitle.\n"
-        "- Do not add explanations, numbering, quotes, or labels.\n"
-        "- Preserve names, numbers, URLs, and line breaks when needed."
+    return render_prompt_template(
+        template,
+        {
+            "source_language": source_language,
+            "target_language": target_language,
+            "video_title": title,
+            "topic": topic,
+            "glossary": glossary,
+            "previous_subtitles": format_context_lines(before),
+            "current_subtitle": text,
+            "next_subtitles": format_context_lines(after),
+        },
     )
 
 

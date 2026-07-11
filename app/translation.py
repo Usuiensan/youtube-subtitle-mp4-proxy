@@ -29,6 +29,7 @@ class TranslationSettings:
     fallback_engine: str
     glossary: str
     topic: str
+    prompt_template: str
     google_project: str
     provider_name: str
 

@@ -83,6 +83,33 @@ export DEFAULT_LANG=ja
 export SUBTITLE_FONT='Noto Sans JP'
 ```
 
+翻訳プロンプトを調整したい場合は `TRANSLATION_PROMPT_TEMPLATE` か `TRANSLATION_PROMPT_TEMPLATE_FILE` を設定します。長文は `.txt` を `TRANSLATION_PROMPT_TEMPLATE_FILE` で読むほうが扱いやすいです。`{source_language}` `{target_language}` `{video_title}` `{topic}` `{glossary}` `{previous_subtitles}` `{current_subtitle}` `{next_subtitles}` を埋め込めます。
+
+```bash
+export TRANSLATION_PROMPT_TEMPLATE='You are a subtitle translator.
+Translate from {source_language} to {target_language}.
+Video title: {video_title}
+Topic: {topic}
+Glossary: {glossary}
+
+Previous:
+{previous_subtitles}
+
+Current:
+{current_subtitle}
+
+Next:
+{next_subtitles}
+
+Rules:
+- Output only the translation.
+- Keep names, numbers, URLs, and line breaks.'
+```
+
+```bash
+export TRANSLATION_PROMPT_TEMPLATE_FILE=/path/to/translation-prompt.txt
+```
+
 ### Discord bot からの準備ジョブ
 
 `/youtube/...` と `/youtube-hls/...` は配信専用です。URL を叩いただけでは変換や HDD から SSD への移動を開始しません。MP4 は SSD 側にあれば SSD から返し、HDD アーカイブにだけある場合も昇格せずそのまま返します。HLS は SSD 側に準備済みでない場合 `404` を返します。
@@ -107,6 +134,13 @@ curl -X POST \
 `POST /prepare/youtube/:videoId/:lang?mode=mp4|hls` は、準備済みなら `200 {"status":"ready","url":"..."}` を返します。準備が必要なら `202` と `job_id` / `status_url` を返すので、Discord bot 側で `GET /prepare/jobs/:jobId` をポーリングし、`ready` になってから `url` を投稿します。
 
 `GET /prepare/youtube/:videoId/:lang/subtitles?mode=mp4|hls` は、準備前に字幕候補を確認するための API です。`lang=ja` で日本語字幕がなく、翻訳可能な手動字幕がある場合は `requires_choice: true` と `candidates` を返します。翻訳エンジンは一時的に `google_cloud` のみ受け付けます。
+
+準備済みの原語 SRT と翻訳 SRT はそれぞれ以下からダウンロードできます。
+
+```text
+/prepared/:key/source.srt
+/prepared/:key/translated.srt
+```
 
 翻訳元や翻訳方式を明示する版は、VRChat の動画プレーヤーで query string が落ちる可能性を避けるため path でも指定できます。
 

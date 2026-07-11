@@ -60,6 +60,18 @@ def load_env_file(path: Path) -> None:
             os.environ[key] = value
 
 
+def read_text_file(path: str | None) -> str:
+    if not path:
+        return ""
+    try:
+        file_path = Path(path)
+        if not file_path.exists():
+            return ""
+        return file_path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
 load_env_file(ENV_FILE)
 
 
@@ -141,6 +153,7 @@ class Settings:
     translation_fallback_engine = os.getenv("TRANSLATION_FALLBACK_ENGINE", "")
     translation_topic = os.getenv("TRANSLATION_TOPIC", "")
     translation_glossary = os.getenv("TRANSLATION_GLOSSARY", "")
+    translation_prompt_template = read_text_file(os.getenv("TRANSLATION_PROMPT_TEMPLATE_FILE")) or os.getenv("TRANSLATION_PROMPT_TEMPLATE", "")
     google_cloud_project = os.getenv("GOOGLE_CLOUD_PROJECT", "")
     gemini_api_key = os.getenv("GEMINI_API_KEY", "")
     gemini_billing_mode = os.getenv("GEMINI_BILLING_MODE", "free_tier").strip().lower()
@@ -1944,6 +1957,7 @@ def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
         fallback_engine=settings.translation_fallback_engine,
         glossary=settings.translation_glossary,
         topic=settings.translation_topic,
+        prompt_template=settings.translation_prompt_template,
         google_project=settings.google_cloud_project,
         provider_name=provider_name,
     )
@@ -3129,6 +3143,20 @@ def cached_original_subtitle_path(key: str) -> Path | None:
     return None
 
 
+def prepared_subtitle_download_paths(key: str) -> dict[str, Path | None]:
+    subtitle_meta = read_subtitle_meta(key)
+    translated_path = cached_subtitle_path(key)
+    original_path = cached_original_subtitle_path(key)
+    if subtitle_meta.get("translated"):
+        source_path = original_path
+    else:
+        source_path = original_path or translated_path
+    return {
+        "source": source_path,
+        "translated": translated_path,
+    }
+
+
 def subtitle_events_from_path(subtitle_path: Path) -> list[dict]:
     events = []
     for item in load_srt(subtitle_path):
@@ -3167,6 +3195,27 @@ def prepared_subtitle_bundle_for_key(key: str) -> dict:
         "source_events": source_events,
         "translated_events": translated_events,
     }
+
+
+def prepared_subtitle_file_response(key: str, kind: str, request: Request) -> FileResponse:
+    paths = prepared_subtitle_download_paths(key)
+    if kind not in paths:
+        raise HTTPException(status_code=404, detail="Unknown subtitle kind")
+    path = paths[kind]
+    if path is None or not path.exists() or path.stat().st_size == 0:
+        raise HTTPException(status_code=404, detail="Subtitle is not prepared")
+    suffix = path.suffix.lower() or ".srt"
+    subtitle_meta = read_subtitle_meta(key)
+    video_id = str(read_json_file(entry_dir(key) / "source.json").get("video_id") or key)
+    lang = str(read_json_file(entry_dir(key) / "source.json").get("lang") or subtitle_meta.get("requested_language") or "ja")
+    label = "source" if kind == "source" else "translated"
+    filename = f"{video_id}_{lang}_{label}{suffix}"
+    return FileResponse(
+        path,
+        filename=filename,
+        media_type="application/x-subrip",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 async def prepare_sources(
@@ -6024,6 +6073,18 @@ async def index() -> str:
 
         const actions = document.createElement("div");
         actions.className = "actions";
+        const sourceSubtitleButton = document.createElement("a");
+        sourceSubtitleButton.className = "button secondary";
+        sourceSubtitleButton.textContent = "原語 SRT";
+        sourceSubtitleButton.href = `/prepared/${encodeURIComponent(item.key)}/source.srt`;
+        actions.appendChild(sourceSubtitleButton);
+
+        const translatedSubtitleButton = document.createElement("a");
+        translatedSubtitleButton.className = "button secondary";
+        translatedSubtitleButton.textContent = "翻訳 SRT";
+        translatedSubtitleButton.href = `/prepared/${encodeURIComponent(item.key)}/translated.srt`;
+        actions.appendChild(translatedSubtitleButton);
+
         for (const output of item.outputs || []) {{
           const url = publicUrl(output.url);
           const button = document.createElement("button");
@@ -7107,6 +7168,18 @@ async def prepared_source_video(key: str, request: Request) -> Response:
         raise HTTPException(status_code=404, detail="Source video is not prepared")
     video_path, _source_meta, _base_dir = existing
     return mp4_response(request, video_path)
+
+
+@app.get("/prepared/{key}/source.srt")
+async def prepared_source_subtitle(key: str, request: Request) -> FileResponse:
+    require_prepare_auth(request)
+    return prepared_subtitle_file_response(key, "source", request)
+
+
+@app.get("/prepared/{key}/translated.srt")
+async def prepared_translated_subtitle(key: str, request: Request) -> FileResponse:
+    require_prepare_auth(request)
+    return prepared_subtitle_file_response(key, "translated", request)
 
 
 @app.post("/prepare/eta/reset")
