@@ -40,7 +40,7 @@ from app.translation import (
 
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
-LANG_RE = re.compile(r"^[A-Za-z0-9_-]{2,12}$")
+LANG_RE = re.compile(r"^[A-Za-z0-9_-]{2,64}$")
 KEY_RE = re.compile(r"^[A-Za-z0-9_-]{11}(?:_[A-Za-z0-9_-]{2,32})+_[a-f0-9]{8}$")
 YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,}$")
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env.local"
