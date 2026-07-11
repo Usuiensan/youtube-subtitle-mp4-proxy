@@ -96,6 +96,8 @@ pip install --upgrade pip
 pip install -r requirements.txt "yt-dlp[default]"
 ```
 
+翻訳エンジンを複数選べるようにする場合は、`TRANSLATION_DEFAULT_PROFILE` と `LOCAL_LLM_MODEL_*` を `.env.local` に入れて、RTX 3060 側で公開しているモデル名に合わせてください。
+
 確認:
 
 ```bash
@@ -165,7 +167,7 @@ TRANSLATION_SOURCE_LANGS=en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW
 TRANSLATION_FALLBACK_ENGINE=google_cloud
 LOCAL_LLM_ENGINE=openai_compatible
 LOCAL_LLM_ENDPOINT=http://127.0.0.1:11434/v1/chat/completions
-LOCAL_LLM_MODEL=qwen2.5:3b-instruct-q4_K_M
+LOCAL_LLM_MODEL=qwen3:4b-instruct
 LOCAL_LLM_TIMEOUT_SECONDS=300
 LOCAL_LLM_TARGET_WINDOW_SECONDS=120
 LOCAL_LLM_TARGET_MAX_EVENTS=10

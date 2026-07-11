@@ -107,26 +107,30 @@ class Settings:
     translation_enabled = os.getenv("TRANSLATION_ENABLED", "1") != "0"
     translation_source_langs = os.getenv("TRANSLATION_SOURCE_LANGS", "en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW")
     local_llm_engine = os.getenv("LOCAL_LLM_ENGINE", "openai_compatible")
-    local_llm_model = os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M")
+    local_llm_model = os.getenv("LOCAL_LLM_MODEL", "qwen3:4b-instruct")
+    translation_default_profile = os.getenv("TRANSLATION_DEFAULT_PROFILE", os.getenv("TRANSLATION_PROVIDER", "google_cloud")).strip().lower()
     local_llm_profile_models = {
-        "local_llm": os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M"),
-        "gemini_2_5_flash": os.getenv("LOCAL_LLM_MODEL_GEMINI_2_5_FLASH", "gemini-2.5-flash"),
-        "qwen3_1_7b": os.getenv("LOCAL_LLM_MODEL_QWEN3_1_7B", "qwen3:1.7b"),
-        "gemma3_1b": os.getenv("LOCAL_LLM_MODEL_GEMMA3_1B", "gemma3:1b"),
-        "gemma3_4b": os.getenv("LOCAL_LLM_MODEL_GEMMA3_4B", "gemma3:4b"),
+        "qwen3_4b_instruct": os.getenv("LOCAL_LLM_MODEL_QWEN3_4B_INSTRUCT", os.getenv("REMOTE_LLM_MODEL", "qwen3:4b-instruct")).strip(),
+        "qwen3_8b": os.getenv("LOCAL_LLM_MODEL_QWEN3_8B", "qwen3:8b").strip(),
+        "aya_expanse_8b": os.getenv("LOCAL_LLM_MODEL_AYA_EXPANSE_8B", "aya-expanse:8b").strip(),
+        "gemini_2_5_flash": os.getenv("LOCAL_LLM_MODEL_GEMINI_2_5_FLASH", "gemini-2.5-flash").strip(),
+        # Legacy aliases kept for compatibility with older settings.
+        "local_llm": os.getenv("LOCAL_LLM_MODEL", "qwen3:4b-instruct").strip(),
+        "remote_llm": os.getenv("REMOTE_LLM_MODEL", os.getenv("LOCAL_LLM_MODEL", "qwen3:4b-instruct")).strip(),
     }
     local_llm_profile_labels = {
-        "local_llm": os.getenv("LOCAL_LLM_LABEL", "Default LLM"),
+        "qwen3_4b_instruct": "Qwen 3 4B Instruct",
+        "qwen3_8b": "Qwen 3 8B",
+        "aya_expanse_8b": "Aya Expanse 8B",
         "gemini_2_5_flash": "Gemini Flash",
-        "qwen3_1_7b": "Qwen 3 1.7B",
-        "gemma3_1b": "Gemma 3 1B",
-        "gemma3_4b": "Gemma 3 4B",
+        "local_llm": os.getenv("LOCAL_LLM_LABEL", "Default LLM"),
+        "remote_llm": os.getenv("REMOTE_LLM_LABEL", "Remote LLM"),
     }
     local_llm_timeout_seconds = int(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "300"))
     remote_llm_endpoint = os.getenv("REMOTE_LLM_ENDPOINT", os.getenv("LOCAL_LLM_ENDPOINT", "")).strip()
     remote_llm_health_url = os.getenv("REMOTE_LLM_HEALTH_URL", "").strip()
     remote_llm_api_key = os.getenv("REMOTE_LLM_API_KEY", os.getenv("LOCAL_LLM_API_KEY", "")).strip()
-    remote_llm_model = os.getenv("REMOTE_LLM_MODEL", os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M")).strip()
+    remote_llm_model = os.getenv("REMOTE_LLM_MODEL", os.getenv("LOCAL_LLM_MODEL", "qwen3:4b-instruct")).strip()
     remote_llm_health_timeout_seconds = float(os.getenv("REMOTE_LLM_HEALTH_TIMEOUT_SECONDS", "2.5"))
     local_llm_target_window_seconds = int(os.getenv("LOCAL_LLM_TARGET_WINDOW_SECONDS", "120"))
     local_llm_target_max_events = int(os.getenv("LOCAL_LLM_TARGET_MAX_EVENTS", "10"))
@@ -143,7 +147,7 @@ class Settings:
     gemini_flash_input_price_per_million = float(os.getenv("GEMINI_FLASH_INPUT_PRICE_PER_MILLION", "0.30"))
     gemini_flash_output_price_per_million = float(os.getenv("GEMINI_FLASH_OUTPUT_PRICE_PER_MILLION", "2.50"))
     usd_to_jpy_rate = float(os.getenv("USD_TO_JPY_RATE", "160.0"))
-    translation_provider = os.getenv("TRANSLATION_PROVIDER", "remote_llm").strip().lower()
+    translation_provider = os.getenv("TRANSLATION_PROVIDER", "qwen3_4b_instruct").strip().lower()
     translation_failure_dir = Path(
         os.getenv("TRANSLATION_FAILURE_DIR", str(cache_hot_dir / ".translation-attempts"))
     )
@@ -1708,7 +1712,7 @@ def configured_translation_source_langs() -> list[str]:
 def normalize_translation_engine(value: str | None) -> str:
     engine = (value or settings.local_llm_engine or "local_llm").strip().lower()
     if engine in {"llm", "remote", "remote_llm"}:
-        return "remote_llm"
+        return settings.translation_default_profile if settings.translation_default_profile in settings.local_llm_profile_models else "qwen3_4b_instruct"
     if engine in {"local", "local_llm", "openai_compatible"}:
         return "google_cloud"
     if engine in {"google", "google_cloud", "google_translate"}:
@@ -1719,19 +1723,34 @@ def normalize_translation_engine(value: str | None) -> str:
 
 
 def translation_profile_options() -> list[dict]:
+    default_profile = normalize_translation_engine(settings.translation_default_profile)
+    profiles = [
+        "qwen3_4b_instruct",
+        "qwen3_8b",
+        "aya_expanse_8b",
+        "gemini_2_5_flash",
+    ]
+    options = []
+    for profile_id in profiles:
+        model = settings.local_llm_profile_models.get(profile_id)
+        label = settings.local_llm_profile_labels.get(profile_id, profile_id)
+        kind = "gemini_api" if profile_id == "gemini_2_5_flash" else "openai_compatible"
+        options.append(
+            {
+                "value": profile_id,
+                "label": label,
+                "model": model,
+                "default": default_profile == profile_id,
+                "kind": kind,
+            }
+        )
     return [
-        {
-            "value": "remote_llm",
-            "label": "RTX3060 LLM",
-            "model": settings.remote_llm_model,
-            "default": settings.translation_provider == "remote_llm",
-            "kind": "remote",
-        },
+        *options,
         {
             "value": "google_cloud",
             "label": "Google翻訳",
             "model": None,
-            "default": settings.translation_provider != "remote_llm",
+            "default": default_profile == "google_cloud",
             "kind": "cloud",
         },
     ]
@@ -1768,15 +1787,12 @@ async def remote_llm_available() -> tuple[bool, str | None]:
 
 def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
     normalized = normalize_translation_engine(profile_id)
-    if normalized == "remote_llm":
-        model_name = settings.remote_llm_model
-    else:
-        model_name = settings.local_llm_profile_models.get(normalized, "")
-    provider_name = (
-        "openai_compatible"
-        if normalized == "remote_llm"
-        else ("gemini_api" if normalized == "gemini_2_5_flash" else "google_cloud")
-    )
+    model_name = settings.local_llm_profile_models.get(normalized, "")
+    provider_name = "google_cloud"
+    if normalized in settings.local_llm_profile_models and normalized != "gemini_2_5_flash":
+        provider_name = "openai_compatible"
+    elif normalized == "gemini_2_5_flash":
+        provider_name = "gemini_api"
     return TranslationSettings(
         enabled=settings.translation_enabled,
         target_window_seconds=settings.local_llm_target_window_seconds,
@@ -2615,7 +2631,7 @@ async def translate_subtitle_if_needed(
         }
         return translated_path, metadata
 
-    if requested_engine == "remote_llm":
+    if selected_settings.provider_name == "openai_compatible":
         llm_available, llm_error = await remote_llm_available()
         if not llm_available:
             raise HTTPException(
@@ -5110,13 +5126,12 @@ async def index() -> str:
           Source subtitle
           <select id="subtitleSource" name="subtitleSource"></select>
         </label>
-        <label>
-          Translation
-          <select id="translationEngine" name="translationEngine">
-            <option value="remote_llm">RTX3060 LLM</option>
+      <label>
+        Translation
+        <select id="translationEngine" name="translationEngine">
             <option value="google_cloud">Google</option>
-          </select>
-        </label>
+        </select>
+      </label>
       </div>
       <div class="actions">
         <button type="button" id="prepareButton">Prepare</button>
@@ -5420,7 +5435,7 @@ async def index() -> str:
           const checkbox = document.createElement("input");
           checkbox.type = "checkbox";
           checkbox.value = option.value;
-          checkbox.checked = Boolean(option.default) || option.value === "gemma3_4b";
+          checkbox.checked = Boolean(option.default);
           label.appendChild(checkbox);
           label.append(`${{option.label || option.value}}${{option.model ? ` / ${{option.model}}` : ""}}`);
           compareProfiles.appendChild(label);

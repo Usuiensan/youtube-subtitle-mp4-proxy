@@ -205,15 +205,20 @@ Google の API キーが必要なのは、YouTube Data API v3 を使う `/prepar
 
 `TRANSLATION_ENABLED=1` の場合、要求言語が `ja` で日本語の手動字幕がない動画は、Discord bot の単体 `/prepare` では翻訳元字幕をユーザーが選び、日本語へ翻訳してから焼き込みます。API から `subtitleSourceLang` を指定しない場合や一括準備では、動画の原言語、英語、韓国語、中国語、`TRANSLATION_SOURCE_LANGS` の順で自動選択します。
 
-LLM 翻訳は GTX 1050 Ti サーバー上では実行せず、RTX 3060 を搭載した別PCの OpenAI 互換 API に送ります。準備前に `REMOTE_LLM_HEALTH_URL` を確認し、応答がない、または余裕なしとして失敗する場合は、Discord bot がユーザーに Google 翻訳で進めてよいか確認します。LLM 失敗時に Google Cloud Translation API へ自動フォールバックする動作は行いません。
+LLM 翻訳は GTX 1050 Ti サーバー上では実行せず、RTX 3060 を搭載した別PCの OpenAI 互換 API に送ります。翻訳エンジン選択では `Qwen 3 4B Instruct`、`Qwen 3 8B`、`Aya Expanse 8B`、`Gemini Flash` を切り替えられます。準備前に `REMOTE_LLM_HEALTH_URL` を確認し、応答がない、または余裕なしとして失敗する場合は、Discord bot がユーザーに Google 翻訳で進めてよいか確認します。LLM 失敗時に Google Cloud Translation API へ自動フォールバックする動作は行いません。
 
 ```bash
 export TRANSLATION_ENABLED=1
 export TRANSLATION_SOURCE_LANGS=en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW
-export TRANSLATION_PROVIDER=remote_llm
+export TRANSLATION_DEFAULT_PROFILE=qwen3_4b_instruct
+export TRANSLATION_PROVIDER=qwen3_4b_instruct
 export REMOTE_LLM_ENDPOINT=http://rtx3060-pc:11434/v1/chat/completions
 export REMOTE_LLM_HEALTH_URL=http://rtx3060-pc:11434/v1/models
-export REMOTE_LLM_MODEL=qwen2.5:3b-instruct-q4_K_M
+export REMOTE_LLM_MODEL=qwen3:4b-instruct
+export LOCAL_LLM_MODEL_QWEN3_4B_INSTRUCT=qwen3:4b-instruct
+export LOCAL_LLM_MODEL_QWEN3_8B=qwen3:8b
+export LOCAL_LLM_MODEL_AYA_EXPANSE_8B=aya-expanse:8b
+export LOCAL_LLM_MODEL_GEMINI_2_5_FLASH=gemini-2.5-flash
 export REMOTE_LLM_API_KEY=
 export LOCAL_LLM_TIMEOUT_SECONDS=300
 export LOCAL_LLM_TARGET_WINDOW_SECONDS=120

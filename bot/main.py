@@ -580,7 +580,13 @@ def subtitle_status_text(meta: Any) -> str:
         elif engine == "gemini_2_5_flash":
             engine_text = "Gemini Flash"
         elif model:
-            engine_text = f"{engine or 'local_llm'} ({model})"
+            engine_label = {
+                "qwen3_4b_instruct": "Qwen 3 4B Instruct",
+                "qwen3_8b": "Qwen 3 8B",
+                "aya_expanse_8b": "Aya Expanse 8B",
+                "gemini_2_5_flash": "Gemini Flash",
+            }.get(str(engine), str(engine or "LLM"))
+            engine_text = f"{engine_label} ({model})"
         else:
             engine_text = engine or "local_llm"
         kind_text = "手動" if kind == "manual" else str(kind or "")

@@ -20,7 +20,7 @@ def translate_single_text_openai(text: str, payload: dict[str, Any]) -> tuple[st
     )
     if not endpoint:
         raise RuntimeError("REMOTE_LLM_ENDPOINT is not configured")
-    model = str(payload.get("model_name") or os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M"))
+    model = str(payload.get("model_name") or os.getenv("LOCAL_LLM_MODEL", "qwen3:4b-instruct"))
     timeout = int(payload.get("llm_timeout_seconds") or os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "300"))
     temperature = float(os.getenv("LOCAL_LLM_TEMPERATURE", "0"))
     max_tokens = int(os.getenv("LOCAL_LLM_MAX_OUTPUT_TOKENS", "2048"))
