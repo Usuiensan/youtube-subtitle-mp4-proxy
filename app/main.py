@@ -1473,9 +1473,79 @@ def cleanup_expired_cache() -> None:
             archive_cache_entry(key)
 
 
+def estimate_workspace_bytes(duration_seconds: float | int | None) -> int:
+    if not isinstance(duration_seconds, (int, float)) or duration_seconds <= 0:
+        return 2 * 1024 * 1024 * 1024
+    approx_source = int(duration_seconds * 1.5 * 1024 * 1024 / 8)
+    return max(2 * 1024 * 1024 * 1024, int(approx_source * 2.5))
+
+
+def reclaim_hot_space(target_free_bytes: int) -> dict[str, int]:
+    settings.cache_hot_dir.mkdir(parents=True, exist_ok=True)
+    if settings.cache_archive_dir is None:
+        return {"moved": 0, "freed_bytes": 0, "scanned": 0}
+
+    moved = 0
+    freed_bytes = 0
+    scanned = 0
+    candidates: list[tuple[float, str]] = []
+    for child in settings.cache_hot_dir.iterdir():
+        if not child.is_dir() or child.name.startswith(".work-"):
+            continue
+        newest = cache_entry_newest_mtime(child)
+        if newest == 0:
+            continue
+        candidates.append((newest, child.name))
+
+    for _newest, key in sorted(candidates):
+        scanned += 1
+        if hot_free_bytes() >= target_free_bytes:
+            break
+        entry = entry_dir(key)
+        if not entry.exists():
+            continue
+        size = dir_size_bytes(entry)
+        if archive_cache_entry(key):
+            moved += 1
+            freed_bytes += size
+    return {"moved": moved, "freed_bytes": freed_bytes, "scanned": scanned}
+
+
 async def cleanup_expired_cache_async() -> None:
     async with _cleanup_lock:
         await asyncio.to_thread(cleanup_expired_cache)
+
+
+async def ensure_prepare_workspace_capacity(required_bytes: int | None = None) -> None:
+    if required_bytes is None or required_bytes <= 0:
+        required_bytes = 0
+    target_free_bytes = max(settings.cache_hot_min_free_bytes, required_bytes)
+    if target_free_bytes <= 0:
+        return
+    if hot_free_bytes() >= target_free_bytes:
+        return
+
+    async with _cleanup_lock:
+        await asyncio.to_thread(cleanup_expired_cache)
+        if hot_free_bytes() >= target_free_bytes:
+            return
+        if settings.cache_archive_dir is None:
+            raise HTTPException(
+                status_code=507,
+                detail=(
+                    "Insufficient hot cache space and CACHE_ARCHIVE_DIR is not configured"
+                ),
+            )
+        await asyncio.to_thread(reclaim_hot_space, target_free_bytes)
+        if hot_free_bytes() >= target_free_bytes:
+            return
+    raise HTTPException(
+        status_code=507,
+        detail=(
+            "Insufficient hot cache space for a new prepare job. "
+            "Archive completed videos or free disk space first."
+        ),
+    )
 
 
 async def run_command(
@@ -3037,11 +3107,12 @@ async def create_mp4(
 
         work_dir = settings.cache_hot_dir / f".work-{key}-{uuid.uuid4().hex}"
         final_output.parent.mkdir(parents=True, exist_ok=True)
-        work_dir.mkdir(parents=True, exist_ok=True)
         try:
             info = await fetch_video_info(video_id)
             assert_duration_allowed(info)
             duration = float(info.get("duration") or 0.0)
+            await ensure_prepare_workspace_capacity(estimate_workspace_bytes(duration))
+            work_dir.mkdir(parents=True, exist_ok=True)
             saved_video, saved_subtitle, subtitle_meta = await prepare_sources(
                 key,
                 video_id,
@@ -3091,11 +3162,12 @@ async def create_hls_job(
 
         work_dir = settings.cache_hot_dir / f".work-{key}-{uuid.uuid4().hex}"
         playlist.parent.mkdir(parents=True, exist_ok=True)
-        work_dir.mkdir(parents=True, exist_ok=True)
         try:
             info = await fetch_video_info(video_id)
             assert_duration_allowed(info)
             duration = float(info.get("duration") or 0.0)
+            await ensure_prepare_workspace_capacity(estimate_workspace_bytes(duration))
+            work_dir.mkdir(parents=True, exist_ok=True)
             saved_video, saved_subtitle, subtitle_meta = await prepare_sources(
                 key,
                 video_id,
@@ -3822,7 +3894,8 @@ async def enqueue_prepare_job(
     reuse_source_video: bool = False,
 ) -> tuple[int, dict]:
     if subtitle_source_lang:
-        if not LANG_RE.fullmatch(subtitle_source_lang):
+        subtitle_source_lang = subtitle_source_lang.strip()
+        if not subtitle_source_lang:
             raise HTTPException(status_code=400, detail="Invalid subtitle source language")
     normalized_engine = normalize_translation_engine(translation_engine) if translation_engine else None
     ready = prepare_ready_path(video_id, lang, mode, subtitle_source_lang, normalized_engine)

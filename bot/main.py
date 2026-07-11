@@ -749,6 +749,9 @@ class SubtitleChoiceView(discord.ui.View):
         if not self.source_lang:
             await interaction.response.send_message("先に翻訳元字幕を選択してください。", ephemeral=True)
             return
+        if len(self.source_lang.strip()) > 32:
+            await interaction.response.send_message("翻訳元字幕の指定が不正です。字幕候補を開き直してください。", ephemeral=True)
+            return
         await interaction.response.defer(thinking=True, ephemeral=True)
         for child in self.children:
             child.disabled = True
