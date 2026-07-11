@@ -53,7 +53,7 @@ def looks_like_playlist_or_channel(value: str) -> bool:
     if query.get("list"):
         return True
     path_parts = [part for part in parsed.path.split("/") if part]
-    return any(part in {"playlist", "channel", "c", "@"} for part in path_parts)
+    return any(part in {"playlist", "channel", "c"} or part.startswith("@") for part in path_parts)
 
 
 def is_manual_video_list(value: str) -> bool:
@@ -79,19 +79,10 @@ def is_ambiguous_prepare_input(value: str) -> bool:
         has_video = True
     except ValueError:
         has_video = False
-    has_playlist = looks_like_playlist_or_channel(value)
-    if not value.startswith(("http://", "https://")) and ("." in value or "/" in value):
-        parsed = urllib.parse.urlparse("https://" + value)
-    else:
-        parsed = urllib.parse.urlparse(value)
-    query = urllib.parse.parse_qs(parsed.query)
-    if query.get("list") and has_video:
-        has_playlist = True
-    return has_video and has_playlist
+    return has_video and looks_like_playlist_or_channel(value)
 
 
 @dataclass(frozen=True)
 class PrepareInputDecision:
     scope: str
     normalized_value: str
-
