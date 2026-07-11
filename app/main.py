@@ -171,6 +171,8 @@ class Settings:
     gemini_flash_output_price_per_million = float(os.getenv("GEMINI_FLASH_OUTPUT_PRICE_PER_MILLION", "2.50"))
     gemini_max_requests_per_job = max(0, int(os.getenv("GEMINI_MAX_REQUESTS_PER_JOB", "3")))
     gemini_fallback_profile = os.getenv("GEMINI_FALLBACK_PROFILE", "qwen3_4b_instruct").strip().lower()
+    google_translate_free_chars_per_month = int(os.getenv("GOOGLE_TRANSLATE_FREE_CHARS_PER_MONTH", "500000"))
+    google_translate_price_usd_per_million_chars = float(os.getenv("GOOGLE_TRANSLATE_PRICE_USD_PER_MILLION_CHARS", "20.0"))
     usd_to_jpy_rate = float(os.getenv("USD_TO_JPY_RATE", "160.0"))
     translation_provider = os.getenv("TRANSLATION_PROVIDER", "qwen3_4b_instruct").strip().lower()
     translation_failure_dir = Path(
@@ -2433,8 +2435,30 @@ def gemini_overage_estimate(input_tokens: int, output_tokens: int) -> tuple[floa
     return usd, jpy
 
 
+def google_translate_overage_estimate(characters: int) -> tuple[int, float, float]:
+    overage_chars = max(0, characters - settings.google_translate_free_chars_per_month)
+    usd = (overage_chars / 1_000_000.0) * settings.google_translate_price_usd_per_million_chars
+    jpy = usd * settings.usd_to_jpy_rate
+    return overage_chars, usd, jpy
+
+
 def enrich_translation_metadata(metadata: dict) -> dict:
     engine = str(metadata.get("translation_engine") or "")
+    if engine == "google_cloud":
+        characters = int(metadata.get("translation_characters") or 0)
+        overage_chars, usd, jpy = google_translate_overage_estimate(characters)
+        return {
+            **metadata,
+            "translation_provider_label": "Google Cloud Translation",
+            "translation_billing_class": "Cloud Translation Basic NMT",
+            "translation_free_chars_per_month": settings.google_translate_free_chars_per_month,
+            "translation_price_usd_per_million_chars": settings.google_translate_price_usd_per_million_chars,
+            "translation_billable_overage_characters": overage_chars,
+            "translation_api_cost_usd": usd,
+            "translation_api_cost_jpy": jpy,
+            "translation_overage_estimate_usd": usd,
+            "translation_overage_estimate_jpy": jpy,
+        }
     if engine != "gemini_2_5_flash":
         return metadata
     input_tokens = int(metadata.get("translation_input_tokens") or 0)
@@ -2838,6 +2862,7 @@ async def translate_subtitle_if_needed(
         start_t = time.time()
         subtitles = load_srt(subtitle)
         subtitle_count = len(subtitles)
+        translation_characters = sum(len(sub.content) for sub in subtitles)
         if job_id:
             update_job_progress(job_id, "translate", 0.0, details="Google翻訳中...")
         translated_map = google_translate_events(
@@ -2866,8 +2891,10 @@ async def translate_subtitle_if_needed(
             "translation_model": None,
             "translation_fallback_used": False,
             "translation_created_at": int(time.time()),
+            "translation_characters": translation_characters,
+            "translation_request_count": subtitle_count,
         }
-        return translated_path, metadata
+        return translated_path, enrich_translation_metadata(metadata)
 
     if selected_settings.provider_name == "gemini_api":
         subtitles = load_srt(subtitle)
@@ -7641,29 +7668,8 @@ async def clear_all_youtube(
             except Exception as e:
                 print(f"Failed to delete {hls}: {e}", flush=True)
 
-        # 4. Clean source directory
-        source = base_dir / "source"
-        if source.exists() and source.is_dir():
-            # Delete translation.json
-            translation_meta = source / "translation.json"
-            if translation_meta.exists():
-                try:
-                    translation_meta.unlink()
-                    deleted_count += 1
-                except Exception as e:
-                    print(f"Failed to delete {translation_meta}: {e}", flush=True)
-
-            # Delete translated subtitles
-            try:
-                for file in source.iterdir():
-                    if file.is_file() and ".translated." in file.name:
-                        file.unlink()
-                        deleted_count += 1
-            except Exception as e:
-                print(f"Failed to clear translated subtitles in {source}: {e}", flush=True)
-
     return JSONResponse({
-        "message": f"すべての動画の初期化が完了しました。計 {deleted_count} 個のファイル/ディレクトリを削除しました。"
+        "message": f"すべての動画の焼き込み出力を初期化しました。Google翻訳を含む翻訳済み字幕データは保持しました。計 {deleted_count} 個のファイル/ディレクトリを削除しました。"
     })
 
 

@@ -604,7 +604,10 @@ def subtitle_status_text(meta: Any) -> str:
 
 
 def translation_usage_text(meta: Any) -> str:
-    if not isinstance(meta, dict) or str(meta.get("translation_engine") or "") != "gemini_2_5_flash":
+    if not isinstance(meta, dict):
+        return ""
+    engine = str(meta.get("translation_engine") or "")
+    if engine not in {"gemini_2_5_flash", "google_cloud"}:
         return ""
     provider_label = str(meta.get("translation_provider_label") or "Gemini Flash")
     billing_class = str(meta.get("translation_billing_class") or "Gemini API Free Tier")
@@ -612,17 +615,33 @@ def translation_usage_text(meta: Any) -> str:
     input_tokens = int(meta.get("translation_input_tokens") or 0)
     output_tokens = int(meta.get("translation_output_tokens") or 0)
     api_cost_jpy = float(meta.get("translation_api_cost_jpy") or 0.0)
+    api_cost_usd = float(meta.get("translation_api_cost_usd") or 0.0)
     overage_usd = float(meta.get("translation_overage_estimate_usd") or 0.0)
     overage_jpy = float(meta.get("translation_overage_estimate_jpy") or 0.0)
-    return (
+    free_chars = int(meta.get("translation_free_chars_per_month") or 0)
+    overage_chars = int(meta.get("translation_billable_overage_characters") or 0)
+    lines = [
         f"\n翻訳エンジン: {provider_label}"
-        f"\nAPI料金: ¥{api_cost_jpy:,.0f}"
-        f"\n課金区分: {billing_class}"
-        f"\n翻訳文字数: {characters:,}文字"
-        f"\n入力トークン: {input_tokens:,}"
-        f"\n出力トークン: {output_tokens:,}"
-        f"\n無料枠超過時の概算料金: ${overage_usd:,.4f} / ¥{overage_jpy:,.2f}"
-    )
+    ]
+    if api_cost_usd:
+        lines.append(f"API料金: ${api_cost_usd:,.4f} / ¥{api_cost_jpy:,.2f}")
+    else:
+        lines.append(f"API料金: ¥{api_cost_jpy:,.2f}")
+    lines.extend([
+        f"課金区分: {billing_class}",
+        f"翻訳文字数: {characters:,}文字",
+    ])
+    if free_chars:
+        lines.append(f"月間無料枠: {free_chars:,}文字")
+    if overage_chars:
+        lines.append(f"無料枠超過文字数: {overage_chars:,}文字")
+    if input_tokens or output_tokens:
+        lines.extend([
+            f"入力トークン: {input_tokens:,}",
+            f"出力トークン: {output_tokens:,}",
+        ])
+    lines.append(f"無料枠超過時の概算料金: ${overage_usd:,.4f} / ¥{overage_jpy:,.2f}")
+    return "\n".join(lines)
 
 
 def sanitize_progress_details(details: Any) -> str:
@@ -1340,7 +1359,7 @@ async def clear_command(
     )
 
 
-@client.tree.command(name="clear-all", description="すべての動画の再エンコードされた動画及び翻訳済みテキストファイルを削除して初期化します")
+@client.tree.command(name="clear-all", description="すべての動画の再エンコード出力だけを削除します。翻訳済み字幕は保持します")
 async def clear_all_command(
     interaction: discord.Interaction,
 ) -> None:
