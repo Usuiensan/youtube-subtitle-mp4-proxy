@@ -3352,6 +3352,7 @@ def build_ass_from_srt(
     margin_v: int,
     font_size: int,
     keep_source_line_breaks: bool = True,
+    subtitles_override: list[srt.Subtitle] | None = None,
 ) -> None:
     def ass_time(value: Any) -> str:
         total = int(round(value.total_seconds() * 100))
@@ -3360,7 +3361,7 @@ def build_ass_from_srt(
         seconds, centiseconds = divmod(remainder, 100)
         return f"{hours}:{minutes:02d}:{seconds:02d}.{centiseconds:02d}"
 
-    subtitles = load_srt(subtitle_path)
+    subtitles = subtitles_override if subtitles_override is not None else load_srt(subtitle_path)
     primary_colour = settings.subtitle_primary_colour
     back_colour = settings.subtitle_back_colour
     lines = [
@@ -3399,6 +3400,102 @@ def build_ass_from_srt(
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def ass_text_width(text: str) -> float:
+    width = 0.0
+    for ch in text:
+        code = ord(ch)
+        if ch.isspace():
+            width += 0.35
+        elif code < 0x80:
+            width += 0.55
+        elif 0x3040 <= code <= 0x30FF:
+            width += 1.0
+        elif 0x4E00 <= code <= 0x9FFF:
+            width += 1.0
+        else:
+            width += 0.85
+    return width
+
+
+def wrap_text_to_width(text: str, max_width: float) -> list[str]:
+    normalized = " ".join(text.replace("\r\n", "\n").replace("\r", "\n").split())
+    if not normalized:
+        return [""]
+    words = normalized.split(" ")
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = word if not current else f"{current} {word}"
+        if current and ass_text_width(candidate) > max_width:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines or [normalized]
+
+
+def balance_line_counts(left_lines: list[str], right_lines: list[str]) -> tuple[list[str], list[str]]:
+    target = max(len(left_lines), len(right_lines), 1)
+
+    def pad(lines: list[str]) -> list[str]:
+        if not lines:
+            return ["" for _ in range(target)]
+        lines = lines[:]
+        while len(lines) < target:
+            index = min(range(len(lines)), key=lambda i: len(lines[i]))
+            segment = lines.pop(index)
+            parts = segment.split(" ", 1)
+            if len(parts) == 2:
+                head, tail = parts
+                lines.insert(index, tail)
+                lines.insert(index, head)
+            else:
+                split_at = max(1, len(segment) // 2)
+                lines.insert(index, segment[:split_at].strip())
+                lines.insert(index + 1, segment[split_at:].strip())
+            lines = [line for line in lines if line is not None]
+        return lines[:target]
+
+    left_padded = pad(left_lines)
+    right_padded = pad(right_lines)
+    return left_padded, right_padded
+
+
+def paired_wrap_subtitles(
+    source_subtitles: list[srt.Subtitle],
+    translated_subtitles: list[srt.Subtitle],
+    *,
+    width_chars: float,
+) -> tuple[list[srt.Subtitle], list[srt.Subtitle]]:
+    source_wrapped: list[srt.Subtitle] = []
+    translated_wrapped: list[srt.Subtitle] = []
+    for source_sub, translated_sub in zip(source_subtitles, translated_subtitles):
+        source_lines = wrap_text_to_width(source_sub.content, width_chars)
+        translated_lines = wrap_text_to_width(translated_sub.content, width_chars)
+        source_lines, translated_lines = balance_line_counts(source_lines, translated_lines)
+        source_wrapped.append(
+            srt.Subtitle(
+                index=source_sub.index,
+                start=source_sub.start,
+                end=source_sub.end,
+                content="\n".join(source_lines),
+                proprietary=source_sub.proprietary,
+            )
+        )
+        translated_wrapped.append(
+            srt.Subtitle(
+                index=translated_sub.index,
+                start=translated_sub.start,
+                end=translated_sub.end,
+                content="\n".join(translated_lines),
+                proprietary=translated_sub.proprietary,
+            )
+        )
+    return source_wrapped, translated_wrapped
+
+
 def ffmpeg_dual_subtitle_args(
     original_subtitle: Path,
     translated_subtitle: Path,
@@ -3418,6 +3515,13 @@ def ffmpeg_dual_subtitle_args(
     left_column_right_margin = max(right_margin, play_res_x - (side_gap + column_width))
     right_column_left_margin = side_gap + column_width + center_gap
     bottom_margin = max(settings.subtitle_margin_v, 52)
+    source_subtitles = load_srt(original_subtitle)
+    translated_subtitles = load_srt(translated_subtitle)
+    source_subtitles, translated_subtitles = paired_wrap_subtitles(
+        source_subtitles,
+        translated_subtitles,
+        width_chars=max(column_width / max(dual_font_size * 0.55, 1.0), 8.0),
+    )
     build_ass_from_srt(
         original_subtitle,
         original_ass,
@@ -3427,6 +3531,7 @@ def ffmpeg_dual_subtitle_args(
         margin_v=bottom_margin,
         font_size=dual_font_size,
         keep_source_line_breaks=False,
+        subtitles_override=source_subtitles,
     )
     build_ass_from_srt(
         translated_subtitle,
@@ -3436,6 +3541,7 @@ def ffmpeg_dual_subtitle_args(
         margin_r=right_margin,
         margin_v=bottom_margin,
         font_size=dual_font_size,
+        subtitles_override=translated_subtitles,
     )
     font_file, font_name = find_japanese_font_spec()
     subtitle_font_name = font_name or settings.subtitle_font
