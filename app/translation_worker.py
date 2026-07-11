@@ -311,7 +311,8 @@ def main() -> int:
 
         return {"id": item.get("id"), "text": translated_text}, usage
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    max_workers = 1 if provider == "gemini_api" else int(os.getenv("TRANSLATION_WORKER_MAX_WORKERS", "10"))
+    with ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
         results = list(executor.map(process_item, target))
 
     for trans, usage in results:

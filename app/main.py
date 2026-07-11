@@ -31,6 +31,7 @@ from fastapi.responses import (
 )
 
 from app.translation import (
+    TranslationError,
     TranslationSettings,
     google_translate_events,
     load_srt,
@@ -168,6 +169,8 @@ class Settings:
     gemini_billing_mode = os.getenv("GEMINI_BILLING_MODE", "free_tier").strip().lower()
     gemini_flash_input_price_per_million = float(os.getenv("GEMINI_FLASH_INPUT_PRICE_PER_MILLION", "0.30"))
     gemini_flash_output_price_per_million = float(os.getenv("GEMINI_FLASH_OUTPUT_PRICE_PER_MILLION", "2.50"))
+    gemini_max_requests_per_job = max(0, int(os.getenv("GEMINI_MAX_REQUESTS_PER_JOB", "3")))
+    gemini_fallback_profile = os.getenv("GEMINI_FALLBACK_PROFILE", "qwen3_4b_instruct").strip().lower()
     usd_to_jpy_rate = float(os.getenv("USD_TO_JPY_RATE", "160.0"))
     translation_provider = os.getenv("TRANSLATION_PROVIDER", "qwen3_4b_instruct").strip().lower()
     translation_failure_dir = Path(
@@ -844,7 +847,7 @@ def cache_key(
 
 def render_profile_id() -> str:
     return hashlib.sha1(
-        "\n".join([subtitle_force_style(), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
+        "\n".join(["dual-subtitle-layout-v3", subtitle_force_style(), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
     ).hexdigest()[:8]
 
 
@@ -1995,6 +1998,26 @@ def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
     )
 
 
+def is_non_retryable_gemini_quota_error(error: Exception) -> bool:
+    text = str(error).lower()
+    markers = (
+        "monthly spending cap",
+        "spending cap",
+        "requests per day",
+        "generaterequestsperday",
+        "daily quota",
+        "resource_exhausted",
+    )
+    return "gemini" in text and "429" in text and any(marker in text for marker in markers)
+
+
+def gemini_fallback_settings() -> TranslationSettings:
+    fallback_profile = normalize_translation_engine(settings.gemini_fallback_profile)
+    if fallback_profile == "gemini_2_5_flash" or fallback_profile == "google_cloud":
+        fallback_profile = "qwen3_4b_instruct"
+    return translation_settings(fallback_profile)
+
+
 def chat_profile_options() -> list[dict]:
     return [option for option in translation_profile_options() if option.get("value") != "google_cloud"]
 
@@ -2484,7 +2507,7 @@ def subtitle_overlay_drawtext_filters(
         y_expr = f"h/30+{i}*h/20"
         drawtext_filter = (
             f"drawtext=text='{escaped_line}'"
-            f":x=w*0.03:y={y_expr}:fontsize=h/18:fontcolor=white@1.0"
+            f":x=w*0.03:y={y_expr}:fontsize=h/24:fontcolor=white@1.0"
             f":box=1:boxcolor=black@0.75:boxborderw=h/100"
             f":enable='lt(t,10)'{font_opt}"
         )
@@ -2809,10 +2832,12 @@ async def translate_subtitle_if_needed(
     translated_path = work_dir / f"{subtitle.stem}.ja.translated.srt"
     requested_engine = normalize_translation_engine(selection.get("translation_engine_requested"))
     selected_settings = translation_settings(requested_engine)
+    subtitle_count = 0
 
     if requested_engine == "google_cloud":
         start_t = time.time()
         subtitles = load_srt(subtitle)
+        subtitle_count = len(subtitles)
         if job_id:
             update_job_progress(job_id, "translate", 0.0, details="Google翻訳中...")
         translated_map = google_translate_events(
@@ -2843,6 +2868,24 @@ async def translate_subtitle_if_needed(
             "translation_created_at": int(time.time()),
         }
         return translated_path, metadata
+
+    if selected_settings.provider_name == "gemini_api":
+        subtitles = load_srt(subtitle)
+        subtitle_count = len(subtitles)
+        estimated_requests = subtitle_count
+        if settings.gemini_max_requests_per_job <= 0 or estimated_requests > settings.gemini_max_requests_per_job:
+            fallback_settings = gemini_fallback_settings()
+            if job_id:
+                update_job_progress(
+                    job_id,
+                    "translate",
+                    0.0,
+                    details=(
+                        "Geminiリクエスト上限超過のためローカルLLMへ切替: "
+                        f"予定{estimated_requests}件 / 上限{settings.gemini_max_requests_per_job}件"
+                    ),
+                )
+            selected_settings = fallback_settings
 
     if selected_settings.provider_name == "openai_compatible":
         llm_available, llm_error = await remote_llm_available()
@@ -2876,17 +2919,47 @@ async def translate_subtitle_if_needed(
             details = f"翻訳中... {done_subtitles}/{total_subtitles} 字幕"
             update_job_progress(job_id, "translate", pct, eta_seconds=remaining, details=details)
 
-    result = await translate_srt_with_local_worker(
-        subtitle_path=subtitle,
-        output_path=translated_path,
-        video_title=str(info.get("title") or ""),
-        channel_name=extract_channel_name(info),
-        source_language=selection["source_language"],
-        target_language=selection["requested_language"],
-        settings=selected_settings,
-        run_worker=worker,
-        on_progress=on_prog,
-    )
+    try:
+        result = await translate_srt_with_local_worker(
+            subtitle_path=subtitle,
+            output_path=translated_path,
+            video_title=str(info.get("title") or ""),
+            channel_name=extract_channel_name(info),
+            source_language=selection["source_language"],
+            target_language=selection["requested_language"],
+            settings=selected_settings,
+            run_worker=worker,
+            on_progress=on_prog,
+        )
+    except TranslationError as error:
+        if selected_settings.provider_name != "gemini_api" or not is_non_retryable_gemini_quota_error(error):
+            raise
+        fallback_settings = gemini_fallback_settings()
+        if job_id:
+            update_job_progress(
+                job_id,
+                "translate",
+                0.0,
+                details="Gemini quota/spend cap到達のためローカルLLMへ切替",
+            )
+        if fallback_settings.provider_name == "openai_compatible":
+            llm_available, llm_error = await remote_llm_available()
+            if not llm_available:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Gemini quota reached and fallback LLM is unavailable. reason={llm_error}",
+                ) from error
+        result = await translate_srt_with_local_worker(
+            subtitle_path=subtitle,
+            output_path=translated_path,
+            video_title=str(info.get("title") or ""),
+            channel_name=extract_channel_name(info),
+            source_language=selection["source_language"],
+            target_language=selection["requested_language"],
+            settings=fallback_settings,
+            run_worker=worker,
+            on_progress=on_prog,
+        )
     end_t = time.time()
     try:
         subtitles = load_srt(translated_path)
@@ -3192,6 +3265,7 @@ def build_ass_from_srt(
         "ScriptType: v4.00+",
         "PlayResX: 1920",
         "PlayResY: 1080",
+        "WrapStyle: 0",
         "ScaledBorderAndShadow: yes",
         "",
         "[V4+ Styles]",
@@ -3232,8 +3306,10 @@ def ffmpeg_dual_subtitle_args(
     dual_font_size = max(settings.subtitle_font_size * 2, 40)
     left_margin = max(settings.subtitle_margin_l, 48)
     right_margin = max(settings.subtitle_margin_r, 48)
-    right_column_left_margin = 980
-    left_column_right_margin = 620
+    center_x = 960
+    column_gap = 48
+    left_column_right_margin = 1920 - center_x + column_gap
+    right_column_left_margin = center_x + column_gap
     bottom_margin = max(settings.subtitle_margin_v, 52)
     build_ass_from_srt(
         original_subtitle,
