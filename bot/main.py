@@ -2303,6 +2303,7 @@ import hmac
 
 
 import time
+import traceback
 
 
 
@@ -4097,8 +4098,12 @@ from pathlib import Path
 from typing import Any
 
 from .prepare_input import (
+    extract_video_id,
     extract_video_id as prepare_extract_video_id,
+    is_ambiguous_prepare_input,
     is_ambiguous_prepare_input as prepare_is_ambiguous_input,
+    is_manual_video_list as looks_like_manual_video_list,
+    looks_like_playlist_or_channel,
 )
 
 
@@ -31896,12 +31901,13 @@ async def fetch_batch(batch_id: str) -> tuple[int, dict[str, Any]]:
     return await prepare_api_request("GET", f"/prepare/batches/{urllib.parse.quote(batch_id)}")
 
 
-async def fetch_subtitle_options(video_id: str, lang: str, mode: str) -> tuple[int, dict[str, Any]]:
-    return await prepare_api_request(
+async def fetch_subtitle_options(video_id: str, lang: str, mode: str) -> dict[str, Any]:
+    _status, body = await prepare_api_request(
         "GET",
         f"/prepare/youtube/{urllib.parse.quote(video_id)}/{urllib.parse.quote(lang)}/subtitles",
         {"mode": mode},
     )
+    return body
 
 
 async def clear_video(video_id: str, lang: str) -> tuple[int, dict[str, Any]]:
@@ -206600,6 +206606,11 @@ async def handle_prepare_request(
 
 
 
+
+    except Exception as error:
+        traceback.print_exc()
+        await interaction.followup.send(f"準備処理中に予期しないエラーが発生しました: {type(error).__name__}: {error}", ephemeral=False)
+        return
 
     content = status_message(body, interaction.user.id)
 
