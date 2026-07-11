@@ -7,8 +7,29 @@ import sys
 import urllib.parse
 import urllib.error
 import urllib.request
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+
+
+_AUDIT_LOCK = threading.Lock()
+
+
+def append_audit_event(payload: dict[str, Any], event: dict[str, Any]) -> None:
+    audit_path = str(payload.get("_translation_audit_path") or "").strip()
+    if not audit_path:
+        return
+    record = {
+        "timestamp": int(time.time()),
+        **event,
+    }
+    try:
+        with _AUDIT_LOCK:
+            with open(audit_path, "a", encoding="utf-8") as file:
+                file.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except Exception:
+        pass
 
 
 def translate_single_text_openai(text: str, payload: dict[str, Any]) -> tuple[str, dict[str, int]]:
@@ -205,11 +226,55 @@ def main() -> int:
             return {"id": item.get("id"), "text": text}, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         item_payload = dict(payload)
         item_payload["prompt"] = build_single_subtitle_prompt(item, payload)
-        if provider == "gemini_api":
-            translated_text, usage = translate_single_text_gemini(text, item_payload)
-        else:
-            translated_text, usage = translate_single_text_openai(text, item_payload)
-        
+        append_audit_event(
+            item_payload,
+            {
+                "event": "request",
+                "provider": provider,
+                "model_name": item_payload.get("model_name"),
+                "item_id": item.get("id"),
+                "prompt": item_payload["prompt"],
+                "text": text,
+                "source_language": payload.get("source_language"),
+                "target_language": payload.get("target_language"),
+                "video_title": payload.get("video_title"),
+                "strict": bool(payload.get("strict")),
+                "previous_japanese_count": len(payload.get("previous_japanese") or []) if isinstance(payload.get("previous_japanese"), list) else 0,
+            },
+        )
+        try:
+            if provider == "gemini_api":
+                translated_text, usage = translate_single_text_gemini(text, item_payload)
+            else:
+                translated_text, usage = translate_single_text_openai(text, item_payload)
+        except Exception as error:
+            append_audit_event(
+                item_payload,
+                {
+                    "event": "error",
+                    "provider": provider,
+                    "model_name": item_payload.get("model_name"),
+                    "item_id": item.get("id"),
+                    "prompt": item_payload["prompt"],
+                    "text": text,
+                    "error": f"{type(error).__name__}: {error}",
+                },
+            )
+            raise
+        append_audit_event(
+            item_payload,
+            {
+                "event": "response",
+                "provider": provider,
+                "model_name": item_payload.get("model_name"),
+                "item_id": item.get("id"),
+                "prompt": item_payload["prompt"],
+                "text": text,
+                "response": translated_text,
+                "usage": usage,
+            },
+        )
+
         return {"id": item.get("id"), "text": translated_text}, usage
 
     with ThreadPoolExecutor(max_workers=10) as executor:

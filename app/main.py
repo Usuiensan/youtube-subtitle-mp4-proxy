@@ -151,6 +151,9 @@ class Settings:
     translation_failure_dir = Path(
         os.getenv("TRANSLATION_FAILURE_DIR", str(cache_hot_dir / ".translation-attempts"))
     )
+    translation_audit_dir = Path(
+        os.getenv("TRANSLATION_AUDIT_DIR", str(cache_hot_dir / ".translation-audit"))
+    )
     system_metrics_enabled = os.getenv("SYSTEM_METRICS_ENABLED", "1") != "0"
     system_metrics_interval_seconds = float(os.getenv("SYSTEM_METRICS_INTERVAL_SECONDS", "5"))
     system_metrics_history_seconds = int(os.getenv("SYSTEM_METRICS_HISTORY_SECONDS", "86400"))
@@ -506,6 +509,14 @@ def archive_translation_failure(
         )
     except Exception as error:
         print(f"Failed to archive translation failure: {error}", file=sys.stderr, flush=True)
+
+
+def translation_audit_path(payload: dict) -> Path:
+    video_id = str(payload.get("video_id") or "unknown")
+    lang = str(payload.get("target_language") or payload.get("lang") or "unknown")
+    model = str(payload.get("model_name") or "unknown").replace("/", "_").replace(":", "_")
+    stamp = datetime.now(JST).strftime("%Y%m%d-%H%M%S")
+    return settings.translation_audit_dir / f"{stamp}-{video_id}-{lang}-{model}-{uuid.uuid4().hex[:8]}.jsonl"
 
 
 def load_system_metrics_history() -> None:
@@ -2521,9 +2532,12 @@ async def run_translation_worker(payload: dict) -> dict:
     work_dir = Path(payload["_work_dir"])
     clean_payload = {key: value for key, value in payload.items() if key != "_work_dir"}
     attempt_dir = translation_attempt_dir(work_dir, clean_payload)
+    audit_path = translation_audit_path(clean_payload)
     input_path = attempt_dir / "payload.json"
     output_path = attempt_dir / "response.json"
     attempt_dir.mkdir(parents=True, exist_ok=True)
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    clean_payload["_translation_audit_path"] = str(audit_path)
     input_path.write_text(json.dumps(clean_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     process = await asyncio.create_subprocess_exec(
@@ -5098,6 +5112,7 @@ async def index() -> str:
         <button type="button" id="preparedTab" role="tab" aria-controls="preparedPanel" aria-selected="false">準備済み</button>
         <button type="button" id="monitorTab" role="tab" aria-controls="monitorPanel" aria-selected="false">監視</button>
         <button type="button" id="compareTab" role="tab" aria-controls="comparePanel" aria-selected="false">字幕比較</button>
+        <button type="button" id="auditTab" role="tab" aria-controls="auditPanel" aria-selected="false">監査ログ</button>
       </div>
     <form id="converter" class="tool" aria-labelledby="videoTab">
       <label>
@@ -5232,27 +5247,48 @@ async def index() -> str:
     <section id="comparePanel" class="tool" aria-labelledby="compareTab" hidden>
       <form id="compareForm">
         <label>
-          YouTube URL
-          <input id="compareUrl" name="compareUrl" type="url" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off">
+          YouTube URL / 動画ID
+          <input id="compareUrl" name="compareUrl" type="text" placeholder="https://www.youtube.com/watch?v=... or dQw4w9WgXcQ" autocomplete="off">
         </label>
         <div class="row">
           <label>
             翻訳元字幕
-            <input id="compareSourceLang" name="compareSourceLang" value="en-US" maxlength="12" autocomplete="off">
+            <input id="compareSourceLang" name="compareSourceLang" value="" maxlength="64" autocomplete="off">
           </label>
           <label>
             翻訳先
             <input id="compareTargetLang" name="compareTargetLang" value="ja" maxlength="12" autocomplete="off">
           </label>
         </div>
-        <div id="compareProfiles" class="profile-grid"></div>
         <div class="actions">
+          <button type="button" id="compareLoadVariantsButton" class="secondary">字幕候補を読み込む</button>
           <button type="button" id="comparePrepareButton">比較用に準備</button>
         </div>
         <output id="compareStatus"></output>
       </form>
+      <div id="compareVariants" class="job-list"></div>
       <video id="compareVideo" class="compare-video" controls></video>
       <div id="compareResults" class="compare-results"></div>
+    </section>
+    <section id="auditPanel" class="tool" aria-labelledby="auditTab" hidden>
+      <div class="actions">
+        <button type="button" id="auditRefreshButton">ログを更新</button>
+      </div>
+      <div class="row">
+        <label>
+          フィルタ
+          <input id="auditFilter" name="auditFilter" type="text" placeholder="video_id / model / provider" autocomplete="off">
+        </label>
+        <label>
+          件数
+          <input id="auditLimit" name="auditLimit" type="number" min="1" max="2000" step="1" value="200">
+        </label>
+      </div>
+      <output id="auditMessage"></output>
+      <div id="auditList" class="job-list"></div>
+      <h2>詳細</h2>
+      <output id="auditDetailTitle"></output>
+      <pre id="auditDetail" style="white-space: pre-wrap; overflow-wrap: anywhere;"></pre>
     </section>
     </section>
   </main>
@@ -5268,6 +5304,7 @@ async def index() -> str:
     const preparedTab = document.getElementById("preparedTab");
     const monitorTab = document.getElementById("monitorTab");
     const compareTab = document.getElementById("compareTab");
+    const auditTab = document.getElementById("auditTab");
     const input = document.getElementById("youtubeUrl");
     const lang = document.getElementById("lang");
     const mode = document.getElementById("mode");
@@ -5303,11 +5340,20 @@ async def index() -> str:
     const compareUrl = document.getElementById("compareUrl");
     const compareSourceLang = document.getElementById("compareSourceLang");
     const compareTargetLang = document.getElementById("compareTargetLang");
-    const compareProfiles = document.getElementById("compareProfiles");
+    const compareLoadVariantsButton = document.getElementById("compareLoadVariantsButton");
     const comparePrepareButton = document.getElementById("comparePrepareButton");
     const compareStatus = document.getElementById("compareStatus");
     const compareVideo = document.getElementById("compareVideo");
     const compareResults = document.getElementById("compareResults");
+    const compareVariants = document.getElementById("compareVariants");
+    const auditPanel = document.getElementById("auditPanel");
+    const auditRefreshButton = document.getElementById("auditRefreshButton");
+    const auditFilter = document.getElementById("auditFilter");
+    const auditLimit = document.getElementById("auditLimit");
+    const auditMessage = document.getElementById("auditMessage");
+    const auditList = document.getElementById("auditList");
+    const auditDetailTitle = document.getElementById("auditDetailTitle");
+    const auditDetail = document.getElementById("auditDetail");
 
     lang.value = defaultLang;
     jsonLang.value = defaultLang;
@@ -5318,18 +5364,22 @@ async def index() -> str:
       const preparedSelected = tool === "prepared";
       const monitorSelected = tool === "monitor";
       const compareSelected = tool === "compare";
-      form.hidden = jsonSelected || preparedSelected || monitorSelected || compareSelected;
+      const auditSelected = tool === "audit";
+      form.hidden = jsonSelected || preparedSelected || monitorSelected || compareSelected || auditSelected;
       jsonForm.hidden = !jsonSelected;
       preparedPanel.hidden = !preparedSelected;
       monitorPanel.hidden = !monitorSelected;
       comparePanel.hidden = !compareSelected;
-      videoTab.setAttribute("aria-selected", String(!jsonSelected && !preparedSelected && !monitorSelected && !compareSelected));
+      auditPanel.hidden = !auditSelected;
+      videoTab.setAttribute("aria-selected", String(!jsonSelected && !preparedSelected && !monitorSelected && !compareSelected && !auditSelected));
       jsonTab.setAttribute("aria-selected", String(jsonSelected));
       preparedTab.setAttribute("aria-selected", String(preparedSelected));
       monitorTab.setAttribute("aria-selected", String(monitorSelected));
       compareTab.setAttribute("aria-selected", String(compareSelected));
+      auditTab.setAttribute("aria-selected", String(auditSelected));
       if (preparedSelected) loadPreparedList();
       if (monitorSelected) updateMonitor();
+      if (auditSelected) loadAuditList();
     }}
 
     function extractVideoId(value) {{
@@ -5422,29 +5472,13 @@ async def index() -> str:
 
     function renderTranslationOptions() {{
       translationEngine.innerHTML = "";
-      compareProfiles.innerHTML = "";
       for (const option of translationOptions) {{
         const selectOption = document.createElement("option");
         selectOption.value = option.value;
         selectOption.textContent = option.label || option.value;
         if (option.default) selectOption.selected = true;
         translationEngine.appendChild(selectOption);
-
-        if (option.value !== "google_cloud") {{
-          const label = document.createElement("label");
-          const checkbox = document.createElement("input");
-          checkbox.type = "checkbox";
-          checkbox.value = option.value;
-          checkbox.checked = Boolean(option.default);
-          label.appendChild(checkbox);
-          label.append(`${{option.label || option.value}}${{option.model ? ` / ${{option.model}}` : ""}}`);
-          compareProfiles.appendChild(label);
-        }}
       }}
-    }}
-
-    function selectedCompareProfiles() {{
-      return Array.from(compareProfiles.querySelectorAll("input:checked")).map((input) => input.value);
     }}
 
     function percentText(value) {{
@@ -5795,28 +5829,151 @@ async def index() -> str:
       updateTexts();
     }}
 
+    function renderVariantList(items) {{
+      compareVariants.innerHTML = "";
+      compareResults.innerHTML = "";
+      if (!items.length) {{
+        compareVariants.textContent = "この動画IDに対応する字幕キャッシュはありません。";
+        return;
+      }}
+      for (const item of items) {{
+        const row = document.createElement("div");
+        row.className = "job-item";
+        const label = document.createElement("label");
+        label.style.fontWeight = "400";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = true;
+        checkbox.dataset.key = item.key || "";
+        checkbox.dataset.source = item.source_language || "";
+        checkbox.dataset.engine = item.translation_engine || "";
+        label.appendChild(checkbox);
+        label.append(` ${{item.label || item.key}}`);
+        row.appendChild(label);
+        const meta = document.createElement("div");
+        meta.textContent = `${{item.title || item.video_id || "-"}} / ${{item.source_language || "-"}} → ${{item.requested_language || "-"}}`;
+        row.appendChild(meta);
+        compareVariants.appendChild(row);
+      }}
+    }}
+
+    async function loadCompareVariants() {{
+      const videoId = extractVideoId(compareUrl.value || input.value);
+      if (!videoId) {{
+        compareStatus.textContent = "動画URLまたは動画IDを入力してください。";
+        return;
+      }}
+      compareStatus.textContent = "字幕候補を読み込み中...";
+      try {{
+        const body = await apiFetch(`/prepare/youtube/${{videoId}}/variants`);
+        const items = Array.isArray(body.variants) ? body.variants : [];
+        renderVariantList(items);
+        compareSourceLang.value = compareSourceLang.value || (items[0]?.source_language || "");
+        compareStatus.textContent = `${{items.length}} 件の字幕候補を読み込みました。`;
+      }} catch (error) {{
+        compareStatus.textContent = `字幕候補取得エラー: ${{error.message}}`;
+      }}
+    }}
+
+    function renderAuditDetail(name, records) {{
+      auditDetailTitle.textContent = name ? `${{name}} (${{records.length}} records)` : "";
+      auditDetail.textContent = records.map((record) => JSON.stringify(record, null, 2)).join("\n\n");
+    }}
+
+    function renderAuditList(items) {{
+      auditList.innerHTML = "";
+      auditDetail.textContent = "";
+      auditDetailTitle.textContent = "";
+      if (!items.length) {{
+        auditList.textContent = "監査ログはありません。";
+        return;
+      }}
+      for (const item of items) {{
+        const row = document.createElement("div");
+        row.className = "job-item";
+        const title = document.createElement("strong");
+        title.textContent = item.name;
+        row.appendChild(title);
+        const meta = document.createElement("div");
+        meta.textContent = `${{item.video_id || "-"}} / ${{item.lang || "-"}} / ${{item.model_name || "-"}} / req ${{item.request_count}} / resp ${{item.response_count}} / err ${{item.error_count}}`;
+        row.appendChild(meta);
+        if (item.sample_prompt) {{
+          const prompt = document.createElement("div");
+          prompt.textContent = `prompt: ${{item.sample_prompt.slice(0, 160)}}`;
+          row.appendChild(prompt);
+        }}
+        if (item.sample_response) {{
+          const response = document.createElement("div");
+          response.textContent = `response: ${{item.sample_response.slice(0, 160)}}`;
+          row.appendChild(response);
+        }}
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "secondary";
+        button.textContent = "詳細表示";
+        button.addEventListener("click", async () => {{
+          auditMessage.textContent = `読み込み中: ${{item.name}}`;
+          try {{
+            const detail = await apiFetch(`/translation-audit/${{encodeURIComponent(item.name)}}?limit=${{Number(auditLimit.value || 200)}}`);
+            renderAuditDetail(detail.name, Array.isArray(detail.records) ? detail.records : []);
+            auditMessage.textContent = `${{detail.count || 0}} records`;
+          }} catch (error) {{
+            auditMessage.textContent = `詳細取得エラー: ${{error.message}}`;
+          }}
+        }});
+        actions.appendChild(button);
+        row.appendChild(actions);
+        auditList.appendChild(row);
+      }}
+    }}
+
+    async function loadAuditList() {{
+      auditMessage.textContent = "監査ログを読み込み中...";
+      try {{
+        const body = await apiFetch("/translation-audit");
+        let items = Array.isArray(body.items) ? body.items : [];
+        const filter = (auditFilter.value || "").trim().toLowerCase();
+        if (filter) {{
+          items = items.filter((item) => [
+            item.name,
+            item.video_id,
+            item.model_name,
+            item.provider,
+            item.source_language,
+            item.lang,
+          ].some((value) => String(value || "").toLowerCase().includes(filter)));
+        }}
+        renderAuditList(items);
+        auditMessage.textContent = `${{items.length}} 件`;
+      }} catch (error) {{
+        auditMessage.textContent = `監査APIエラー: ${{error.message}}`;
+      }}
+    }}
+
     async function prepareCompare() {{
       const videoId = extractVideoId(compareUrl.value || input.value);
-      const source = compareSourceLang.value.trim();
       const target = compareTargetLang.value.trim() || "ja";
-      const profiles = selectedCompareProfiles();
-      if (!videoId || !source || profiles.length === 0) {{
-        compareStatus.textContent = "動画URL、翻訳元字幕、比較プロファイルを確認してください。";
+      const selectedVariants = Array.from(compareVariants.querySelectorAll("input[data-key]:checked"));
+      if (!videoId || selectedVariants.length === 0) {{
+        compareStatus.textContent = "動画URLと字幕候補を確認してください。";
         return;
       }}
       comparePrepareButton.disabled = true;
       try {{
         const profileBodies = [];
-        for (const profile of profiles) {{
-          const option = translationOptions.find((item) => item.value === profile) || {{ label: profile }};
-          compareStatus.textContent = `${{option.label}} を準備しています。`;
-          let body = await apiFetch(`/prepare/youtube/${{videoId}}/${{target}}/${{encodeURIComponent(source)}}/${{encodeURIComponent(profile)}}?mode=mp4`, {{ method: "POST" }});
-          if (body.status !== "ready" && body.status_url) {{
-            body = await waitForReady(body.status_url, option.label || profile);
+        for (const checkbox of selectedVariants) {{
+          const key = checkbox.dataset.key || "";
+          const sourceLang = checkbox.dataset.source || compareSourceLang.value.trim();
+          const engine = checkbox.dataset.engine || "";
+          compareStatus.textContent = `${{key}} を読み込んでいます。`;
+          const eventsBody = await apiFetch(`/prepare/subtitle-events/${{encodeURIComponent(key)}}`);
+          profileBodies.push({{ label: checkbox.parentElement?.textContent?.trim() || key, events: eventsBody.events || [] }});
+          if (engine) {{
+            const body = await apiFetch(`/prepare/youtube/${{videoId}}/${{target}}/${{encodeURIComponent(sourceLang)}}/${{encodeURIComponent(engine)}}?mode=mp4`, {{ method: "POST" }});
+            if (!compareVideo.src && body.url) compareVideo.src = publicUrl(body.url);
           }}
-          const eventsBody = await apiFetch(`/prepare/youtube/${{videoId}}/${{target}}/${{encodeURIComponent(source)}}/${{encodeURIComponent(profile)}}/subtitle-events`);
-          profileBodies.push({{ label: option.label || profile, events: eventsBody.events || [] }});
-          if (!compareVideo.src && body.url) compareVideo.src = publicUrl(body.url);
         }}
         renderCompareResults(profileBodies);
         compareStatus.textContent = "比較用字幕を読み込みました。動画を一時停止またはシークして確認できます。";
@@ -6018,6 +6175,7 @@ async def index() -> str:
     }});
     prepareButton.addEventListener("click", prepareCurrentVideo);
     notifyButton.addEventListener("click", requestNotifications);
+    compareLoadVariantsButton.addEventListener("click", loadCompareVariants);
     comparePrepareButton.addEventListener("click", prepareCompare);
     sourceUrl.addEventListener("input", updateJson);
     sourceType.addEventListener("change", updateJson);
@@ -6036,6 +6194,13 @@ async def index() -> str:
       if (jsonResult.textContent) await navigator.clipboard.writeText(jsonResult.textContent);
     }});
     preparedRefreshButton.addEventListener("click", loadPreparedList);
+    auditRefreshButton.addEventListener("click", loadAuditList);
+    auditFilter.addEventListener("input", () => {{
+      if (!auditPanel.hidden) loadAuditList();
+    }});
+    auditLimit.addEventListener("change", () => {{
+      if (!auditPanel.hidden) loadAuditList();
+    }});
     renderTranslationOptions();
   </script>
 </body>
@@ -6067,6 +6232,126 @@ async def monitor_system(seconds: int = Query(3600, ge=60, le=86400)) -> JSONRes
             "history": history,
         }
     )
+
+
+def _translation_audit_files() -> list[Path]:
+    root = settings.translation_audit_dir
+    if not root.exists():
+        return []
+    files = [path for path in root.glob("*.jsonl") if path.is_file()]
+    files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return files
+
+
+def _read_jsonl_lines(path: Path, limit: int | None = None) -> list[dict]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    if limit is not None and limit > 0:
+        lines = lines[-limit:]
+    records: list[dict] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+def _list_cached_variants_for_video(video_id: str) -> list[dict]:
+    roots = [settings.cache_hot_dir]
+    if settings.cache_archive_dir is not None:
+        roots.append(settings.cache_archive_dir)
+    variants: list[dict] = []
+    seen: set[str] = set()
+    for root in roots:
+        if root is None or not root.exists():
+            continue
+        for child in root.iterdir():
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            source_meta = read_json_file(child / "source.json")
+            if source_meta.get("video_id") != video_id:
+                continue
+            subtitle_meta = source_meta.get("subtitle_meta") if isinstance(source_meta.get("subtitle_meta"), dict) else {}
+            key = child.name
+            if key in seen:
+                continue
+            seen.add(key)
+            source_lang = subtitle_meta.get("source_language")
+            requested_lang = subtitle_meta.get("requested_language")
+            translated = bool(subtitle_meta.get("translated"))
+            engine = str(subtitle_meta.get("translation_engine_requested") or subtitle_meta.get("translation_engine") or "").strip()
+            model = str(subtitle_meta.get("translation_model") or "").strip()
+            label = f"{source_lang or 'unknown'} → {requested_lang or 'unknown'}"
+            if translated:
+                label += f" / {subtitle_translation_service_label(subtitle_meta) or engine or 'translation'}"
+            variants.append(
+                {
+                    "key": key,
+                    "video_id": video_id,
+                    "lang": source_meta.get("lang"),
+                    "title": source_meta.get("title") or video_id,
+                    "source_language": source_lang,
+                    "requested_language": requested_lang,
+                    "translated": translated,
+                    "translation_engine": engine,
+                    "translation_model": model,
+                    "label": label,
+                }
+            )
+    variants.sort(key=lambda item: (str(item.get("requested_language") or ""), str(item.get("source_language") or ""), str(item.get("translation_engine") or "")))
+    return variants
+
+
+@app.get("/translation-audit")
+async def translation_audit_index() -> JSONResponse:
+    items = []
+    for path in _translation_audit_files():
+        records = _read_jsonl_lines(path)
+        first = records[0] if records else {}
+        last = records[-1] if records else {}
+        items.append(
+            {
+                "name": path.name,
+                "path": str(path),
+                "updated_at": int(path.stat().st_mtime),
+                "request_count": sum(1 for rec in records if str(rec.get("event") or "") == "request"),
+                "response_count": sum(1 for rec in records if str(rec.get("event") or "") == "response"),
+                "error_count": sum(1 for rec in records if str(rec.get("event") or "") == "error"),
+                "video_id": first.get("video_id") or last.get("video_id"),
+                "lang": first.get("target_language") or last.get("target_language"),
+                "model_name": first.get("model_name") or last.get("model_name"),
+                "provider": first.get("provider") or last.get("provider"),
+                "source_language": first.get("source_language") or last.get("source_language"),
+                "sample_prompt": first.get("prompt") or "",
+                "sample_response": last.get("response") or "",
+            }
+        )
+    return JSONResponse({"count": len(items), "items": items})
+
+
+@app.get("/translation-audit/{name}")
+async def translation_audit_detail(name: str, limit: int = Query(200, ge=1, le=2000)) -> JSONResponse:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+        raise HTTPException(status_code=400, detail="Invalid audit file name")
+    path = settings.translation_audit_dir / name
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Audit file not found")
+    records = _read_jsonl_lines(path, limit=limit)
+    return JSONResponse({"name": name, "path": str(path), "count": len(records), "records": records})
+
+
+@app.get("/prepare/youtube/{video_id}/variants")
+async def prepare_youtube_variants(video_id: str, request: Request) -> JSONResponse:
+    require_prepare_auth(request)
+    validate_input(video_id, "ja")
+    return JSONResponse({"video_id": video_id, "variants": _list_cached_variants_for_video(video_id)})
 
 
 @app.get("/yamaplayer/playlist")
@@ -6309,6 +6594,24 @@ async def prepared_subtitle_events(
             "source_lang": source_lang,
             "translation_engine": normalized_engine,
             "subtitle": read_subtitle_meta(key),
+            "events": subtitle_events_for_key(key),
+        }
+    )
+
+
+@app.get("/prepare/subtitle-events/{key}")
+async def prepared_subtitle_events_by_key(key: str, request: Request) -> JSONResponse:
+    require_prepare_auth(request)
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", key):
+        raise HTTPException(status_code=400, detail="Invalid cache key")
+    subtitle_meta = read_subtitle_meta(key)
+    source_lang, translation_engine = prepared_variant_from_meta(subtitle_meta)
+    return JSONResponse(
+        {
+            "key": key,
+            "subtitle": subtitle_meta,
+            "source_lang": source_lang,
+            "translation_engine": translation_engine,
             "events": subtitle_events_for_key(key),
         }
     )
