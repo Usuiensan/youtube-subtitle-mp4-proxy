@@ -1796,6 +1796,133 @@ async def remote_llm_available() -> tuple[bool, str | None]:
     return await asyncio.to_thread(check)
 
 
+def chat_prompt_from_messages(messages: list[dict[str, Any]], system_prompt: str | None = None) -> str:
+    lines: list[str] = []
+    if system_prompt:
+        lines.append(f"system: {system_prompt.strip()}")
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "user").strip().lower()
+        content = str(message.get("content") or "").strip()
+        if not content:
+            continue
+        if role not in {"user", "assistant", "system"}:
+            role = "user"
+        lines.append(f"{role}: {content}")
+    lines.append("assistant:")
+    return "\n".join(lines)
+
+
+def chat_completion_with_provider(
+    *,
+    provider_name: str,
+    model_name: str,
+    prompt: str,
+    timeout_seconds: int,
+    api_key: str,
+    endpoint: str,
+    temperature: float = 0.4,
+    max_tokens: int = 1024,
+) -> tuple[str, dict[str, int]]:
+    if provider_name == "gemini_api":
+        gemini_endpoint = os.getenv(
+            "GEMINI_API_ENDPOINT",
+            "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        ).format(model=urllib.parse.quote(model_name, safe=""))
+        url = f"{gemini_endpoint}?key={urllib.parse.quote(api_key, safe='')}"
+        body = json.dumps(
+            {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [{"text": prompt}],
+                    }
+                ],
+                "generationConfig": {
+                    "temperature": temperature,
+                    "maxOutputTokens": max_tokens,
+                },
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        candidates = data.get("candidates")
+        if not isinstance(candidates, list) or not candidates:
+            raise RuntimeError("gemini api returned no candidates")
+        content = candidates[0].get("content") if isinstance(candidates[0], dict) else None
+        parts = content.get("parts") if isinstance(content, dict) else None
+        if not isinstance(parts, list) or not parts or not isinstance(parts[0], dict) or not parts[0].get("text"):
+            raise RuntimeError("gemini api returned no text part")
+        reply = str(parts[0]["text"]).strip()
+        usage = data.get("usageMetadata") if isinstance(data.get("usageMetadata"), dict) else {}
+        return reply, {
+            "input_tokens": int(usage.get("promptTokenCount") or 0),
+            "output_tokens": int(usage.get("candidatesTokenCount") or 0),
+            "total_tokens": int(usage.get("totalTokenCount") or 0),
+        }
+
+    body = json.dumps(
+        {
+            "model": model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+    ).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    content = data["choices"][0]["message"]["content"].strip()
+    if content.startswith('"') and content.endswith('"'):
+        content = content[1:-1].strip()
+    elif content.startswith("'") and content.endswith("'"):
+        content = content[1:-1].strip()
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    return content, {
+        "input_tokens": int(usage.get("prompt_tokens") or 0),
+        "output_tokens": int(usage.get("completion_tokens") or 0),
+        "total_tokens": int(usage.get("total_tokens") or 0),
+    }
+
+
+async def run_chat_completion(payload: dict[str, Any]) -> dict[str, Any]:
+    profile_id = normalize_translation_engine(str(payload.get("profile") or payload.get("translation_engine") or settings.translation_default_profile))
+    selected = translation_settings(profile_id)
+    prompt = chat_prompt_from_messages(
+        payload.get("messages") if isinstance(payload.get("messages"), list) else [],
+        str(payload.get("system_prompt") or "").strip() or None,
+    )
+    timeout_seconds = int(payload.get("timeout_seconds") or settings.local_llm_timeout_seconds)
+    max_tokens = int(payload.get("max_tokens") or os.getenv("LOCAL_LLM_MAX_OUTPUT_TOKENS", "1024"))
+    temperature = float(payload.get("temperature") or os.getenv("LOCAL_LLM_TEMPERATURE", "0.4"))
+
+    def call() -> tuple[str, dict[str, int]]:
+        return chat_completion_with_provider(
+            provider_name=selected.provider_name,
+            model_name=selected.model_name,
+            prompt=prompt,
+            timeout_seconds=timeout_seconds,
+            api_key=settings.remote_llm_api_key if selected.provider_name == "openai_compatible" else settings.gemini_api_key,
+            endpoint=settings.remote_llm_endpoint,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    reply, usage = await asyncio.to_thread(call)
+    return {
+        "profile": profile_id,
+        "provider": selected.provider_name,
+        "model": selected.model_name,
+        "reply": reply,
+        "usage": usage,
+    }
+
+
 def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
     normalized = normalize_translation_engine(profile_id)
     model_name = settings.local_llm_profile_models.get(normalized, "")
@@ -1820,6 +1947,10 @@ def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
         google_project=settings.google_cloud_project,
         provider_name=provider_name,
     )
+
+
+def chat_profile_options() -> list[dict]:
+    return [option for option in translation_profile_options() if option.get("value") != "google_cloud"]
 
 
 def manual_subtitle_candidates(info: dict, requested_lang: str) -> list[dict]:
@@ -5112,6 +5243,7 @@ async def index() -> str:
         <button type="button" id="preparedTab" role="tab" aria-controls="preparedPanel" aria-selected="false">準備済み</button>
         <button type="button" id="monitorTab" role="tab" aria-controls="monitorPanel" aria-selected="false">監視</button>
         <button type="button" id="compareTab" role="tab" aria-controls="comparePanel" aria-selected="false">字幕比較</button>
+        <button type="button" id="chatTab" role="tab" aria-controls="chatPanel" aria-selected="false">LLM</button>
         <button type="button" id="auditTab" role="tab" aria-controls="auditPanel" aria-selected="false">監査ログ</button>
       </div>
     <form id="converter" class="tool" aria-labelledby="videoTab">
@@ -5270,6 +5402,32 @@ async def index() -> str:
       <video id="compareVideo" class="compare-video" controls></video>
       <div id="compareResults" class="compare-results"></div>
     </section>
+    <section id="chatPanel" class="tool" aria-labelledby="chatTab" hidden>
+      <div class="row">
+        <label>
+          モデル
+          <select id="chatModel" name="chatModel"></select>
+        </label>
+        <label>
+          生成温度
+          <input id="chatTemperature" name="chatTemperature" type="number" min="0" max="2" step="0.1" value="0.4">
+        </label>
+      </div>
+      <label>
+        System prompt
+        <textarea id="chatSystemPrompt" name="chatSystemPrompt" placeholder="任意"></textarea>
+      </label>
+      <div id="chatLog" class="job-list"></div>
+      <label>
+        メッセージ
+        <textarea id="chatInput" name="chatInput" placeholder="質問を書く"></textarea>
+      </label>
+      <div class="actions">
+        <button type="button" id="chatSendButton">送信</button>
+        <button type="button" id="chatClearButton" class="secondary">履歴を消す</button>
+      </div>
+      <output id="chatStatus"></output>
+    </section>
     <section id="auditPanel" class="tool" aria-labelledby="auditTab" hidden>
       <div class="actions">
         <button type="button" id="auditRefreshButton">ログを更新</button>
@@ -5304,6 +5462,7 @@ async def index() -> str:
     const preparedTab = document.getElementById("preparedTab");
     const monitorTab = document.getElementById("monitorTab");
     const compareTab = document.getElementById("compareTab");
+    const chatTab = document.getElementById("chatTab");
     const auditTab = document.getElementById("auditTab");
     const input = document.getElementById("youtubeUrl");
     const lang = document.getElementById("lang");
@@ -5345,6 +5504,15 @@ async def index() -> str:
     const compareStatus = document.getElementById("compareStatus");
     const compareVideo = document.getElementById("compareVideo");
     const compareResults = document.getElementById("compareResults");
+    const chatPanel = document.getElementById("chatPanel");
+    const chatModel = document.getElementById("chatModel");
+    const chatTemperature = document.getElementById("chatTemperature");
+    const chatSystemPrompt = document.getElementById("chatSystemPrompt");
+    const chatLog = document.getElementById("chatLog");
+    const chatInput = document.getElementById("chatInput");
+    const chatSendButton = document.getElementById("chatSendButton");
+    const chatClearButton = document.getElementById("chatClearButton");
+    const chatStatus = document.getElementById("chatStatus");
     const compareVariants = document.getElementById("compareVariants");
     const auditPanel = document.getElementById("auditPanel");
     const auditRefreshButton = document.getElementById("auditRefreshButton");
@@ -5364,21 +5532,25 @@ async def index() -> str:
       const preparedSelected = tool === "prepared";
       const monitorSelected = tool === "monitor";
       const compareSelected = tool === "compare";
+      const chatSelected = tool === "chat";
       const auditSelected = tool === "audit";
-      form.hidden = jsonSelected || preparedSelected || monitorSelected || compareSelected || auditSelected;
+      form.hidden = jsonSelected || preparedSelected || monitorSelected || compareSelected || chatSelected || auditSelected;
       jsonForm.hidden = !jsonSelected;
       preparedPanel.hidden = !preparedSelected;
       monitorPanel.hidden = !monitorSelected;
       comparePanel.hidden = !compareSelected;
+      chatPanel.hidden = !chatSelected;
       auditPanel.hidden = !auditSelected;
-      videoTab.setAttribute("aria-selected", String(!jsonSelected && !preparedSelected && !monitorSelected && !compareSelected && !auditSelected));
+      videoTab.setAttribute("aria-selected", String(!jsonSelected && !preparedSelected && !monitorSelected && !compareSelected && !chatSelected && !auditSelected));
       jsonTab.setAttribute("aria-selected", String(jsonSelected));
       preparedTab.setAttribute("aria-selected", String(preparedSelected));
       monitorTab.setAttribute("aria-selected", String(monitorSelected));
       compareTab.setAttribute("aria-selected", String(compareSelected));
+      chatTab.setAttribute("aria-selected", String(chatSelected));
       auditTab.setAttribute("aria-selected", String(auditSelected));
       if (preparedSelected) loadPreparedList();
       if (monitorSelected) updateMonitor();
+      if (chatSelected) renderChat();
       if (auditSelected) loadAuditList();
     }}
 
@@ -5472,12 +5644,20 @@ async def index() -> str:
 
     function renderTranslationOptions() {{
       translationEngine.innerHTML = "";
+      chatModel.innerHTML = "";
       for (const option of translationOptions) {{
         const selectOption = document.createElement("option");
         selectOption.value = option.value;
         selectOption.textContent = option.label || option.value;
         if (option.default) selectOption.selected = true;
         translationEngine.appendChild(selectOption);
+        if (option.value !== "google_cloud") {{
+          const chatOption = document.createElement("option");
+          chatOption.value = option.value;
+          chatOption.textContent = `${{option.label || option.value}}${{option.model ? ` / ${{option.model}}` : ""}}`;
+          if (option.default) chatOption.selected = true;
+          chatModel.appendChild(chatOption);
+        }}
       }}
     }}
 
@@ -5829,6 +6009,72 @@ async def index() -> str:
       updateTexts();
     }}
 
+    const chatState = {{
+      messages: [],
+    }};
+
+    function renderChat() {{
+      chatLog.innerHTML = "";
+      if (!chatState.messages.length) {{
+        chatLog.textContent = "会話はまだありません。";
+        return;
+      }}
+      for (const message of chatState.messages) {{
+        const row = document.createElement("div");
+        row.className = "job-item";
+        const title = document.createElement("strong");
+        title.textContent = message.role === "assistant" ? "assistant" : message.role === "system" ? "system" : "user";
+        row.appendChild(title);
+        const body = document.createElement("div");
+        body.style.whiteSpace = "pre-wrap";
+        body.style.overflowWrap = "anywhere";
+        body.textContent = message.content;
+        row.appendChild(body);
+        chatLog.appendChild(row);
+      }}
+    }}
+
+    function addChatMessage(role, content) {{
+      chatState.messages.push({{ role, content }});
+      renderChat();
+    }}
+
+    async function sendChatMessage() {{
+      const content = chatInput.value.trim();
+      if (!content) {{
+        chatStatus.textContent = "メッセージを入力してください。";
+        return;
+      }}
+      const profile = chatModel.value || (translationOptions.find((item) => item.value !== "google_cloud" && item.default)?.value || translationOptions.find((item) => item.value !== "google_cloud")?.value || "");
+      if (!profile) {{
+        chatStatus.textContent = "利用可能なモデルがありません。";
+        return;
+      }}
+      addChatMessage("user", content);
+      chatInput.value = "";
+      chatSendButton.disabled = true;
+      chatStatus.textContent = "応答を取得中...";
+      try {{
+        const body = await apiFetch("/chat", {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json" }},
+          body: JSON.stringify({{
+            profile,
+            system_prompt: chatSystemPrompt.value.trim(),
+            messages: chatState.messages,
+            temperature: Number(chatTemperature.value || 0.4),
+            max_tokens: 1024,
+          }}),
+        }});
+        addChatMessage("assistant", body.reply || "");
+        chatStatus.textContent = `${{body.model || profile}} / ${{body.provider || "unknown"}}`;
+      }} catch (error) {{
+        chatStatus.textContent = `LLMエラー: ${{error.message}}`;
+      }} finally {{
+        chatSendButton.disabled = false;
+      }}
+    }}
+
     function renderVariantList(items) {{
       compareVariants.innerHTML = "";
       compareResults.innerHTML = "";
@@ -5877,7 +6123,7 @@ async def index() -> str:
 
     function renderAuditDetail(name, records) {{
       auditDetailTitle.textContent = name ? `${{name}} (${{records.length}} records)` : "";
-      auditDetail.textContent = records.map((record) => JSON.stringify(record, null, 2)).join("\n\n");
+      auditDetail.textContent = records.map((record) => JSON.stringify(record, null, 2)).join("\\n\\n");
     }}
 
     function renderAuditList(items) {{
@@ -6156,6 +6402,8 @@ async def index() -> str:
     preparedTab.addEventListener("click", () => selectTool("prepared"));
     monitorTab.addEventListener("click", () => selectTool("monitor"));
     compareTab.addEventListener("click", () => selectTool("compare"));
+    chatTab.addEventListener("click", () => selectTool("chat"));
+    auditTab.addEventListener("click", () => selectTool("audit"));
     setInterval(() => {{
       if (!monitorPanel.hidden) updateMonitor();
     }}, 5000);
@@ -6194,6 +6442,18 @@ async def index() -> str:
       if (jsonResult.textContent) await navigator.clipboard.writeText(jsonResult.textContent);
     }});
     preparedRefreshButton.addEventListener("click", loadPreparedList);
+    chatSendButton.addEventListener("click", sendChatMessage);
+    chatClearButton.addEventListener("click", () => {{
+      chatState.messages = [];
+      renderChat();
+      chatStatus.textContent = "";
+    }});
+    chatInput.addEventListener("keydown", (event) => {{
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {{
+        event.preventDefault();
+        sendChatMessage();
+      }}
+    }});
     auditRefreshButton.addEventListener("click", loadAuditList);
     auditFilter.addEventListener("input", () => {{
       if (!auditPanel.hidden) loadAuditList();
@@ -6267,8 +6527,7 @@ def _list_cached_variants_for_video(video_id: str) -> list[dict]:
     roots = [settings.cache_hot_dir]
     if settings.cache_archive_dir is not None:
         roots.append(settings.cache_archive_dir)
-    variants: list[dict] = []
-    seen: set[str] = set()
+    by_key: dict[str, dict] = {}
     for root in roots:
         if root is None or not root.exists():
             continue
@@ -6280,9 +6539,6 @@ def _list_cached_variants_for_video(video_id: str) -> list[dict]:
                 continue
             subtitle_meta = source_meta.get("subtitle_meta") if isinstance(source_meta.get("subtitle_meta"), dict) else {}
             key = child.name
-            if key in seen:
-                continue
-            seen.add(key)
             source_lang = subtitle_meta.get("source_language")
             requested_lang = subtitle_meta.get("requested_language")
             translated = bool(subtitle_meta.get("translated"))
@@ -6291,20 +6547,23 @@ def _list_cached_variants_for_video(video_id: str) -> list[dict]:
             label = f"{source_lang or 'unknown'} → {requested_lang or 'unknown'}"
             if translated:
                 label += f" / {subtitle_translation_service_label(subtitle_meta) or engine or 'translation'}"
-            variants.append(
-                {
-                    "key": key,
-                    "video_id": video_id,
-                    "lang": source_meta.get("lang"),
-                    "title": source_meta.get("title") or video_id,
-                    "source_language": source_lang,
-                    "requested_language": requested_lang,
-                    "translated": translated,
-                    "translation_engine": engine,
-                    "translation_model": model,
-                    "label": label,
-                }
-            )
+            entry = {
+                "key": key,
+                "video_id": video_id,
+                "lang": source_meta.get("lang"),
+                "storage": "hot" if root == settings.cache_hot_dir else "archive",
+                "title": source_meta.get("title") or video_id,
+                "source_language": source_lang,
+                "requested_language": requested_lang,
+                "translated": translated,
+                "translation_engine": engine,
+                "translation_model": model,
+                "label": label,
+            }
+            existing = by_key.get(key)
+            if existing is None or existing.get("storage") != "hot":
+                by_key[key] = entry
+    variants = list(by_key.values())
     variants.sort(key=lambda item: (str(item.get("requested_language") or ""), str(item.get("source_language") or ""), str(item.get("translation_engine") or "")))
     return variants
 
@@ -6352,6 +6611,19 @@ async def prepare_youtube_variants(video_id: str, request: Request) -> JSONRespo
     require_prepare_auth(request)
     validate_input(video_id, "ja")
     return JSONResponse({"video_id": video_id, "variants": _list_cached_variants_for_video(video_id)})
+
+
+@app.post("/chat")
+async def chat(request: Request) -> JSONResponse:
+    require_prepare_auth(request)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid request body")
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise HTTPException(status_code=400, detail="messages must be a non-empty array")
+    result = await run_chat_completion(payload)
+    return JSONResponse(result)
 
 
 @app.get("/yamaplayer/playlist")
