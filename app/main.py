@@ -1519,15 +1519,27 @@ async def cleanup_expired_cache_async() -> None:
 async def ensure_prepare_workspace_capacity(required_bytes: int | None = None) -> None:
     if required_bytes is None or required_bytes <= 0:
         required_bytes = 0
-    target_free_bytes = max(settings.cache_hot_min_free_bytes, required_bytes)
-    if target_free_bytes <= 0:
+    minimum_required = max(512 * 1024 * 1024, required_bytes)
+    if minimum_required <= 0:
         return
-    if hot_free_bytes() >= target_free_bytes:
+    current_free = hot_free_bytes()
+    if current_free >= minimum_required:
+        if settings.cache_hot_min_free_bytes > 0 and current_free < settings.cache_hot_min_free_bytes:
+            print(
+                f"Hot cache free space is below CACHE_HOT_MIN_FREE_BYTES: {current_free} < {settings.cache_hot_min_free_bytes}",
+                flush=True,
+            )
         return
 
     async with _cleanup_lock:
         await asyncio.to_thread(cleanup_expired_cache)
-        if hot_free_bytes() >= target_free_bytes:
+        current_free = hot_free_bytes()
+        if current_free >= minimum_required:
+            if settings.cache_hot_min_free_bytes > 0 and current_free < settings.cache_hot_min_free_bytes:
+                print(
+                    f"Hot cache free space is below CACHE_HOT_MIN_FREE_BYTES: {current_free} < {settings.cache_hot_min_free_bytes}",
+                    flush=True,
+                )
             return
         if settings.cache_archive_dir is None:
             raise HTTPException(
@@ -1536,8 +1548,14 @@ async def ensure_prepare_workspace_capacity(required_bytes: int | None = None) -
                     "Insufficient hot cache space and CACHE_ARCHIVE_DIR is not configured"
                 ),
             )
-        await asyncio.to_thread(reclaim_hot_space, target_free_bytes)
-        if hot_free_bytes() >= target_free_bytes:
+        await asyncio.to_thread(reclaim_hot_space, minimum_required)
+        current_free = hot_free_bytes()
+        if current_free >= minimum_required:
+            if settings.cache_hot_min_free_bytes > 0 and current_free < settings.cache_hot_min_free_bytes:
+                print(
+                    f"Hot cache free space is below CACHE_HOT_MIN_FREE_BYTES: {current_free} < {settings.cache_hot_min_free_bytes}",
+                    flush=True,
+                )
             return
     raise HTTPException(
         status_code=507,
