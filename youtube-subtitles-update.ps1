@@ -16,7 +16,7 @@ Start-Sleep -Seconds 2
 # 起動用 PS1 を独立した PowerShell 7 プロセスで起動
 $OllamaScript = Join-Path $PSScriptRoot "start-ollama.ps1"
 
-Start-Process `
+# Start-Process `
     -FilePath "pwsh.exe" `
     -ArgumentList @(
         "-NoLogo"
@@ -29,12 +29,12 @@ Start-Process `
     ) `
     -WindowStyle Hidden
 
-Write-Host "Ollama start process launched."
+# Write-Host "Ollama start process launched."
 
 # API 起動確認
 $OllamaReady = $false
 
-for ($i = 1; $i -le 15; $i++) {
+for ($i = 1; $i -le 3; $i++) {
     Start-Sleep -Seconds 1
 
     try {
@@ -47,6 +47,7 @@ for ($i = 1; $i -le 15; $i++) {
     }
     catch {
         Write-Host "Waiting for Ollama... ($i/15)"
+        break
     }
 }
 
