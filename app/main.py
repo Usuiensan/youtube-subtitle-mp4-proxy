@@ -2471,9 +2471,9 @@ def ffmpeg_subtitle_arg(path: Path, subtitle_meta: dict | None = None) -> str:
             y_expr = f"h/30+{i}*h/20"
             drawtext_filter = (
                 f"drawtext=text='{escaped_line}'"
-                f":x=h/30:y={y_expr}:fontsize=h/25:fontcolor=white@1.0"
-                f":box=1:boxcolor=black@1.0:boxborderw=h/100"
-                f":enable='lt(t,5)'{font_opt}"
+                f":x=w*0.03:y={y_expr}:fontsize=h/18:fontcolor=white@1.0"
+                f":box=1:boxcolor=black@0.75:boxborderw=h/100"
+                f":enable='lt(t,10)'{font_opt}"
             )
             drawtext_filters.append(drawtext_filter)
 
@@ -2848,18 +2848,18 @@ async def translate_subtitle_if_needed(
     on_prog = None
     start_t = time.time()
     if job_id:
-        def on_prog(current_window: int, total_windows: int):
-            pct = (current_window / total_windows) * 100.0 if total_windows > 0 else 0.0
+        def on_prog(done_subtitles: int, total_subtitles: int):
+            pct = (done_subtitles / total_subtitles) * 100.0 if total_subtitles > 0 else 0.0
             elapsed = time.time() - start_t
             remaining = None
-            if current_window > 0:
-                avg_time = elapsed / current_window
-                remaining = int(avg_time * (total_windows - current_window))
+            if done_subtitles > 0:
+                avg_time = elapsed / done_subtitles
+                remaining = int(avg_time * (total_subtitles - done_subtitles))
                 if job_id in _prepare_jobs:
                     _prepare_jobs[job_id]["eta_seconds"] = remaining
                     _prepare_jobs[job_id]["estimated_ready_at"] = int(time.time()) + remaining
             
-            details = f"翻訳中... {current_window}/{total_windows} ウィンドウ"
+            details = f"翻訳中... {done_subtitles}/{total_subtitles} 字幕"
             update_job_progress(job_id, "translate", pct, eta_seconds=remaining, details=details)
 
     result = await translate_srt_with_local_worker(
@@ -3152,7 +3152,16 @@ def check_existing_sources(key: str) -> tuple[Path, Path, dict] | None:
     return video_path, original_subtitle_path, subtitle_meta
 
 
-def build_ass_from_srt(subtitle_path: Path, output_path: Path, *, align: int, margin_l: int, margin_r: int, margin_v: int) -> None:
+def build_ass_from_srt(
+    subtitle_path: Path,
+    output_path: Path,
+    *,
+    align: int,
+    margin_l: int,
+    margin_r: int,
+    margin_v: int,
+    font_size: int,
+) -> None:
     def ass_time(value: Any) -> str:
         total = int(round(value.total_seconds() * 100))
         hours, remainder = divmod(total, 3600 * 100)
@@ -3161,6 +3170,8 @@ def build_ass_from_srt(subtitle_path: Path, output_path: Path, *, align: int, ma
         return f"{hours}:{minutes:02d}:{seconds:02d}.{centiseconds:02d}"
 
     subtitles = load_srt(subtitle_path)
+    primary_colour = settings.subtitle_primary_colour
+    back_colour = settings.subtitle_back_colour
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -3170,7 +3181,7 @@ def build_ass_from_srt(subtitle_path: Path, output_path: Path, *, align: int, ma
         "",
         "[V4+ Styles]",
         "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding",
-        f"Style: Default,{settings.subtitle_font},{settings.subtitle_font_size},&H00FFFFFF,&H000000FF,&H40000000,&H40000000,0,0,0,0,100,100,0,0,1,2,0,{align},{margin_l},{margin_r},{margin_v},1",
+        f"Style: Default,{settings.subtitle_font},{font_size},{primary_colour},&H000000FF,{back_colour},{back_colour},0,0,0,0,100,100,0,0,4,0,0,{align},{margin_l},{margin_r},{margin_v},1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -3196,8 +3207,32 @@ def build_ass_from_srt(subtitle_path: Path, output_path: Path, *, align: int, ma
 def ffmpeg_dual_subtitle_args(original_subtitle: Path, translated_subtitle: Path) -> list[str]:
     original_ass = original_subtitle.with_suffix(".left.ass")
     translated_ass = translated_subtitle.with_suffix(".right.ass")
-    build_ass_from_srt(original_subtitle, original_ass, align=1, margin_l=48, margin_r=0, margin_v=48)
-    build_ass_from_srt(translated_subtitle, translated_ass, align=1, margin_l=980, margin_r=0, margin_v=48)
+    dual_font_size = max(settings.subtitle_font_size + 6, 26)
+    left_margin = max(settings.subtitle_margin_l, 48)
+    right_margin = max(settings.subtitle_margin_r, 48)
+    gutter = 40
+    split_x = 960
+    left_column_right_margin = split_x + gutter
+    right_column_left_margin = split_x + gutter
+    bottom_margin = max(settings.subtitle_margin_v, 52)
+    build_ass_from_srt(
+        original_subtitle,
+        original_ass,
+        align=1,
+        margin_l=left_margin,
+        margin_r=left_column_right_margin,
+        margin_v=bottom_margin,
+        font_size=dual_font_size,
+    )
+    build_ass_from_srt(
+        translated_subtitle,
+        translated_ass,
+        align=1,
+        margin_l=right_column_left_margin,
+        margin_r=right_margin,
+        margin_v=bottom_margin,
+        font_size=dual_font_size,
+    )
     return [
         "-vf",
         f"ass='{escape_filter_value(original_ass.as_posix())}',ass='{escape_filter_value(translated_ass.as_posix())}'",

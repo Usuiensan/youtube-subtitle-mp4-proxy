@@ -269,6 +269,8 @@ async def translate_srt_with_local_worker(
     translated_subtitles: list[srt.Subtitle] = []
     fallback_used = False
     total_windows = len(windows)
+    total_subtitles = len(subtitles)
+    translated_count = 0
     usage_totals = {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -290,9 +292,10 @@ async def translate_srt_with_local_worker(
                 usage_totals[target_key] += int(value)
         usage_totals["requests"] += 1
 
+    if on_progress:
+        on_progress(0, total_subtitles)
+
     for index, window in enumerate(windows):
-        if on_progress:
-            on_progress(index, total_windows)
         translated_map: dict[str, str] | None = None
         last_error: Exception | None = None
         for strict in (False, True):
@@ -387,6 +390,9 @@ async def translate_srt_with_local_worker(
                     proprietary=sub.proprietary,
                 )
             )
+            translated_count += 1
+        if on_progress:
+            on_progress(translated_count, total_subtitles)
 
     save_srt(output_path, translated_subtitles)
     engine = "google_cloud" if fallback_used else settings.engine
