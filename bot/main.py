@@ -31950,7 +31950,7 @@ class PrepareScopeChoiceView(discord.ui.View):
 
     @discord.ui.button(label="再生リストとして全部処理", style=discord.ButtonStyle.primary)
     async def playlist_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await prepare_command(
+        await handle_prepare_request(
             interaction,
             self.source,
             self.lang,
@@ -31962,7 +31962,7 @@ class PrepareScopeChoiceView(discord.ui.View):
 
     @discord.ui.button(label="動画1件だけ処理", style=discord.ButtonStyle.secondary)
     async def single_button(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await prepare_command(
+        await handle_prepare_request(
             interaction,
             self.source,
             self.lang,
@@ -181222,6 +181222,24 @@ client = YoutubeProxyBot()
 
 
 async def prepare_command(
+    interaction: discord.Interaction,
+    url: str,
+    lang: str = "ja",
+    mode: app_commands.Choice[str] | None = None,
+    max_items: int | None = None,
+    archive_immediately: bool = False,
+) -> None:
+    await handle_prepare_request(
+        interaction,
+        url,
+        lang,
+        mode,
+        max_items,
+        archive_immediately,
+    )
+
+
+async def handle_prepare_request(
 
 
 
