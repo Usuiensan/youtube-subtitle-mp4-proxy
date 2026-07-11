@@ -590,7 +590,9 @@ def subtitle_status_text(meta: Any) -> str:
             engine_label = {
                 "qwen3_4b_instruct": "Qwen 3 4B Instruct",
                 "qwen3_8b": "Qwen 3 8B",
+                "qwen3_14b": "Qwen 3 14B",
                 "aya_expanse_8b": "Aya Expanse 8B",
+                "gemma3_12b": "Gemma 3 12B",
                 "gemini_2_5_flash": "Gemini Flash",
             }.get(str(engine), str(engine or "LLM"))
             engine_text = f"{engine_label} ({model})"

@@ -130,7 +130,9 @@ class Settings:
     local_llm_profile_models = {
         "qwen3_4b_instruct": os.getenv("LOCAL_LLM_MODEL_QWEN3_4B_INSTRUCT", os.getenv("REMOTE_LLM_MODEL", "qwen3:4b-instruct")).strip(),
         "qwen3_8b": os.getenv("LOCAL_LLM_MODEL_QWEN3_8B", "qwen3:8b").strip(),
+        "qwen3_14b": os.getenv("LOCAL_LLM_MODEL_QWEN3_14B", "qwen3:14b").strip(),
         "aya_expanse_8b": os.getenv("LOCAL_LLM_MODEL_AYA_EXPANSE_8B", "aya-expanse:8b").strip(),
+        "gemma3_12b": os.getenv("LOCAL_LLM_MODEL_GEMMA3_12B", "gemma3:12b").strip(),
         "gemini_2_5_flash": os.getenv("LOCAL_LLM_MODEL_GEMINI_2_5_FLASH", "gemini-2.5-flash").strip(),
         # Legacy aliases kept for compatibility with older settings.
         "local_llm": os.getenv("LOCAL_LLM_MODEL", "qwen3:4b-instruct").strip(),
@@ -139,7 +141,9 @@ class Settings:
     local_llm_profile_labels = {
         "qwen3_4b_instruct": "Qwen 3 4B Instruct",
         "qwen3_8b": "Qwen 3 8B",
+        "qwen3_14b": "Qwen 3 14B",
         "aya_expanse_8b": "Aya Expanse 8B",
+        "gemma3_12b": "Gemma 3 12B",
         "gemini_2_5_flash": "Gemini Flash",
         "local_llm": os.getenv("LOCAL_LLM_LABEL", "Default LLM"),
         "remote_llm": os.getenv("REMOTE_LLM_LABEL", "Remote LLM"),
@@ -849,7 +853,7 @@ def cache_key(
 
 def render_profile_id() -> str:
     return hashlib.sha1(
-        "\n".join(["dual-subtitle-layout-v3", subtitle_force_style(), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
+        "\n".join(["dual-subtitle-layout-v5-720p", subtitle_force_style(), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
     ).hexdigest()[:8]
 
 
@@ -1788,7 +1792,9 @@ def translation_profile_options() -> list[dict]:
     profiles = [
         "qwen3_4b_instruct",
         "qwen3_8b",
+        "qwen3_14b",
         "aya_expanse_8b",
+        "gemma3_12b",
         "gemini_2_5_flash",
     ]
     options = []
@@ -3290,8 +3296,8 @@ def build_ass_from_srt(
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
-        "PlayResX: 1920",
-        "PlayResY: 1080",
+        "PlayResX: 1280",
+        "PlayResY: 720",
         "WrapStyle: 0",
         "ScaledBorderAndShadow: yes",
         "",
@@ -3330,13 +3336,17 @@ def ffmpeg_dual_subtitle_args(
 ) -> list[str]:
     original_ass = original_subtitle.with_suffix(".left.ass")
     translated_ass = translated_subtitle.with_suffix(".right.ass")
-    dual_font_size = max(settings.subtitle_font_size * 2, 40)
-    left_margin = max(settings.subtitle_margin_l, 48)
-    right_margin = max(settings.subtitle_margin_r, 48)
-    center_x = 960
-    column_gap = 48
-    left_column_right_margin = 1920 - center_x + column_gap
-    right_column_left_margin = center_x + column_gap
+    dual_font_size = max(round(settings.subtitle_font_size * 1.65), 33)
+    # 0.3:4.5:0.3:4.5:0.3 at fixed 720p PlayResX=1280.
+    play_res_x = 1280
+    unit = play_res_x / 9.9
+    side_gap = round(unit * 0.3)
+    column_width = round(unit * 4.5)
+    center_gap = round(unit * 0.3)
+    left_margin = max(settings.subtitle_margin_l, side_gap)
+    right_margin = max(settings.subtitle_margin_r, side_gap)
+    left_column_right_margin = max(right_margin, play_res_x - (side_gap + column_width))
+    right_column_left_margin = side_gap + column_width + center_gap
     bottom_margin = max(settings.subtitle_margin_v, 52)
     build_ass_from_srt(
         original_subtitle,
