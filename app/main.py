@@ -5235,7 +5235,6 @@ async def enqueue_prepare_batch(
     discord_user_id: str | None,
     archive_immediately: bool = False,
     subtitle_font_size: int | None = None,
-    subtitle_font_size: int | None = None,
 ) -> tuple[int, dict]:
     if archive_immediately and mode != "mp4":
         raise HTTPException(status_code=400, detail="archiveImmediately is supported only for mp4")
@@ -5260,7 +5259,6 @@ async def enqueue_prepare_batch(
             mode,
             discord_user_id,
             archive_immediately=archive_immediately,
-            subtitle_font_size=subtitle_font_size,
             subtitle_font_size=subtitle_font_size,
         )
         if body.get("status") in {"queued", "running"}:
