@@ -4100,7 +4100,7 @@ async def get_or_create_hls(
 
 def require_prepare_auth(request: Request, allow_temp_key: bool = True) -> None:
     if not settings.discord_prepare_token:
-        raise HTTPException(status_code=500, detail="DISCORD_PREPARE_TOKEN is not configured")
+        raise HTTPException(status_code=503, detail="DISCORD_PREPARE_TOKEN is not configured")
     expected = f"Bearer {settings.discord_prepare_token}"
     auth_header = request.headers.get("authorization")
     if auth_header and secrets.compare_digest(auth_header, expected):
@@ -4214,7 +4214,7 @@ def prepare_ready_path(
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
 ) -> Path | None:
-    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine, subtitle_font_size)
+    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
     if mode == "hls":
         return hot_hls_playlist_path(key)
     return hot_output_path(key)
@@ -4563,7 +4563,6 @@ async def run_prepare_job_once(
             job_id=job_id,
             subtitle_source_lang=subtitle_source_lang,
             translation_engine=translation_engine,
-            subtitle_font_size=subtitle_font_size,
             reuse_cached_subtitle=reuse_cached_subtitle,
             reuse_source_video=reuse_source_video,
         )
@@ -4574,7 +4573,6 @@ async def run_prepare_job_once(
             job_id=job_id,
             subtitle_source_lang=subtitle_source_lang,
             translation_engine=translation_engine,
-            subtitle_font_size=subtitle_font_size,
             reuse_cached_subtitle=reuse_cached_subtitle,
             reuse_source_video=reuse_source_video,
         )
@@ -4772,7 +4770,6 @@ async def enqueue_prepare_job(
                 url,
                 subtitle_source_lang=subtitle_source_lang,
                 translation_engine=normalized_engine,
-                subtitle_font_size=subtitle_font_size,
                 archive_immediately=archive_immediately,
                 reuse_cached_subtitle=reuse_cached_subtitle,
                 reuse_source_video=reuse_source_video,
@@ -6182,12 +6179,11 @@ async def index() -> str:
     const compareStatus = document.getElementById("compareStatus");
     const compareVideo = document.getElementById("compareVideo");
     const compareResults = document.getElementById("compareResults");
-    const compareResults = document.getElementById("compareResults");
     const compareFontStorageKey = "compareSubtitleFontSize";
 
     function setCompareFontSize(px) {{
       const clamped = Math.min(28, Math.max(12, Number(px) || 16));
-      compareStage.style.setProperty("--compare-subtitle-font-size", `${{clamped}}px`);
+      comparePanel.style.setProperty("--compare-subtitle-font-size", `${{clamped}}px`);
       compareFontSize.value = String(clamped);
       compareFontSizeValue.value = `${{clamped}}px`;
       try {{
