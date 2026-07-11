@@ -6174,7 +6174,6 @@ async def index() -> str:
     const compareStatus = document.getElementById("compareStatus");
     const compareVideo = document.getElementById("compareVideo");
     const compareResults = document.getElementById("compareResults");
-    const compareResults = document.getElementById("compareResults");
     const compareFontStorageKey = "compareSubtitleFontSize";
 
     function setCompareFontSize(px) {{
