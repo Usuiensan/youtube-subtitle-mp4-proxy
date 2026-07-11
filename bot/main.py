@@ -734,6 +734,8 @@ class SubtitleChoiceView(discord.ui.View):
                 if not isinstance(engine, dict) or not engine.get("value"):
                     continue
                 value = str(engine["value"])
+                if value == "gemini_2_5_flash":
+                    continue
                 engine_options.append(
                     discord.SelectOption(
                         label=option_label(str(engine.get("label") or value), 100),
@@ -748,6 +750,10 @@ class SubtitleChoiceView(discord.ui.View):
             engine_options = [
                 discord.SelectOption(label="Google翻訳", value="google_cloud", default=True),
             ]
+        elif not any(option.value == "google_cloud" for option in engine_options):
+            engine_options.insert(0, discord.SelectOption(label="Google翻訳", value="google_cloud", default=True))
+            for option in engine_options[1:]:
+                option.default = False
         self.source_select = discord.ui.Select(
             placeholder="翻訳元字幕を選択",
             min_values=1,

@@ -1788,39 +1788,38 @@ def normalize_translation_engine(value: str | None) -> str:
 
 
 def translation_profile_options() -> list[dict]:
-    default_profile = normalize_translation_engine(settings.translation_default_profile)
+    default_profile = "google_cloud"
     profiles = [
         "qwen3_4b_instruct",
         "qwen3_8b",
         "qwen3_14b",
         "aya_expanse_8b",
         "gemma3_12b",
-        "gemini_2_5_flash",
     ]
-    options = []
+    options = [
+        {
+            "value": "google_cloud",
+            "label": "Google翻訳",
+            "model": None,
+            "default": True,
+            "kind": "cloud",
+        }
+    ]
     for profile_id in profiles:
-        model = settings.local_llm_profile_models.get(profile_id)
+        model = str(settings.local_llm_profile_models.get(profile_id) or "").strip()
+        if not model:
+            continue
         label = settings.local_llm_profile_labels.get(profile_id, profile_id)
-        kind = "gemini_api" if profile_id == "gemini_2_5_flash" else "openai_compatible"
         options.append(
             {
                 "value": profile_id,
                 "label": label,
                 "model": model,
                 "default": default_profile == profile_id,
-                "kind": kind,
+                "kind": "openai_compatible",
             }
         )
-    return [
-        *options,
-        {
-            "value": "google_cloud",
-            "label": "Google翻訳",
-            "model": None,
-            "default": default_profile == "google_cloud",
-            "kind": "cloud",
-        },
-    ]
+    return options
 
 
 async def remote_llm_available() -> tuple[bool, str | None]:
@@ -2085,7 +2084,7 @@ def subtitle_choice_body(info: dict, requested_lang: str) -> dict:
     candidates = manual_subtitle_candidates(info, requested_lang)
     body.update(
         {
-            "requires_choice": requested_lang == "ja" and settings.translation_enabled and bool(candidates),
+            "requires_choice": settings.translation_enabled and bool(candidates),
             "candidates": candidates,
             "translation_engines": translation_profile_options(),
         }
