@@ -1279,15 +1279,7 @@ def active_prepare_cache_keys() -> set[str]:
         lang = job.get("lang")
         if not isinstance(video_id, str) or not isinstance(lang, str):
             continue
-        active.add(
-            cache_key(
-                video_id,
-                lang,
-                job.get("subtitle_source_lang"),
-                job.get("translation_engine"),
-                job.get("subtitle_font_size") if isinstance(job.get("subtitle_font_size"), int) else None,
-            )
-        )
+        active.add(cache_key(video_id, lang, job.get("subtitle_source_lang"), job.get("translation_engine")))
     return active
 
 
@@ -1434,10 +1426,8 @@ def default_variant_priority(key: str) -> tuple[int, str]:
     return (3, key)
 
 
-def default_serving_key(video_id: str, lang: str, mode: str, subtitle_font_size: int | None = None) -> str:
-    exact = cache_key(video_id, lang, subtitle_font_size=subtitle_font_size)
-    if subtitle_font_size:
-        return exact
+def default_serving_key(video_id: str, lang: str, mode: str) -> str:
+    exact = cache_key(video_id, lang)
     if mode == "hls":
         if hot_hls_playlist_path(exact):
             return exact
@@ -2997,6 +2987,14 @@ async def translate_subtitle_if_needed(
                 )
             selected_settings = fallback_settings
 
+    if selected_settings.provider_name == "openai_compatible":
+        llm_available, llm_error = await remote_llm_available()
+        if not llm_available:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Remote LLM is unavailable. Ask the user before using google_cloud. reason={llm_error}",
+            )
+
     async def worker(payload: dict) -> dict:
         payload["_work_dir"] = str(work_dir)
         payload["llm_endpoint"] = settings.remote_llm_endpoint
@@ -4175,12 +4173,11 @@ def prepare_key(
     mode: str,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
-    subtitle_font_size: int | None = None,
 ) -> str:
     option_key = ""
     if subtitle_source_lang or translation_engine:
         option_key = f":src={subtitle_source_lang or ''}:engine={translation_engine or ''}"
-    return f"{mode}:{cache_key(video_id, lang, subtitle_source_lang, translation_engine, subtitle_font_size)}{option_key}"
+    return f"{mode}:{cache_key(video_id, lang)}{option_key}"
 
 
 def prepared_media_url(
@@ -4190,16 +4187,14 @@ def prepared_media_url(
     mode: str,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
-    subtitle_font_size: int | None = None,
 ) -> str:
     base_url = settings.youtube_proxy_base_url or str(request.base_url).rstrip("/")
     suffix = ""
     if subtitle_source_lang or translation_engine:
         suffix = f"/{subtitle_source_lang or 'auto'}/{normalize_translation_engine(translation_engine)}"
-    query = f"?subtitleFontSize={subtitle_font_size}" if subtitle_font_size else ""
     if mode == "hls":
-        return f"{base_url}/youtube-hls/{video_id}/{lang}{suffix}{query}"
-    return f"{base_url}/youtube/{video_id}/{lang}{suffix}{query}"
+        return f"{base_url}/youtube-hls/{video_id}/{lang}{suffix}"
+    return f"{base_url}/youtube/{video_id}/{lang}{suffix}"
 
 
 def prepare_status_url(request: Request, job_id: str) -> str:
@@ -4218,7 +4213,6 @@ def prepare_ready_path(
     mode: str,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
-    subtitle_font_size: int | None = None,
 ) -> Path | None:
     key = cache_key(video_id, lang, subtitle_source_lang, translation_engine, subtitle_font_size)
     if mode == "hls":
@@ -4526,12 +4520,11 @@ async def run_prepare_job_once(
     url: str,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
-    subtitle_font_size: int | None = None,
     archive_immediately: bool = False,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
 ) -> None:
-    cache_id = cache_key(video_id, lang, subtitle_source_lang, translation_engine, subtitle_font_size)
+    cache_id = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
     if archived_ready_entry_exists(cache_id, mode):
         update_job_eta(job_id, estimate_archive_prepare_seconds(cache_id))
     else:
@@ -4613,7 +4606,6 @@ async def run_prepare_job(
     url: str,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
-    subtitle_font_size: int | None = None,
     archive_immediately: bool = False,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
@@ -4639,7 +4631,6 @@ async def run_prepare_job(
                         url,
                         subtitle_source_lang=subtitle_source_lang,
                         translation_engine=translation_engine,
-                        subtitle_font_size=subtitle_font_size,
                         archive_immediately=archive_immediately,
                         reuse_cached_subtitle=reuse_cached_subtitle,
                         reuse_source_video=reuse_source_video,
@@ -4696,10 +4687,10 @@ async def enqueue_prepare_job(
         if not subtitle_source_lang:
             raise HTTPException(status_code=400, detail="Invalid subtitle source language")
     normalized_engine = normalize_translation_engine(translation_engine) if translation_engine else None
-    ready = prepare_ready_path(video_id, lang, mode, subtitle_source_lang, normalized_engine, subtitle_font_size)
-    url = prepared_media_url(request, video_id, lang, mode, subtitle_source_lang, normalized_engine, subtitle_font_size)
+    ready = prepare_ready_path(video_id, lang, mode, subtitle_source_lang, normalized_engine)
+    url = prepared_media_url(request, video_id, lang, mode, subtitle_source_lang, normalized_engine)
     if ready:
-        cache_id = cache_key(video_id, lang, subtitle_source_lang, normalized_engine, subtitle_font_size)
+        cache_id = cache_key(video_id, lang, subtitle_source_lang, normalized_engine)
         job = {
             "status": "ready",
             "video_id": video_id,
@@ -4714,7 +4705,7 @@ async def enqueue_prepare_job(
         add_job_requester(job, discord_user_id)
         return 200, job_response_body("", job, request)
 
-    job_key = prepare_key(video_id, lang, mode, subtitle_source_lang, normalized_engine, subtitle_font_size)
+    job_key = prepare_key(video_id, lang, mode, subtitle_source_lang, normalized_engine)
     async with _prepare_lock:
         prune_prepare_jobs()
         existing_job_id = _prepare_by_key.get(job_key)
@@ -4725,7 +4716,7 @@ async def enqueue_prepare_job(
                 return 202, job_response_body(existing_job_id, job, request)
 
         job_id = uuid.uuid4().hex
-        cache_id = cache_key(video_id, lang, subtitle_source_lang, normalized_engine, subtitle_font_size)
+        cache_id = cache_key(video_id, lang, subtitle_source_lang, normalized_engine)
         cached_info = get_cached_video_info(cache_id)
         if archived_ready_entry_exists(cache_id, mode):
             eta_seconds = estimate_archive_prepare_seconds(cache_id)
@@ -6191,11 +6182,12 @@ async def index() -> str:
     const compareStatus = document.getElementById("compareStatus");
     const compareVideo = document.getElementById("compareVideo");
     const compareResults = document.getElementById("compareResults");
+    const compareResults = document.getElementById("compareResults");
     const compareFontStorageKey = "compareSubtitleFontSize";
 
     function setCompareFontSize(px) {{
       const clamped = Math.min(28, Math.max(12, Number(px) || 16));
-      comparePanel.style.setProperty("--compare-subtitle-font-size", `${{clamped}}px`);
+      compareStage.style.setProperty("--compare-subtitle-font-size", `${{clamped}}px`);
       compareFontSize.value = String(clamped);
       compareFontSizeValue.value = `${{clamped}}px`;
       try {{
@@ -7555,10 +7547,8 @@ async def youtube(
     lang: str | None = None,
     source_lang: str | None = None,
     translation_engine: str | None = None,
-    subtitle_font_size: int | None = Query(None, alias="subtitleFontSize"),
 ) -> Response:
     lang = lang or settings.default_lang
-    subtitle_font_size = validate_subtitle_font_size(str(subtitle_font_size)) if subtitle_font_size is not None else None
     validate_input(video_id, lang)
     normalized_engine = None
     if source_lang is not None or translation_engine is not None:
@@ -7566,9 +7556,9 @@ async def youtube(
             raise HTTPException(status_code=400, detail="source language and translation engine must both be specified")
         normalized_engine = validate_translation_variant(source_lang, translation_engine)
     if source_lang is None and normalized_engine is None:
-        key = default_serving_key(video_id, lang, "mp4", subtitle_font_size)
+        key = default_serving_key(video_id, lang, "mp4")
     else:
-        key = cache_key(video_id, lang, source_lang, normalized_engine, subtitle_font_size)
+        key = cache_key(video_id, lang, source_lang, normalized_engine)
     path = hot_output_path(key)
     if path is not None:
         return mp4_response(request, path)
@@ -7588,10 +7578,8 @@ async def youtube_hls(
     lang: str | None = None,
     source_lang: str | None = None,
     translation_engine: str | None = None,
-    subtitle_font_size: int | None = Query(None, alias="subtitleFontSize"),
 ) -> Response:
     lang = lang or settings.default_lang
-    subtitle_font_size = validate_subtitle_font_size(str(subtitle_font_size)) if subtitle_font_size is not None else None
     validate_input(video_id, lang)
     normalized_engine = None
     if source_lang is not None or translation_engine is not None:
@@ -7599,9 +7587,9 @@ async def youtube_hls(
             raise HTTPException(status_code=400, detail="source language and translation engine must both be specified")
         normalized_engine = validate_translation_variant(source_lang, translation_engine)
     if source_lang is None and normalized_engine is None:
-        key = default_serving_key(video_id, lang, "hls", subtitle_font_size)
+        key = default_serving_key(video_id, lang, "hls")
     else:
-        key = cache_key(video_id, lang, source_lang, normalized_engine, subtitle_font_size)
+        key = cache_key(video_id, lang, source_lang, normalized_engine)
     playlist = prepared_hls_playlist_path(key)
     if playlist is not None:
         return hls_playlist_response(request, key, playlist)
@@ -7638,7 +7626,6 @@ async def prepare_youtube(
         raise HTTPException(status_code=400, detail="mode must be mp4 or hls")
     if archive_immediately and mode != "mp4":
         raise HTTPException(status_code=400, detail="archiveImmediately is supported only for mp4")
-    subtitle_font_size = validate_subtitle_font_size(str(subtitle_font_size)) if subtitle_font_size is not None else None
     await cleanup_expired_cache_async()
     status_code, body = await enqueue_prepare_job(
         request,
@@ -7660,14 +7647,12 @@ async def prepare_youtube_subtitles(
     lang: str,
     request: Request,
     mode: str = Query("mp4"),
-    subtitle_font_size: int | None = Query(None, alias="subtitleFontSize"),
 ) -> JSONResponse:
     require_prepare_auth(request)
     validate_input(video_id, lang)
     if mode not in {"mp4", "hls"}:
         raise HTTPException(status_code=400, detail="mode must be mp4 or hls")
-    subtitle_font_size = validate_subtitle_font_size(str(subtitle_font_size)) if subtitle_font_size is not None else None
-    if prepare_ready_path(video_id, lang, mode, subtitle_font_size=subtitle_font_size):
+    if prepare_ready_path(video_id, lang, mode):
         return JSONResponse(
             {
                 "video_id": video_id,
@@ -7676,19 +7661,18 @@ async def prepare_youtube_subtitles(
                 "prepared": True,
             }
         )
-    try:
-        info = await fetch_video_info(video_id)
-        assert_duration_allowed(info)
-        body = subtitle_choice_body(info, lang)
-        if body.get("requires_choice"):
-            body["llm_status_deferred"] = True
-        return JSONResponse(body)
-    except HTTPException:
-        raise
-    except CommandError as error:
-        raise HTTPException(status_code=502, detail=error.stderr[-1000:] or str(error)) from error
-    except Exception as error:
-        raise HTTPException(status_code=502, detail=str(error) or "Failed to fetch subtitle candidates") from error
+    info = await fetch_video_info(video_id)
+    assert_duration_allowed(info)
+    body = subtitle_choice_body(info, lang)
+    if body.get("requires_choice"):
+        llm_available, llm_error, available_models = await remote_llm_status()
+        body = restrict_translation_engines(
+            body,
+            llm_available=llm_available,
+            llm_error=llm_error,
+            available_models=available_models,
+        )
+    return JSONResponse(body)
 
 
 @app.get("/prepare/youtube/{video_id}/{lang}/{source_lang}/{translation_engine}/subtitle-events")
@@ -7821,7 +7805,6 @@ async def prepare_youtube_batch(
         raise HTTPException(status_code=400, detail="sourceType must be auto, playlist, channel, or videos")
     max_items = normalize_max_items(max_items)
     discord_user_id = validate_discord_user_id(discord_user_id)
-    subtitle_font_size = validate_subtitle_font_size(str(subtitle_font_size)) if subtitle_font_size is not None else None
     await cleanup_expired_cache_async()
     status_code, body = await enqueue_prepare_batch(
         request,
@@ -7860,7 +7843,6 @@ async def prepare_youtube_reburn_batch(
         raise HTTPException(status_code=400, detail="sourceType must be auto, playlist, channel, or videos")
     max_items = normalize_max_items(max_items)
     discord_user_id = validate_discord_user_id(discord_user_id)
-    subtitle_font_size = validate_subtitle_font_size(str(subtitle_font_size)) if subtitle_font_size is not None else None
     await cleanup_expired_cache_async()
     status_code, body = await enqueue_reburn_batch(
         request,
@@ -7897,7 +7879,6 @@ async def prepare_youtube_reburn_all(
         raise HTTPException(status_code=400, detail="archiveImmediately is supported only for mp4")
     max_items = normalize_max_items(max_items)
     discord_user_id = validate_discord_user_id(discord_user_id)
-    subtitle_font_size = validate_subtitle_font_size(str(subtitle_font_size)) if subtitle_font_size is not None else None
     await cleanup_expired_cache_async()
     status_code, body = await enqueue_reburn_all(
         request,
@@ -7906,7 +7887,6 @@ async def prepare_youtube_reburn_all(
         max_items,
         discord_user_id,
         archive_immediately,
-        subtitle_font_size,
     )
     return JSONResponse(body, status_code=status_code)
 
