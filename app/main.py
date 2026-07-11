@@ -6097,8 +6097,12 @@ async def index() -> str:
         label.append(` ${{item.label || item.key}}`);
         row.appendChild(label);
         const meta = document.createElement("div");
-        meta.textContent = `${{item.title || item.video_id || "-"}} / ${{item.source_language || "-"}} → ${{item.requested_language || "-"}}`;
+        meta.textContent = `${{item.title || item.video_id || "-"}} / ${{item.source_language || "-"}} → ${{item.requested_language || "-"}} / ${{item.storage || "-"}}`;
         row.appendChild(meta);
+        if (Array.isArray(item.outputs) && item.outputs.length && !compareVideo.src) {{
+          const preferred = item.outputs.find((output) => output.mode === "mp4") || item.outputs[0];
+          if (preferred?.url) compareVideo.src = publicUrl(preferred.url);
+        }}
         compareVariants.appendChild(row);
       }}
     }}
@@ -6115,7 +6119,10 @@ async def index() -> str:
         const items = Array.isArray(body.variants) ? body.variants : [];
         renderVariantList(items);
         compareSourceLang.value = compareSourceLang.value || (items[0]?.source_language || "");
-        compareStatus.textContent = `${{items.length}} 件の字幕候補を読み込みました。`;
+        const hasPlayable = items.some((item) => Array.isArray(item.outputs) && item.outputs.length);
+        compareStatus.textContent = hasPlayable
+          ? `${{items.length}} 件の字幕候補を読み込みました。`
+          : `${{items.length}} 件の字幕候補を読み込みましたが、再生できるMP4/HLSがありません。先に準備してください。`;
       }} catch (error) {{
         compareStatus.textContent = `字幕候補取得エラー: ${{error.message}}`;
       }}
@@ -6523,7 +6530,7 @@ def _read_jsonl_lines(path: Path, limit: int | None = None) -> list[dict]:
     return records
 
 
-def _list_cached_variants_for_video(video_id: str) -> list[dict]:
+def _list_cached_variants_for_video(request: Request, video_id: str) -> list[dict]:
     roots = [settings.cache_hot_dir]
     if settings.cache_archive_dir is not None:
         roots.append(settings.cache_archive_dir)
@@ -6547,18 +6554,26 @@ def _list_cached_variants_for_video(video_id: str) -> list[dict]:
             label = f"{source_lang or 'unknown'} → {requested_lang or 'unknown'}"
             if translated:
                 label += f" / {subtitle_translation_service_label(subtitle_meta) or engine or 'translation'}"
+            outputs = []
+            if is_usable_file(child / "output.mp4"):
+                outputs.append({"mode": "mp4", "url": prepared_media_url(request, video_id, str(source_meta.get("lang") or "ja"), "mp4", source_lang, engine)})
+            playlist = child / "hls" / "index.m3u8"
+            if is_usable_file(playlist) and "#EXT-X-ENDLIST" in playlist.read_text(encoding="utf-8", errors="ignore"):
+                outputs.append({"mode": "hls", "url": prepared_media_url(request, video_id, str(source_meta.get("lang") or "ja"), "hls", source_lang, engine)})
             entry = {
                 "key": key,
                 "video_id": video_id,
                 "lang": source_meta.get("lang"),
                 "storage": "hot" if root == settings.cache_hot_dir else "archive",
                 "title": source_meta.get("title") or video_id,
+                "source_url": source_meta.get("webpage_url") or youtube_watch_url(video_id),
                 "source_language": source_lang,
                 "requested_language": requested_lang,
                 "translated": translated,
                 "translation_engine": engine,
                 "translation_model": model,
                 "label": label,
+                "outputs": outputs,
             }
             existing = by_key.get(key)
             if existing is None or existing.get("storage") != "hot":
@@ -6610,7 +6625,7 @@ async def translation_audit_detail(name: str, limit: int = Query(200, ge=1, le=2
 async def prepare_youtube_variants(video_id: str, request: Request) -> JSONResponse:
     require_prepare_auth(request)
     validate_input(video_id, "ja")
-    return JSONResponse({"video_id": video_id, "variants": _list_cached_variants_for_video(video_id)})
+    return JSONResponse({"video_id": video_id, "variants": _list_cached_variants_for_video(request, video_id)})
 
 
 @app.post("/chat")
