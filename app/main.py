@@ -37,18 +37,6 @@ from app.translation import (
     save_srt,
     translate_srt_with_local_worker,
 )
-from app.nllb_provider import (
-    NllbConfig,
-    NllbTranslationProvider,
-    TranslationError as NllbTranslationError,
-    translate_texts_async,
-)
-from app.opus_mt_provider import (
-    OpusMtConfig,
-    OpusMtTranslationProvider,
-    TranslationError as OpusTranslationError,
-    translate_texts_async as translate_opus_texts_async,
-)
 
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -123,23 +111,16 @@ class Settings:
     local_llm_profile_models = {
         "local_llm": os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M"),
         "gemini_2_5_flash": os.getenv("LOCAL_LLM_MODEL_GEMINI_2_5_FLASH", "gemini-2.5-flash"),
-        "opus_mt_en_jap": os.getenv("LOCAL_LLM_MODEL_OPUS_MT_EN_JAP", "Helsinki-NLP/opus-mt-en-jap"),
         "qwen3_1_7b": os.getenv("LOCAL_LLM_MODEL_QWEN3_1_7B", "qwen3:1.7b"),
         "gemma3_1b": os.getenv("LOCAL_LLM_MODEL_GEMMA3_1B", "gemma3:1b"),
         "gemma3_4b": os.getenv("LOCAL_LLM_MODEL_GEMMA3_4B", "gemma3:4b"),
-        "nllb200_distilled_600m": os.getenv(
-            "LOCAL_LLM_MODEL_NLLB200_DISTILLED_600M",
-            "facebook/nllb-200-distilled-600M",
-        ),
     }
     local_llm_profile_labels = {
         "local_llm": os.getenv("LOCAL_LLM_LABEL", "Default LLM"),
         "gemini_2_5_flash": "Gemini Flash",
-        "opus_mt_en_jap": "Opus MT en->ja",
         "qwen3_1_7b": "Qwen 3 1.7B",
         "gemma3_1b": "Gemma 3 1B",
         "gemma3_4b": "Gemma 3 4B",
-        "nllb200_distilled_600m": "NLLB-200 distilled 600M",
     }
     local_llm_timeout_seconds = int(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "300"))
     remote_llm_endpoint = os.getenv("REMOTE_LLM_ENDPOINT", os.getenv("LOCAL_LLM_ENDPOINT", "")).strip()
@@ -163,20 +144,6 @@ class Settings:
     gemini_flash_output_price_per_million = float(os.getenv("GEMINI_FLASH_OUTPUT_PRICE_PER_MILLION", "2.50"))
     usd_to_jpy_rate = float(os.getenv("USD_TO_JPY_RATE", "160.0"))
     translation_provider = os.getenv("TRANSLATION_PROVIDER", "remote_llm").strip().lower()
-    nllb_model = os.getenv("NLLB_MODEL", "facebook/nllb-200-distilled-600M")
-    nllb_device = os.getenv("NLLB_DEVICE", "auto")
-    nllb_batch_size = int(os.getenv("NLLB_BATCH_SIZE", "16"))
-    nllb_max_input_tokens = int(os.getenv("NLLB_MAX_INPUT_TOKENS", "512"))
-    nllb_max_new_tokens = int(os.getenv("NLLB_MAX_NEW_TOKENS", "128"))
-    nllb_num_beams = int(os.getenv("NLLB_NUM_BEAMS", "1"))
-    nllb_keep_loaded = os.getenv("NLLB_KEEP_LOADED", "1") != "0"
-    opus_mt_model = os.getenv("OPUS_MT_MODEL", "Helsinki-NLP/opus-mt-en-jap")
-    opus_mt_device = os.getenv("OPUS_MT_DEVICE", "auto")
-    opus_mt_batch_size = int(os.getenv("OPUS_MT_BATCH_SIZE", "16"))
-    opus_mt_max_input_tokens = int(os.getenv("OPUS_MT_MAX_INPUT_TOKENS", "512"))
-    opus_mt_max_new_tokens = int(os.getenv("OPUS_MT_MAX_NEW_TOKENS", "128"))
-    opus_mt_num_beams = int(os.getenv("OPUS_MT_NUM_BEAMS", "1"))
-    opus_mt_keep_loaded = os.getenv("OPUS_MT_KEEP_LOADED", "1") != "0"
     translation_failure_dir = Path(
         os.getenv("TRANSLATION_FAILURE_DIR", str(cache_hot_dir / ".translation-attempts"))
     )
@@ -190,10 +157,6 @@ settings = Settings()
 _system_metrics: deque[dict] = deque(maxlen=max(1, int(settings.system_metrics_history_seconds / max(settings.system_metrics_interval_seconds, 1)) + 60))
 _last_cpu_times: tuple[int, int] | None = None
 _metrics_task: asyncio.Task | None = None
-_nllb_lock = asyncio.Lock()
-_nllb_provider: NllbTranslationProvider | None = None
-_opus_mt_lock = asyncio.Lock()
-_opus_mt_provider: OpusMtTranslationProvider | None = None
 
 
 class MetricsManager:
@@ -1222,6 +1185,58 @@ def archive_cache_entry(key: str) -> bool:
     return True
 
 
+def active_prepare_cache_keys() -> set[str]:
+    active: set[str] = set()
+    for key in _inflight.keys():
+        active.add(key)
+    for key in _hls_inflight.keys():
+        active.add(key)
+    for job in _prepare_jobs.values():
+        if job.get("status") not in {"queued", "running"}:
+            continue
+        video_id = job.get("video_id")
+        lang = job.get("lang")
+        if not isinstance(video_id, str) or not isinstance(lang, str):
+            continue
+        active.add(cache_key(video_id, lang, job.get("subtitle_source_lang"), job.get("translation_engine")))
+    return active
+
+
+def archive_all_hot_entries(active_keys: set[str]) -> dict:
+    if settings.cache_archive_dir is None:
+        raise HTTPException(status_code=400, detail="CACHE_ARCHIVE_DIR is not configured")
+    settings.cache_hot_dir.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    skipped = 0
+    failed = 0
+    freed_bytes = 0
+    errors: list[dict[str, str]] = []
+    for child in sorted(settings.cache_hot_dir.iterdir(), key=lambda path: path.name):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        key = child.name
+        if key in active_keys:
+            skipped += 1
+            continue
+        try:
+            size = dir_size_bytes(child)
+            if archive_cache_entry(key):
+                moved += 1
+                freed_bytes += size
+            else:
+                skipped += 1
+        except Exception as error:
+            failed += 1
+            errors.append({"key": key, "error": str(error)[-300:]})
+    return {
+        "moved": moved,
+        "skipped": skipped,
+        "failed": failed,
+        "freed_bytes": freed_bytes,
+        "errors": errors[:5],
+    }
+
+
 def promote_archive_entry(key: str) -> bool:
     archive_dir = archive_entry_dir(key)
     hot_dir = entry_dir(key)
@@ -1323,8 +1338,6 @@ def default_variant_priority(key: str) -> tuple[int, str]:
     for profile_id in settings.local_llm_profile_models:
         if f"_{profile_id}_" in key:
             return (1, key)
-    if "_nllb_" in key:
-        return (1, key)
     if "_local_llm_" in key:
         return (1, key)
     if "_google_cloud_" in key:
@@ -1608,39 +1621,32 @@ def normalize_translation_engine(value: str | None) -> str:
     engine = (value or settings.local_llm_engine or "local_llm").strip().lower()
     if engine in {"llm", "remote", "remote_llm"}:
         return "remote_llm"
-    if engine in {"local", "local_llm", "openai_compatible", "ollama"}:
-        return "remote_llm"
+    if engine in {"local", "local_llm", "openai_compatible"}:
+        return "google_cloud"
     if engine in {"google", "google_cloud", "google_translate"}:
         return "google_cloud"
-    if engine in {"nllb", "nllb200_distilled_600m"}:
-        return "nllb"
-    if engine in {"opus", "opus_mt", "opus_mt_en_jap", "helsinki_nlp_opus_mt_en_jap"}:
-        return "opus_mt_en_jap"
     if engine in settings.local_llm_profile_models:
         return engine
-    raise HTTPException(status_code=400, detail="translationEngine must be a known translation profile")
+    return "google_cloud"
 
 
 def translation_profile_options() -> list[dict]:
-    options = [
+    return [
         {
             "value": "remote_llm",
             "label": "RTX3060 LLM",
             "model": settings.remote_llm_model,
-            "default": settings.translation_provider in {"remote_llm", "local_llm"},
+            "default": settings.translation_provider == "remote_llm",
             "kind": "remote",
-        }
-    ]
-    options.append(
+        },
         {
             "value": "google_cloud",
             "label": "Google翻訳",
             "model": None,
-            "default": settings.translation_provider == "google_cloud",
+            "default": settings.translation_provider != "remote_llm",
             "kind": "cloud",
-        }
-    )
-    return options
+        },
+    ]
 
 
 async def remote_llm_available() -> tuple[bool, str | None]:
@@ -1676,13 +1682,13 @@ def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
     normalized = normalize_translation_engine(profile_id)
     if normalized == "remote_llm":
         model_name = settings.remote_llm_model
-    elif normalized == "nllb":
-        model_name = settings.nllb_model
-    elif normalized == "opus_mt_en_jap":
-        model_name = settings.opus_mt_model
     else:
-        model_name = settings.local_llm_profile_models.get(normalized, settings.local_llm_model)
-    provider_name = "openai_compatible" if normalized == "remote_llm" else ("gemini_api" if normalized == "gemini_2_5_flash" else settings.local_llm_engine)
+        model_name = settings.local_llm_profile_models.get(normalized, "")
+    provider_name = (
+        "openai_compatible"
+        if normalized == "remote_llm"
+        else ("gemini_api" if normalized == "gemini_2_5_flash" else "google_cloud")
+    )
     return TranslationSettings(
         enabled=settings.translation_enabled,
         target_window_seconds=settings.local_llm_target_window_seconds,
@@ -1699,48 +1705,6 @@ def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
         google_project=settings.google_cloud_project,
         provider_name=provider_name,
     )
-
-
-def nllb_translation_config() -> NllbConfig:
-    return NllbConfig(
-        model_name=settings.nllb_model,
-        device=settings.nllb_device,
-        batch_size=max(1, settings.nllb_batch_size),
-        max_input_tokens=settings.nllb_max_input_tokens,
-        max_new_tokens=settings.nllb_max_new_tokens,
-        num_beams=max(1, settings.nllb_num_beams),
-        keep_loaded=settings.nllb_keep_loaded,
-    )
-
-
-async def get_nllb_provider() -> NllbTranslationProvider:
-    global _nllb_provider
-    if _nllb_provider is None:
-        async with _nllb_lock:
-            if _nllb_provider is None:
-                _nllb_provider = await asyncio.to_thread(NllbTranslationProvider.load, nllb_translation_config())
-    return _nllb_provider
-
-
-def opus_mt_translation_config() -> OpusMtConfig:
-    return OpusMtConfig(
-        model_name=settings.opus_mt_model,
-        device=settings.opus_mt_device,
-        batch_size=max(1, settings.opus_mt_batch_size),
-        max_input_tokens=settings.opus_mt_max_input_tokens,
-        max_new_tokens=settings.opus_mt_max_new_tokens,
-        num_beams=max(1, settings.opus_mt_num_beams),
-        keep_loaded=settings.opus_mt_keep_loaded,
-    )
-
-
-async def get_opus_mt_provider() -> OpusMtTranslationProvider:
-    global _opus_mt_provider
-    if _opus_mt_provider is None:
-        async with _opus_mt_lock:
-            if _opus_mt_provider is None:
-                _opus_mt_provider = await asyncio.to_thread(OpusMtTranslationProvider.load, opus_mt_translation_config())
-    return _opus_mt_provider
 
 
 def manual_subtitle_candidates(info: dict, requested_lang: str) -> list[dict]:
@@ -2134,10 +2098,6 @@ def subtitle_translation_service_label(subtitle_meta: dict) -> str:
         return "[translation] Google Cloud fallback"
     if engine == "google_cloud":
         return "[translation] Google Cloud"
-    if engine == "nllb":
-        return f"[translation] NLLB-200 distilled 600M ({settings.nllb_model})"
-    if engine == "opus_mt_en_jap":
-        return f"[translation] Opus MT en->ja ({settings.opus_mt_model})"
     if model:
         label = settings.local_llm_profile_labels.get(engine) or settings.local_llm_profile_labels.get(requested) or "LLM"
         return f"[translation] {label} {model}"
@@ -2565,154 +2525,6 @@ async def translate_subtitle_if_needed(
             "translation_fallback_used": False,
             "translation_created_at": int(time.time()),
         }
-        return translated_path, metadata
-
-    if requested_engine == "nllb":
-        provider = await get_nllb_provider()
-        subtitles = load_srt(subtitle)
-        total_items = len(subtitles)
-        if job_id:
-            update_job_progress(
-                job_id,
-                "translate",
-                0.0,
-                details=f"stage=translating completed_items=0 total_items={total_items} current_batch=0 total_batches=0",
-            )
-        if total_items == 0:
-            save_srt(translated_path, [])
-            metadata = {
-                **selection,
-                "translation_engine": "nllb",
-                "translation_model": settings.nllb_model,
-                "translation_fallback_used": False,
-                "translation_created_at": int(time.time()),
-            }
-            return translated_path, metadata
-
-        translated_subtitles: list[srt.Subtitle] = []
-        batch_size = max(1, provider.config.batch_size)
-        total_batches = (total_items + batch_size - 1) // batch_size
-        start_t = time.time()
-        async with _nllb_lock:
-            for batch_index, start in enumerate(range(0, total_items, batch_size), start=1):
-                chunk = subtitles[start : start + batch_size]
-                translated_texts = await translate_texts_async(
-                    provider,
-                    [item.content for item in chunk],
-                    selection["source_language"],
-                    selection["requested_language"],
-                )
-                for item, translated_text in zip(chunk, translated_texts):
-                    translated_subtitles.append(
-                        srt.Subtitle(
-                            index=item.index,
-                            start=item.start,
-                            end=item.end,
-                            content=translated_text,
-                            proprietary=item.proprietary,
-                        )
-                    )
-                if job_id:
-                    completed_items = len(translated_subtitles)
-                    elapsed = time.time() - start_t
-                    remaining = None
-                    if completed_items > 0:
-                        avg = elapsed / completed_items
-                        remaining = int(max(0, avg * (total_items - completed_items)))
-                        if job_id in _prepare_jobs:
-                            _prepare_jobs[job_id]["eta_seconds"] = remaining
-                            _prepare_jobs[job_id]["estimated_ready_at"] = int(time.time()) + remaining
-                    details = (
-                        "stage=translating "
-                        f"completed_items={completed_items} total_items={total_items} "
-                        f"progress_percent={completed_items / total_items * 100:.1f} "
-                        f"current_batch={batch_index} total_batches={total_batches}"
-                    )
-                    update_job_progress(job_id, "translate", completed_items / total_items * 100.0, eta_seconds=remaining, details=details)
-
-        save_srt(translated_path, translated_subtitles)
-        metrics_manager.record_translate(total_items, time.time() - start_t)
-        metadata = {
-            **selection,
-            "translation_engine": "nllb",
-            "translation_model": settings.nllb_model,
-            "translation_fallback_used": False,
-            "translation_created_at": int(time.time()),
-        }
-        if not settings.nllb_keep_loaded:
-            NllbTranslationProvider.unload()
-        return translated_path, metadata
-
-    if requested_engine == "opus_mt_en_jap":
-        provider = await get_opus_mt_provider()
-        subtitles = load_srt(subtitle)
-        total_items = len(subtitles)
-        if job_id:
-            update_job_progress(
-                job_id,
-                "translate",
-                0.0,
-                details=f"Opus MT 翻訳中... 0/{total_items} 字幕",
-            )
-        if total_items == 0:
-            save_srt(translated_path, [])
-            metadata = {
-                **selection,
-                "translation_engine": "opus_mt_en_jap",
-                "translation_model": settings.opus_mt_model,
-                "translation_fallback_used": False,
-                "translation_created_at": int(time.time()),
-            }
-            return translated_path, metadata
-
-        translated_subtitles: list[srt.Subtitle] = []
-        batch_size = max(1, provider.config.batch_size)
-        start_t = time.time()
-        async with _opus_mt_lock:
-            for start in range(0, total_items, batch_size):
-                chunk = subtitles[start : start + batch_size]
-                translated_texts = await translate_opus_texts_async(
-                    provider,
-                    [item.content for item in chunk],
-                    selection["source_language"],
-                    selection["requested_language"],
-                )
-                for item, translated_text in zip(chunk, translated_texts):
-                    translated_subtitles.append(
-                        srt.Subtitle(
-                            index=item.index,
-                            start=item.start,
-                            end=item.end,
-                            content=translated_text,
-                            proprietary=item.proprietary,
-                        )
-                    )
-                if job_id:
-                    completed_items = len(translated_subtitles)
-                    elapsed = time.time() - start_t
-                    remaining = None
-                    if completed_items > 0:
-                        avg = elapsed / completed_items
-                        remaining = int(max(0, avg * (total_items - completed_items)))
-                    update_job_progress(
-                        job_id,
-                        "translate",
-                        completed_items / total_items * 100.0,
-                        eta_seconds=remaining,
-                        details=f"Opus MT 翻訳中... {completed_items}/{total_items} 字幕",
-                    )
-
-        save_srt(translated_path, translated_subtitles)
-        metrics_manager.record_translate(total_items, time.time() - start_t)
-        metadata = {
-            **selection,
-            "translation_engine": "opus_mt_en_jap",
-            "translation_model": settings.opus_mt_model,
-            "translation_fallback_used": False,
-            "translation_created_at": int(time.time()),
-        }
-        if not settings.opus_mt_keep_loaded:
-            OpusMtTranslationProvider.unload()
         return translated_path, metadata
 
     if requested_engine == "remote_llm":
@@ -6410,6 +6222,23 @@ async def reset_prepare_eta(request: Request) -> JSONResponse:
     require_prepare_auth(request, allow_temp_key=False)
     metrics_manager.reset()
     return JSONResponse({"message": "予想時間の学習データをリセットしました。"})
+
+
+@app.post("/prepare/archive-all")
+async def archive_all_youtube(request: Request) -> JSONResponse:
+    require_prepare_auth(request, allow_temp_key=False)
+    async with _inflight_lock:
+        async with _prepare_lock:
+            active_keys = active_prepare_cache_keys()
+    async with _cleanup_lock:
+        result = await asyncio.to_thread(archive_all_hot_entries, active_keys)
+    mib = result["freed_bytes"] / (1024 * 1024)
+    message = (
+        f"HDDへ移動しました: moved {result['moved']} 件、"
+        f"skipped {result['skipped']} 件、failed {result['failed']} 件、"
+        f"SSD解放 約{mib:,.1f} MiB"
+    )
+    return JSONResponse({"status": "ok", "message": message, **result})
 
 
 @app.post("/prepare/youtube-batch/{lang}")

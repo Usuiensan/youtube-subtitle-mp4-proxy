@@ -320,6 +320,11 @@ async def reset_eta_metrics() -> tuple[int, dict[str, Any]]:
     return await asyncio.to_thread(http_json, "POST", url)
 
 
+async def archive_all_videos() -> tuple[int, dict[str, Any]]:
+    url = f"{settings.youtube_proxy_internal_base_url}/prepare/archive-all"
+    return await asyncio.to_thread(http_json, "POST", url)
+
+
 async def fetch_job(status_url: str) -> dict[str, Any]:
     public_base = settings.youtube_proxy_base_url
     internal_base = settings.youtube_proxy_internal_base_url
@@ -572,10 +577,6 @@ def subtitle_status_text(meta: Any) -> str:
     if translated:
         if fallback:
             engine_text = "Google翻訳フォールバック"
-        elif engine == "nllb":
-            engine_text = f"NLLB-200 distilled 600M{f' ({model})' if model else ''}"
-        elif engine == "opus_mt_en_jap":
-            engine_text = f"Opus MT en->ja{f' ({model})' if model else ''}"
         elif engine == "gemini_2_5_flash":
             engine_text = "Gemini Flash"
         elif model:
@@ -1263,6 +1264,28 @@ async def clear_all_command(
 
     await interaction.followup.send(
         body.get("message", "すべての動画を初期化しました。"),
+    )
+
+
+@client.tree.command(name="archive-all", description="SSD上の準備済み動画をすべてHDDアーカイブへ退避します")
+async def archive_all_command(
+    interaction: discord.Interaction,
+) -> None:
+    await interaction.response.defer(thinking=True, ephemeral=True)
+
+    if not settings.discord_prepare_token:
+        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=True)
+        return
+
+    try:
+        _status, body = await archive_all_videos()
+    except PrepareApiError as error:
+        await interaction.followup.send(f"HDD退避APIエラー ({error.status_code}): {error.detail}", ephemeral=True)
+        return
+
+    await interaction.followup.send(
+        body.get("message", "SSD上の動画をHDDへ退避しました。"),
+        ephemeral=True,
     )
 
 
