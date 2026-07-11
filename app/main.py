@@ -2451,34 +2451,44 @@ def ffmpeg_subtitle_arg(path: Path, subtitle_meta: dict | None = None) -> str:
         f"subtitles='{escape_filter_value(value)}':"
         f"force_style='{escape_filter_value(subtitle_force_style(subtitle_font_name))}'"
     )
-    if subtitle_meta:
-        label = get_subtitle_overlay_label(subtitle_meta)
-        lines = label.split("\n")
-
-        if font_file:
-            font_opt = f":fontfile='{font_file}'"
-        else:
-            font_opt = f":font='{subtitle_font_name}'" if subtitle_font_name else ""
-
-        drawtext_filters = []
-        for i, line in enumerate(lines):
-            escaped_line = (
-                line.replace("\\", "\\\\")
-                .replace("'", "'\\\\''")
-                .replace(":", "\\:")
-                .replace(",", "\\,")
-            )
-            y_expr = f"h/30+{i}*h/20"
-            drawtext_filter = (
-                f"drawtext=text='{escaped_line}'"
-                f":x=w*0.03:y={y_expr}:fontsize=h/18:fontcolor=white@1.0"
-                f":box=1:boxcolor=black@0.75:boxborderw=h/100"
-                f":enable='lt(t,10)'{font_opt}"
-            )
-            drawtext_filters.append(drawtext_filter)
-
+    drawtext_filters = subtitle_overlay_drawtext_filters(subtitle_meta, font_file, subtitle_font_name)
+    if drawtext_filters:
         filter_str = f"{filter_str},{','.join(drawtext_filters)}"
     return filter_str
+
+
+def subtitle_overlay_drawtext_filters(
+    subtitle_meta: dict | None,
+    font_file: str | None = None,
+    subtitle_font_name: str | None = None,
+) -> list[str]:
+    if not subtitle_meta:
+        return []
+    label = get_subtitle_overlay_label(subtitle_meta)
+    lines = label.split("\n")
+
+    if font_file:
+        font_opt = f":fontfile='{font_file}'"
+    else:
+        font_opt = f":font='{subtitle_font_name}'" if subtitle_font_name else ""
+
+    drawtext_filters = []
+    for i, line in enumerate(lines):
+        escaped_line = (
+            line.replace("\\", "\\\\")
+            .replace("'", "'\\\\''")
+            .replace(":", "\\:")
+            .replace(",", "\\,")
+        )
+        y_expr = f"h/30+{i}*h/20"
+        drawtext_filter = (
+            f"drawtext=text='{escaped_line}'"
+            f":x=w*0.03:y={y_expr}:fontsize=h/18:fontcolor=white@1.0"
+            f":box=1:boxcolor=black@0.75:boxborderw=h/100"
+            f":enable='lt(t,10)'{font_opt}"
+        )
+        drawtext_filters.append(drawtext_filter)
+    return drawtext_filters
 
 
 def ffmpeg_video_args(encoder: str | None = None) -> list[str]:
@@ -3009,7 +3019,7 @@ async def burn_subtitles(
     tmp_output = destination.with_suffix(".tmp.mp4")
     start_t = time.time()
     vf_args = (
-        ffmpeg_dual_subtitle_args(original_subtitle, subtitle)
+        ffmpeg_dual_subtitle_args(original_subtitle, subtitle, subtitle_meta)
         if original_subtitle is not None and original_subtitle != subtitle
         else ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta)]
     )
@@ -3052,7 +3062,7 @@ async def create_hls(
 
     start_t = time.time()
     vf_args = (
-        ffmpeg_dual_subtitle_args(original_subtitle, subtitle)
+        ffmpeg_dual_subtitle_args(original_subtitle, subtitle, subtitle_meta)
         if original_subtitle is not None and original_subtitle != subtitle
         else ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta)]
     )
@@ -3161,6 +3171,7 @@ def build_ass_from_srt(
     margin_r: int,
     margin_v: int,
     font_size: int,
+    keep_source_line_breaks: bool = True,
 ) -> None:
     def ass_time(value: Any) -> str:
         total = int(round(value.total_seconds() * 100))
@@ -3187,8 +3198,11 @@ def build_ass_from_srt(
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     for sub in subtitles:
+        content = sub.content
+        if not keep_source_line_breaks:
+            content = " ".join(content.replace("\r\n", "\n").replace("\r", "\n").split())
         text = (
-            sub.content.replace("\r\n", "\n")
+            content.replace("\r\n", "\n")
             .replace("\r", "\n")
             .replace("\\", r"\\")
             .replace("{", r"\{")
@@ -3204,16 +3218,18 @@ def build_ass_from_srt(
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def ffmpeg_dual_subtitle_args(original_subtitle: Path, translated_subtitle: Path) -> list[str]:
+def ffmpeg_dual_subtitle_args(
+    original_subtitle: Path,
+    translated_subtitle: Path,
+    subtitle_meta: dict | None = None,
+) -> list[str]:
     original_ass = original_subtitle.with_suffix(".left.ass")
     translated_ass = translated_subtitle.with_suffix(".right.ass")
-    dual_font_size = max(settings.subtitle_font_size + 6, 26)
+    dual_font_size = max(settings.subtitle_font_size * 2, 40)
     left_margin = max(settings.subtitle_margin_l, 48)
     right_margin = max(settings.subtitle_margin_r, 48)
-    gutter = 40
-    split_x = 960
-    left_column_right_margin = split_x + gutter
-    right_column_left_margin = split_x + gutter
+    right_column_left_margin = 980
+    left_column_right_margin = 620
     bottom_margin = max(settings.subtitle_margin_v, 52)
     build_ass_from_srt(
         original_subtitle,
@@ -3223,6 +3239,7 @@ def ffmpeg_dual_subtitle_args(original_subtitle: Path, translated_subtitle: Path
         margin_r=left_column_right_margin,
         margin_v=bottom_margin,
         font_size=dual_font_size,
+        keep_source_line_breaks=False,
     )
     build_ass_from_srt(
         translated_subtitle,
@@ -3233,9 +3250,18 @@ def ffmpeg_dual_subtitle_args(original_subtitle: Path, translated_subtitle: Path
         margin_v=bottom_margin,
         font_size=dual_font_size,
     )
+    font_file, font_name = find_japanese_font_spec()
+    subtitle_font_name = font_name or settings.subtitle_font
+    drawtext_filters = subtitle_overlay_drawtext_filters(subtitle_meta, font_file, subtitle_font_name)
+    filter_str = (
+        f"ass='{escape_filter_value(original_ass.as_posix())}',"
+        f"ass='{escape_filter_value(translated_ass.as_posix())}'"
+    )
+    if drawtext_filters:
+        filter_str = f"{filter_str},{','.join(drawtext_filters)}"
     return [
         "-vf",
-        f"ass='{escape_filter_value(original_ass.as_posix())}',ass='{escape_filter_value(translated_ass.as_posix())}'",
+        filter_str,
     ]
 
 
