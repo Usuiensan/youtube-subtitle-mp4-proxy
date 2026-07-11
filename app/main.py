@@ -7657,13 +7657,7 @@ async def prepare_youtube_subtitles(
         assert_duration_allowed(info)
         body = subtitle_choice_body(info, lang)
         if body.get("requires_choice"):
-            llm_available, llm_error, available_models = await remote_llm_status()
-            body = restrict_translation_engines(
-                body,
-                llm_available=llm_available,
-                llm_error=llm_error,
-                available_models=available_models,
-            )
+            body["llm_status_deferred"] = True
         return JSONResponse(body)
     except HTTPException:
         raise
