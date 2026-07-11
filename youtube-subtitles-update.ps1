@@ -42,11 +42,11 @@ function Test-ServiceHealth {
 
     try {
         $null = Invoke-RestMethod -Uri $Uri -TimeoutSec $TimeoutSec
-        Write-Host "$Name: OK"
+        Write-Host "${Name}: OK"
         return $true
     }
     catch {
-        Write-Warning "$Name: unavailable ($Uri) - $($_.Exception.Message)"
+        Write-Warning "${Name}: unavailable ($Uri) - $($_.Exception.Message)"
         return $false
     }
 }
