@@ -1822,20 +1822,25 @@ def translation_profile_options() -> list[dict]:
     return options
 
 
-async def remote_llm_available() -> tuple[bool, str | None]:
-    if not settings.remote_llm_endpoint:
-        return False, "REMOTE_LLM_ENDPOINT is not configured"
+def remote_llm_health_url() -> str:
     health_url = settings.remote_llm_health_url
-    if not health_url:
-        parsed = urllib.parse.urlparse(settings.remote_llm_endpoint)
-        if parsed.path.rstrip("/").endswith("/v1/chat/completions"):
-            health_path = "/v1/models"
-        else:
-            base_path = parsed.path.rsplit("/", 1)[0].rstrip("/")
-            health_path = f"{base_path}/models" if base_path else "/v1/models"
-        health_url = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, health_path, "", "", ""))
+    if health_url:
+        return health_url
+    parsed = urllib.parse.urlparse(settings.remote_llm_endpoint)
+    if parsed.path.rstrip("/").endswith("/v1/chat/completions"):
+        health_path = "/v1/models"
+    else:
+        base_path = parsed.path.rsplit("/", 1)[0].rstrip("/")
+        health_path = f"{base_path}/models" if base_path else "/v1/models"
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, health_path, "", "", ""))
 
-    def check() -> tuple[bool, str | None]:
+
+async def remote_llm_status() -> tuple[bool, str | None, set[str]]:
+    if not settings.remote_llm_endpoint:
+        return False, "REMOTE_LLM_ENDPOINT is not configured", set()
+    health_url = remote_llm_health_url()
+
+    def check() -> tuple[bool, str | None, set[str]]:
         headers = {"Accept": "application/json"}
         if settings.remote_llm_api_key:
             headers["Authorization"] = f"Bearer {settings.remote_llm_api_key}"
@@ -1843,12 +1848,24 @@ async def remote_llm_available() -> tuple[bool, str | None]:
         try:
             with urllib.request.urlopen(request, timeout=settings.remote_llm_health_timeout_seconds) as response:
                 if 200 <= response.status < 300:
-                    return True, None
-                return False, f"remote LLM health returned HTTP {response.status}"
+                    data = json.loads(response.read().decode("utf-8"))
+                    models = set()
+                    items = data.get("data") if isinstance(data, dict) else None
+                    if isinstance(items, list):
+                        for item in items:
+                            if isinstance(item, dict) and item.get("id"):
+                                models.add(str(item["id"]))
+                    return True, None, models
+                return False, f"remote LLM health returned HTTP {response.status}", set()
         except Exception as error:
-            return False, str(error)
+            return False, str(error), set()
 
     return await asyncio.to_thread(check)
+
+
+async def remote_llm_available() -> tuple[bool, str | None]:
+    available, error, _models = await remote_llm_status()
+    return available, error
 
 
 def chat_prompt_from_messages(messages: list[dict[str, Any]], system_prompt: str | None = None) -> str:
@@ -2096,13 +2113,37 @@ def subtitle_choice_body(info: dict, requested_lang: str) -> dict:
     return body
 
 
-def restrict_translation_engines(body: dict, *, llm_available: bool, llm_error: str | None) -> dict:
+def restrict_translation_engines(
+    body: dict,
+    *,
+    llm_available: bool,
+    llm_error: str | None,
+    available_models: set[str] | None = None,
+) -> dict:
+    def model_available(model: str) -> bool:
+        if not available_models:
+            return True
+        if model in available_models:
+            return True
+        return any(item.startswith(f"{model}-") or item.startswith(f"{model}:") for item in available_models)
+
     engines = body.get("translation_engines")
     if not isinstance(engines, list):
         return body
     if llm_available:
-        body["translation_engines"] = engines
+        filtered = []
+        for engine in engines:
+            if not isinstance(engine, dict):
+                continue
+            if engine.get("value") == "google_cloud":
+                filtered.append(engine)
+                continue
+            model = str(engine.get("model") or "").strip()
+            if model_available(model):
+                filtered.append(engine)
+        body["translation_engines"] = filtered
         body["llm_available"] = True
+        body["llm_available_models"] = sorted(available_models or [])
         return body
     body["translation_engines"] = [
         engine for engine in engines
@@ -2876,20 +2917,30 @@ async def translate_subtitle_if_needed(
             selected_settings,
         )
         translated_subtitles = []
+        recent_pairs: list[dict[str, str]] = []
         for sub in subtitles:
+            translated_text = translated_map[str(sub.index)]
             translated_subtitles.append(
                 srt.Subtitle(
                     index=sub.index,
                     start=sub.start,
                     end=sub.end,
-                    content=translated_map[str(sub.index)],
+                    content=translated_text,
                     proprietary=sub.proprietary,
                 )
             )
+            recent_pairs.append({"source": sub.content, "translated": translated_text})
+            recent_pairs = recent_pairs[-5:]
         save_srt(translated_path, translated_subtitles)
         metrics_manager.record_translate(len(subtitles), time.time() - start_t)
         if job_id:
-            update_job_progress(job_id, "translate", 100.0, details="Google翻訳完了")
+            sample_lines = ["Google翻訳完了", "直近の翻訳:"]
+            for sample in recent_pairs:
+                source = " ".join(sample["source"].replace("\r\n", "\n").replace("\r", "\n").split())
+                translated = " ".join(sample["translated"].replace("\r\n", "\n").replace("\r", "\n").split())
+                sample_lines.append(f"原: {source[:89] + '…' if len(source) > 90 else source}")
+                sample_lines.append(f"訳: {translated[:89] + '…' if len(translated) > 90 else translated}")
+            update_job_progress(job_id, "translate", 100.0, details="\n".join(sample_lines))
         metadata = {
             **selection,
             "translation_engine": "google_cloud",
@@ -2937,7 +2988,24 @@ async def translate_subtitle_if_needed(
     on_prog = None
     start_t = time.time()
     if job_id:
-        def on_prog(done_subtitles: int, total_subtitles: int):
+        def shorten_progress_text(value: str, limit: int = 90) -> str:
+            compact = " ".join(str(value or "").replace("\r\n", "\n").replace("\r", "\n").split())
+            return compact if len(compact) <= limit else compact[: limit - 1] + "…"
+
+        def progress_sample_text(samples: list[dict[str, str]] | None) -> str:
+            if not samples:
+                return ""
+            lines = ["直近の翻訳:"]
+            for sample in samples[-5:]:
+                source = shorten_progress_text(sample.get("source", ""))
+                translated = shorten_progress_text(sample.get("translated", ""))
+                if not source and not translated:
+                    continue
+                lines.append(f"原: {source}")
+                lines.append(f"訳: {translated}")
+            return "\n".join(lines)
+
+        def on_prog(done_subtitles: int, total_subtitles: int, samples: list[dict[str, str]] | None = None):
             pct = (done_subtitles / total_subtitles) * 100.0 if total_subtitles > 0 else 0.0
             elapsed = time.time() - start_t
             remaining = None
@@ -2949,6 +3017,9 @@ async def translate_subtitle_if_needed(
                     _prepare_jobs[job_id]["estimated_ready_at"] = int(time.time()) + remaining
             
             details = f"翻訳中... {done_subtitles}/{total_subtitles} 字幕"
+            sample_text = progress_sample_text(samples)
+            if sample_text:
+                details = f"{details}\n{sample_text}"
             update_job_progress(job_id, "translate", pct, eta_seconds=remaining, details=details)
 
     try:
@@ -7388,8 +7459,13 @@ async def prepare_youtube_subtitles(
     assert_duration_allowed(info)
     body = subtitle_choice_body(info, lang)
     if body.get("requires_choice"):
-        llm_available, llm_error = await remote_llm_available()
-        body = restrict_translation_engines(body, llm_available=llm_available, llm_error=llm_error)
+        llm_available, llm_error, available_models = await remote_llm_status()
+        body = restrict_translation_engines(
+            body,
+            llm_available=llm_available,
+            llm_error=llm_error,
+            available_models=available_models,
+        )
     return JSONResponse(body)
 
 

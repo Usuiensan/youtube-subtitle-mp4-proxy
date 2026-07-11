@@ -257,7 +257,7 @@ async def translate_srt_with_local_worker(
     target_language: str,
     settings: TranslationSettings,
     run_worker: Callable[[dict[str, Any]], Any],
-    on_progress: Callable[[int, int], None] | None = None,
+    on_progress: Callable[[int, int, list[dict[str, str]] | None], None] | None = None,
 ) -> SubtitleTranslationResult:
     subtitles = load_srt(subtitle_path)
     translation_characters = sum(len(sub.content) for sub in subtitles)
@@ -267,6 +267,7 @@ async def translate_srt_with_local_worker(
         settings.target_max_events,
     )
     translated_subtitles: list[srt.Subtitle] = []
+    recent_pairs: list[dict[str, str]] = []
     fallback_used = False
     total_windows = len(windows)
     total_subtitles = len(subtitles)
@@ -293,7 +294,7 @@ async def translate_srt_with_local_worker(
         usage_totals["requests"] += 1
 
     if on_progress:
-        on_progress(0, total_subtitles)
+        on_progress(0, total_subtitles, recent_pairs)
 
     for index, window in enumerate(windows):
         translated_map: dict[str, str] | None = None
@@ -381,18 +382,21 @@ async def translate_srt_with_local_worker(
             )
 
         for sub in window:
+            translated_text = translated_map[str(sub.index)]
             translated_subtitles.append(
                 srt.Subtitle(
                     index=sub.index,
                     start=sub.start,
                     end=sub.end,
-                    content=translated_map[str(sub.index)],
+                    content=translated_text,
                     proprietary=sub.proprietary,
                 )
             )
+            recent_pairs.append({"source": sub.content, "translated": translated_text})
+            recent_pairs = recent_pairs[-5:]
             translated_count += 1
         if on_progress:
-            on_progress(translated_count, total_subtitles)
+            on_progress(translated_count, total_subtitles, recent_pairs)
 
     save_srt(output_path, translated_subtitles)
     engine = "google_cloud" if fallback_used else settings.engine
