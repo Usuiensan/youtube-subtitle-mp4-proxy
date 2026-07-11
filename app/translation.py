@@ -144,6 +144,7 @@ def event_to_json(subtitle: srt.Subtitle) -> dict[str, Any]:
 def build_worker_payload(
     *,
     video_title: str,
+    channel_name: str,
     source_language: str,
     target_language: str,
     target: list[srt.Subtitle],
@@ -163,6 +164,7 @@ def build_worker_payload(
     )
     return {
         "video_title": video_title,
+        "channel_name": channel_name,
         "topic": settings.topic,
         "glossary": settings.glossary,
         "source_language": source_language,
@@ -250,6 +252,7 @@ async def translate_srt_with_local_worker(
     subtitle_path: Path,
     output_path: Path,
     video_title: str,
+    channel_name: str,
     source_language: str,
     target_language: str,
     settings: TranslationSettings,
@@ -296,6 +299,7 @@ async def translate_srt_with_local_worker(
             try:
                 payload = build_worker_payload(
                     video_title=video_title,
+                    channel_name=channel_name,
                     source_language=source_language,
                     target_language=target_language,
                     target=window,
@@ -333,6 +337,7 @@ async def translate_srt_with_local_worker(
             for part_index, part in enumerate((window[:midpoint], window[midpoint:]), start=1):
                 payload = build_worker_payload(
                     video_title=video_title,
+                    channel_name=channel_name,
                     source_language=source_language,
                     target_language=target_language,
                     target=part,

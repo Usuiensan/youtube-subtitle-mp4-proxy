@@ -170,6 +170,7 @@ def format_context_lines(items: list[dict[str, Any]], *, include_translation: bo
 DEFAULT_SINGLE_SUBTITLE_PROMPT_TEMPLATE = """You are a subtitle translator.
 Translate exactly one subtitle from {source_language} to {target_language}.
 Video title: {video_title}
+Channel name: {channel_name}
 Topic: {topic}
 Glossary: {glossary}
 
@@ -224,6 +225,7 @@ def build_single_subtitle_prompt(item: dict[str, Any], payload: dict[str, Any]) 
             "source_language": source_language,
             "target_language": target_language,
             "video_title": title,
+            "channel_name": str(payload.get("channel_name") or "").strip() or "不明",
             "topic": topic,
             "glossary": glossary,
             "previous_subtitles": format_context_lines(before),

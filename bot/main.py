@@ -85,6 +85,7 @@ class Settings:
     prepare_batch_max_items = int(os.getenv("DISCORD_PREPARE_BATCH_MAX_ITEMS", "5000"))
     translation_source_langs = os.getenv("TRANSLATION_SOURCE_LANGS", "en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW")
     webui_temp_key_secret = os.getenv("WEBUI_TEMP_KEY_SECRET", os.getenv("DISCORD_PREPARE_TOKEN", ""))
+    url_intake_channel_id = os.getenv("DISCORD_URL_INTAKE_CHANNEL_ID", "").strip()
 
 
 settings = Settings()
@@ -183,6 +184,12 @@ def looks_like_manual_video_list(value: str) -> bool:
         except ValueError:
             continue
     return valid_count >= 2
+
+
+def intake_channel_matches(channel_id: int | None) -> bool:
+    if not settings.url_intake_channel_id or channel_id is None:
+        return False
+    return str(channel_id) == settings.url_intake_channel_id
 
 
 def http_json(method: str, url: str) -> tuple[int, dict[str, Any]]:
@@ -952,11 +959,53 @@ async def send_public_completion(interaction: discord.Interaction, content: str)
 class YoutubeProxyBot(discord.Client):
     def __init__(self) -> None:
         intents = discord.Intents.default()
+        intents.message_content = True
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self) -> None:
         await self.tree.sync()
+
+    async def on_message(self, message: discord.Message) -> None:
+        if message.author.bot:
+            return
+        if not intake_channel_matches(message.channel.id if message.channel else None):
+            return
+        content = message.content.strip()
+        if not content:
+            return
+        try:
+            video_id = extract_video_id(content)
+        except ValueError:
+            return
+        if not settings.discord_prepare_token:
+            await message.reply("DISCORD_PREPARE_TOKEN が未設定です。", mention_author=False)
+            return
+        try:
+            options_body = await fetch_subtitle_options(video_id, "ja", "mp4")
+        except PrepareApiError as error:
+            await message.reply(f"字幕候補取得APIエラー ({error.status_code}): {error.detail}", mention_author=False)
+            return
+        title = options_body.get("title") or video_id
+        if options_body.get("requires_choice"):
+            view = SubtitleChoiceView(
+                requester_id=message.author.id,
+                video_id=video_id,
+                lang="ja",
+                mode="mp4",
+                options_body=options_body,
+                archive_immediately=False,
+            )
+            await message.reply(
+                f"字幕準備候補を確認しました。\n{title}\n翻訳元字幕と翻訳方式を選んでください。",
+                view=view,
+                mention_author=False,
+            )
+            return
+        await message.reply(
+            f"字幕準備候補を確認しました。\n{title}\n`/prepare url:{video_id} lang:ja mode:MP4` を実行すると準備できます。",
+            mention_author=False,
+        )
 
 
 client = YoutubeProxyBot()

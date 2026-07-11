@@ -1091,6 +1091,22 @@ def extract_title_variants(info: dict) -> list[dict[str, str]]:
     return variants
 
 
+def extract_channel_name(info: dict) -> str:
+    for key in ("channel", "uploader", "channel_title"):
+        value = info.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def extract_channel_id(info: dict) -> str:
+    for key in ("channel_id", "uploader_id"):
+        value = info.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def write_meta(key: str, video_id: str, lang: str, info: dict, mode: str) -> None:
     meta_path(key).parent.mkdir(parents=True, exist_ok=True)
     meta_path(key).write_text(
@@ -1099,6 +1115,8 @@ def write_meta(key: str, video_id: str, lang: str, info: dict, mode: str) -> Non
                 "video_id": video_id,
                 "lang": lang,
                 "title": info.get("title"),
+                "channel_name": extract_channel_name(info),
+                "channel_id": extract_channel_id(info),
                 "title_variants": extract_title_variants(info),
                 "duration": info.get("duration"),
                 "created_at": int(time.time()),
@@ -1117,6 +1135,7 @@ def write_source_meta(
     lang: str,
     info: dict,
     video: Path,
+    original_subtitle: Path,
     subtitle: Path,
     subtitle_meta: dict | None = None,
 ) -> None:
@@ -1126,11 +1145,14 @@ def write_source_meta(
                 "video_id": video_id,
                 "lang": lang,
                 "title": info.get("title"),
+                "channel_name": extract_channel_name(info),
+                "channel_id": extract_channel_id(info),
                 "title_variants": extract_title_variants(info),
                 "duration": info.get("duration"),
                 "webpage_url": info.get("webpage_url")
                 or f"https://www.youtube.com/watch?v={video_id}",
                 "source_video": str(video.relative_to(entry_dir(key))).replace("\\", "/"),
+                "original_subtitle": str(original_subtitle.relative_to(entry_dir(key))).replace("\\", "/"),
                 "subtitle": str(subtitle.relative_to(entry_dir(key))).replace("\\", "/"),
                 "subtitle_meta": subtitle_meta or {},
                 "downloaded_at": int(time.time()),
@@ -2826,6 +2848,7 @@ async def translate_subtitle_if_needed(
         subtitle_path=subtitle,
         output_path=translated_path,
         video_title=str(info.get("title") or ""),
+        channel_name=extract_channel_name(info),
         source_language=selection["source_language"],
         target_language=selection["requested_language"],
         settings=selected_settings,
@@ -2915,7 +2938,7 @@ async def download_subtitle_only(
     job_id: str | None = None,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
-) -> tuple[Path, Path, dict]:
+) -> tuple[Path, Path, Path, dict]:
     url = f"https://www.youtube.com/watch?v={video_id}"
     subtitle_selection = select_subtitle_language(
         info,
@@ -2963,6 +2986,7 @@ async def burn_subtitles(
     job_id: str | None = None,
     duration_seconds: float | None = None,
     subtitle_meta: dict | None = None,
+    original_subtitle: Path | None = None,
 ) -> None:
     tmp_output = destination.with_suffix(".tmp.mp4")
     start_t = time.time()
@@ -2973,7 +2997,11 @@ async def burn_subtitles(
             "-i",
             str(video),
             "-vf",
-            ffmpeg_subtitle_arg(subtitle, subtitle_meta),
+            *(
+                ffmpeg_dual_subtitle_args(original_subtitle, subtitle)
+                if original_subtitle is not None and original_subtitle != subtitle
+                else ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta)]
+            ),
             *ffmpeg_video_args(),
             "-c:a",
             "aac",
@@ -2997,6 +3025,7 @@ async def create_hls(
     job_id: str | None = None,
     duration_seconds: float | None = None,
     subtitle_meta: dict | None = None,
+    original_subtitle: Path | None = None,
 ) -> None:
     destination_dir.mkdir(parents=True, exist_ok=True)
     for old_file in destination_dir.glob("*"):
@@ -3011,7 +3040,11 @@ async def create_hls(
             "-i",
             str(video),
             "-vf",
-            ffmpeg_subtitle_arg(subtitle, subtitle_meta),
+            *(
+                ffmpeg_dual_subtitle_args(original_subtitle, subtitle)
+                if original_subtitle is not None and original_subtitle != subtitle
+                else ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta)]
+            ),
             *ffmpeg_video_args(),
             "-c:a",
             "aac",
@@ -3073,6 +3106,14 @@ def check_existing_sources(key: str) -> tuple[Path, Path, dict] | None:
     if not video_path.exists() or video_path.stat().st_size == 0:
         return None
 
+    original_subtitle_rel = source_meta.get("original_subtitle")
+    if isinstance(original_subtitle_rel, str) and original_subtitle_rel:
+        original_subtitle_path = base_dir / original_subtitle_rel
+        if not original_subtitle_path.exists() or original_subtitle_path.stat().st_size == 0:
+            return None
+        subtitle_meta = source_meta.get("subtitle_meta") or {}
+        return video_path, original_subtitle_path, subtitle_meta
+
     subtitle_meta = source_meta.get("subtitle_meta") or {}
     source_lang = subtitle_meta.get("source_language")
 
@@ -3091,6 +3132,44 @@ def check_existing_sources(key: str) -> tuple[Path, Path, dict] | None:
             return None
 
     return video_path, original_subtitle_path, subtitle_meta
+
+
+def build_ass_from_srt(subtitle_path: Path, output_path: Path, *, align: int, margin_l: int, margin_r: int, margin_v: int) -> None:
+    subtitles = load_srt(subtitle_path)
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        "PlayResX: 1920",
+        "PlayResY: 1080",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding",
+        f"Style: Default,{settings.subtitle_font},{settings.subtitle_font_size},&H00FFFFFF,&H000000FF,&H40000000,&H40000000,0,0,0,0,100,100,0,0,1,2,0,{align},{margin_l},{margin_r},{margin_v},1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    for sub in subtitles:
+        text = sub.content.replace("\r\n", "\n").replace("\r", "\n").replace("\n", r"\N")
+        lines.append(
+            "Dialogue: 0,"
+            f"{sub.start},"
+            f"{sub.end},"
+            f"Default,,0,0,0,,{text}"
+        )
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def ffmpeg_dual_subtitle_args(original_subtitle: Path, translated_subtitle: Path) -> list[str]:
+    original_ass = original_subtitle.with_suffix(".left.ass")
+    translated_ass = translated_subtitle.with_suffix(".right.ass")
+    build_ass_from_srt(original_subtitle, original_ass, align=1, margin_l=48, margin_r=0, margin_v=48)
+    build_ass_from_srt(translated_subtitle, translated_ass, align=1, margin_l=980, margin_r=0, margin_v=48)
+    return [
+        "-vf",
+        f"ass='{escape_filter_value(original_ass.as_posix())}',ass='{escape_filter_value(translated_ass.as_posix())}'",
+    ]
 
 
 def check_existing_source_video(key: str) -> tuple[Path, dict, Path] | None:
@@ -3230,7 +3309,7 @@ async def prepare_sources(
     translation_engine: str | None = None,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
-) -> tuple[Path, Path, dict]:
+) -> tuple[Path, Path, Path, dict]:
     existing = check_existing_sources(key)
     if existing and subtitle_source_lang:
         _saved_video, _original_subtitle, existing_subtitle_meta = existing
@@ -3258,7 +3337,7 @@ async def prepare_sources(
             if isinstance(subtitle_rel, str) and subtitle_rel:
                 cached_subtitle = hot_dir / subtitle_rel
                 if cached_subtitle.exists() and cached_subtitle.stat().st_size > 0:
-                    return saved_video, cached_subtitle, subtitle_meta
+                    return saved_video, original_subtitle, cached_subtitle, subtitle_meta
 
         if subtitle_meta.get("translated"):
             subtitle, new_subtitle_meta = await translate_subtitle_if_needed(
@@ -3279,8 +3358,8 @@ async def prepare_sources(
             saved_subtitle = original_subtitle
             new_subtitle_meta = subtitle_meta
 
-        write_source_meta(key, video_id, lang, info, saved_video, saved_subtitle, new_subtitle_meta)
-        return saved_video, saved_subtitle, new_subtitle_meta
+        write_source_meta(key, video_id, lang, info, saved_video, original_subtitle, saved_subtitle, new_subtitle_meta)
+        return saved_video, original_subtitle, saved_subtitle, new_subtitle_meta
 
     if reuse_source_video:
         existing_video = check_existing_source_video(key)
@@ -3319,8 +3398,8 @@ async def prepare_sources(
                     json.dumps(subtitle_meta, ensure_ascii=True, indent=2),
                     encoding="utf-8",
                 )
-            write_source_meta(key, video_id, lang, info, saved_video, saved_subtitle, subtitle_meta)
-            return saved_video, saved_subtitle, subtitle_meta
+            write_source_meta(key, video_id, lang, info, saved_video, original_subtitle, saved_subtitle, subtitle_meta)
+            return saved_video, original_subtitle, saved_subtitle, subtitle_meta
 
     # Normal download path
     video, original_subtitle, subtitle, subtitle_meta = await download_sources(
@@ -3350,8 +3429,8 @@ async def prepare_sources(
             json.dumps(subtitle_meta, ensure_ascii=True, indent=2),
             encoding="utf-8",
         )
-    write_source_meta(key, video_id, lang, info, saved_video, saved_subtitle, subtitle_meta)
-    return saved_video, saved_subtitle, subtitle_meta
+    write_source_meta(key, video_id, lang, info, saved_video, original_subtitle, saved_subtitle, subtitle_meta)
+    return saved_video, original_subtitle, saved_subtitle, subtitle_meta
 
 
 async def create_mp4(
@@ -3382,7 +3461,7 @@ async def create_mp4(
             duration = float(info.get("duration") or 0.0)
             await ensure_prepare_workspace_capacity(estimate_workspace_bytes(duration))
             work_dir.mkdir(parents=True, exist_ok=True)
-            saved_video, saved_subtitle, subtitle_meta = await prepare_sources(
+            saved_video, original_subtitle, saved_subtitle, subtitle_meta = await prepare_sources(
                 key,
                 video_id,
                 lang,
@@ -3402,6 +3481,7 @@ async def create_mp4(
                 job_id=job_id,
                 duration_seconds=duration,
                 subtitle_meta=subtitle_meta,
+                original_subtitle=original_subtitle,
             )
             write_meta(key, video_id, lang, info, "mp4")
             return final_output
@@ -3437,7 +3517,7 @@ async def create_hls_job(
             duration = float(info.get("duration") or 0.0)
             await ensure_prepare_workspace_capacity(estimate_workspace_bytes(duration))
             work_dir.mkdir(parents=True, exist_ok=True)
-            saved_video, saved_subtitle, subtitle_meta = await prepare_sources(
+            saved_video, original_subtitle, saved_subtitle, subtitle_meta = await prepare_sources(
                 key,
                 video_id,
                 lang,
@@ -3458,6 +3538,7 @@ async def create_hls_job(
                 job_id=job_id,
                 duration_seconds=duration,
                 subtitle_meta=subtitle_meta,
+                original_subtitle=original_subtitle,
             )
             return playlist
         finally:
