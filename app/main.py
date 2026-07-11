@@ -6178,7 +6178,7 @@ async def index() -> str:
 
     function setCompareFontSize(px) {{
       const clamped = Math.min(28, Math.max(12, Number(px) || 16));
-      compareStage.style.setProperty("--compare-subtitle-font-size", `${{clamped}}px`);
+      comparePanel.style.setProperty("--compare-subtitle-font-size", `${{clamped}}px`);
       compareFontSize.value = String(clamped);
       compareFontSizeValue.value = `${{clamped}}px`;
       try {{
