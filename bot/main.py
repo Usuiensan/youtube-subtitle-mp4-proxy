@@ -26110,6 +26110,13 @@ class PrepareApiError(Exception):
 
 
 
+
+
+def subtitle_options_error_message(error: PrepareApiError) -> str:
+    if error.status_code == 404:
+        return f"字幕候補を取得できませんでした: {error.detail}"
+    return f"字幕候補取得APIエラー ({error.status_code}): {error.detail}"
+
 def hmac_sha256(message: str, secret: str) -> str:
 
 
@@ -311796,7 +311803,7 @@ class YoutubeProxyBot(discord.Client):
 
 
 
-            await message.reply(f"字幕候補取得APIエラー ({error.status_code}): {error.detail}", mention_author=False)
+            await message.reply(subtitle_options_error_message(error), mention_author=False)
 
 
 
@@ -336632,7 +336639,7 @@ async def prepare_command(
 
 
 
-                    await interaction.followup.send(f"字幕候補取得APIエラー ({error.status_code}): {error.detail}", ephemeral=False)
+                    await interaction.followup.send(subtitle_options_error_message(error), ephemeral=False)
 
 
 
