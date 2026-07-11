@@ -6179,13 +6179,13 @@ async def index() -> str:
         const sourceSubtitleButton = document.createElement("a");
         sourceSubtitleButton.className = "button secondary";
         sourceSubtitleButton.textContent = "原語 SRT";
-        sourceSubtitleButton.href = `/prepared/${encodeURIComponent(item.key)}/source.srt`;
+        sourceSubtitleButton.href = `/prepared/${{encodeURIComponent(item.key)}}/source.srt`;
         actions.appendChild(sourceSubtitleButton);
 
         const translatedSubtitleButton = document.createElement("a");
         translatedSubtitleButton.className = "button secondary";
         translatedSubtitleButton.textContent = "翻訳 SRT";
-        translatedSubtitleButton.href = `/prepared/${encodeURIComponent(item.key)}/translated.srt`;
+        translatedSubtitleButton.href = `/prepared/${{encodeURIComponent(item.key)}}/translated.srt`;
         actions.appendChild(translatedSubtitleButton);
 
         for (const output of item.outputs || []) {{
