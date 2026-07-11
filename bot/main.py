@@ -56576,6 +56576,9 @@ def http_json(method: str, url: str) -> tuple[int, dict[str, Any]]:
 
         raise PrepareApiError(502, str(error.reason)) from error
 
+    except TimeoutError as error:
+        raise PrepareApiError(504, "Request timed out") from error
+
 
 
 
