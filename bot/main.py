@@ -31747,6 +31747,182 @@ def make_webui_temp_key(days: int) -> dict[str, Any]:
 
 
 
+def _prepare_api_request_sync(method: str, path: str, params: dict[str, object | None] | None = None) -> tuple[int, dict[str, Any]]:
+    if not settings.discord_prepare_token:
+        raise PrepareApiError(500, "DISCORD_PREPARE_TOKEN is not configured")
+
+    query = {
+        key: str(value)
+        for key, value in (params or {}).items()
+        if value is not None
+    }
+    url = f"{settings.youtube_proxy_internal_base_url}{path}"
+    if query:
+        url = f"{url}?{urllib.parse.urlencode(query)}"
+
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {settings.discord_prepare_token}",
+            "Accept": "application/json",
+        },
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            raw_body = response.read().decode("utf-8")
+            body = json.loads(raw_body) if raw_body else {}
+            return response.status, body if isinstance(body, dict) else {"data": body}
+    except urllib.error.HTTPError as error:
+        raw_body = error.read().decode("utf-8", errors="replace")
+        try:
+            body = json.loads(raw_body) if raw_body else {}
+        except json.JSONDecodeError:
+            body = {"detail": raw_body}
+        detail = body.get("detail") or body.get("message") or raw_body or error.reason
+        raise PrepareApiError(error.code, str(detail)) from error
+    except urllib.error.URLError as error:
+        raise PrepareApiError(0, str(error.reason)) from error
+
+
+async def prepare_api_request(method: str, path: str, params: dict[str, object | None] | None = None) -> tuple[int, dict[str, Any]]:
+    return await asyncio.to_thread(_prepare_api_request_sync, method, path, params)
+
+
+async def prepare_video(
+    video_id: str,
+    lang: str,
+    mode: str,
+    discord_user_id: int,
+    *,
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
+    archive_immediately: bool = False,
+) -> tuple[int, dict[str, Any]]:
+    path = f"/prepare/youtube/{urllib.parse.quote(video_id)}/{urllib.parse.quote(lang)}"
+    if subtitle_source_lang and translation_engine:
+        path = f"{path}/{urllib.parse.quote(subtitle_source_lang)}/{urllib.parse.quote(translation_engine)}"
+    return await prepare_api_request(
+        "POST",
+        path,
+        {
+            "mode": mode,
+            "discordUserId": discord_user_id,
+            "subtitleSourceLang": subtitle_source_lang if not translation_engine else None,
+            "translationEngine": translation_engine if not subtitle_source_lang else None,
+            "archiveImmediately": str(bool(archive_immediately)).lower(),
+        },
+    )
+
+
+async def prepare_batch(
+    source: str,
+    lang: str,
+    mode: str,
+    discord_user_id: int,
+    max_items: int | None,
+    archive_immediately: bool,
+    *,
+    source_type: str = "auto",
+) -> tuple[int, dict[str, Any]]:
+    return await prepare_api_request(
+        "POST",
+        f"/prepare/youtube-batch/{urllib.parse.quote(lang)}",
+        {
+            "source": source,
+            "sourceType": source_type,
+            "mode": mode,
+            "discordUserId": discord_user_id,
+            "maxItems": max_items,
+            "archiveImmediately": str(bool(archive_immediately)).lower(),
+        },
+    )
+
+
+async def reburn_batch(
+    source: str,
+    lang: str,
+    mode: str,
+    discord_user_id: int,
+    max_items: int | None,
+    archive_immediately: bool,
+    *,
+    source_type: str = "auto",
+) -> tuple[int, dict[str, Any]]:
+    return await prepare_api_request(
+        "POST",
+        f"/prepare/youtube-reburn-batch/{urllib.parse.quote(lang)}",
+        {
+            "source": source,
+            "sourceType": source_type,
+            "mode": mode,
+            "discordUserId": discord_user_id,
+            "maxItems": max_items,
+            "archiveImmediately": str(bool(archive_immediately)).lower(),
+        },
+    )
+
+
+async def reburn_all(
+    lang: str,
+    mode: str,
+    discord_user_id: int,
+    max_items: int | None,
+    archive_immediately: bool,
+) -> tuple[int, dict[str, Any]]:
+    return await prepare_api_request(
+        "POST",
+        "/prepare/youtube-reburn-all",
+        {
+            "lang": lang,
+            "mode": mode,
+            "discordUserId": discord_user_id,
+            "maxItems": max_items,
+            "archiveImmediately": str(bool(archive_immediately)).lower(),
+        },
+    )
+
+
+async def fetch_job(status_url_or_job_id: str) -> tuple[int, dict[str, Any]]:
+    parsed = urllib.parse.urlparse(status_url_or_job_id)
+    if parsed.scheme and parsed.netloc:
+        path = parsed.path
+        params = dict(urllib.parse.parse_qsl(parsed.query))
+        return await prepare_api_request("GET", path, params)
+    return await prepare_api_request("GET", f"/prepare/jobs/{urllib.parse.quote(status_url_or_job_id)}")
+
+
+async def fetch_batch(batch_id: str) -> tuple[int, dict[str, Any]]:
+    return await prepare_api_request("GET", f"/prepare/batches/{urllib.parse.quote(batch_id)}")
+
+
+async def fetch_subtitle_options(video_id: str, lang: str, mode: str) -> tuple[int, dict[str, Any]]:
+    return await prepare_api_request(
+        "GET",
+        f"/prepare/youtube/{urllib.parse.quote(video_id)}/{urllib.parse.quote(lang)}/subtitles",
+        {"mode": mode},
+    )
+
+
+async def clear_video(video_id: str, lang: str) -> tuple[int, dict[str, Any]]:
+    return await prepare_api_request(
+        "POST",
+        f"/prepare/youtube/{urllib.parse.quote(video_id)}/{urllib.parse.quote(lang)}/clear",
+    )
+
+
+async def clear_all_videos() -> tuple[int, dict[str, Any]]:
+    return await prepare_api_request("POST", "/prepare/youtube/clear-all")
+
+
+async def archive_all_videos() -> tuple[int, dict[str, Any]]:
+    return await prepare_api_request("POST", "/prepare/archive-all")
+
+
+async def reset_eta_metrics() -> tuple[int, dict[str, Any]]:
+    return await prepare_api_request("POST", "/prepare/eta/reset")
+
+
 class PrepareScopeChoiceView(discord.ui.View):
     def __init__(
         self,
