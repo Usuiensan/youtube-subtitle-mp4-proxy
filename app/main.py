@@ -2987,14 +2987,6 @@ async def translate_subtitle_if_needed(
                 )
             selected_settings = fallback_settings
 
-    if selected_settings.provider_name == "openai_compatible":
-        llm_available, llm_error = await remote_llm_available()
-        if not llm_available:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Remote LLM is unavailable. Ask the user before using google_cloud. reason={llm_error}",
-            )
-
     async def worker(payload: dict) -> dict:
         payload["_work_dir"] = str(work_dir)
         payload["llm_endpoint"] = settings.remote_llm_endpoint
