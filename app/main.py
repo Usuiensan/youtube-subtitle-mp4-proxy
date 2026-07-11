@@ -839,6 +839,22 @@ class CommandError(Exception):
         self.stderr = message
 
 
+def is_youtube_video_unavailable_error(message: str) -> bool:
+    text = message.lower()
+    return any(
+        marker in text
+        for marker in (
+            "this video is not available",
+            "video unavailable",
+            "private video",
+            "this video is private",
+            "has been removed",
+            "video has been removed",
+            "this video has been removed",
+        )
+    )
+
+
 def variant_id(
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
@@ -1696,15 +1712,22 @@ async def run_command_unlimited(
 
 async def fetch_video_info(video_id: str) -> dict:
     url = f"https://www.youtube.com/watch?v={video_id}"
-    raw = await run_command(
-        yt_dlp_base_args()
-        + [
-            "--dump-single-json",
-            "--skip-download",
-            "--no-warnings",
-            url,
-        ]
-    )
+    try:
+        raw = await run_command(
+            yt_dlp_base_args()
+            + [
+                "--dump-single-json",
+                "--skip-download",
+                "--no-warnings",
+                url,
+            ],
+            raise_http=False,
+        )
+    except CommandError as error:
+        detail = error.stderr or error.message or str(error)
+        if is_youtube_video_unavailable_error(detail):
+            raise HTTPException(status_code=404, detail="この動画は利用できません。削除、非公開、地域制限、またはYouTube側の制限の可能性があります。") from error
+        raise HTTPException(status_code=502, detail=detail[-1000:] or "Failed to fetch YouTube video info") from error
     info = json.loads(raw)
     await enrich_video_info_titles(info, video_id)
     return info

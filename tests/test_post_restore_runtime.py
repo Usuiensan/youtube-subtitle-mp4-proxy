@@ -76,6 +76,36 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         response = TestClient(app_main.app).post("/prepare/youtube/dQw4w9WgXcQ/ja?mode=mp4")
         self.assertIn(response.status_code, {401, 403, 503})
 
+    def test_unavailable_video_info_maps_to_404(self) -> None:
+        import asyncio
+
+        error = app_main.CommandError(["yt-dlp"], "ERROR: [youtube] I5e6ftNpGsU: This video is not available")
+        with patch.object(app_main, "run_command", new=AsyncMock(side_effect=error)):
+            with self.assertRaises(app_main.HTTPException) as raised:
+                asyncio.run(app_main.fetch_video_info("I5e6ftNpGsU"))
+
+        self.assertEqual(raised.exception.status_code, 404)
+        self.assertIn("この動画は利用できません", raised.exception.detail)
+
+    def test_unavailable_video_subtitle_api_returns_404(self) -> None:
+        error = app_main.CommandError(["yt-dlp"], "ERROR: [youtube] I5e6ftNpGsU: This video is not available")
+        with patch.object(app_main.settings, "discord_prepare_token", "token"), patch.object(
+            app_main, "run_command", new=AsyncMock(side_effect=error)
+        ):
+            response = TestClient(app_main.app).get(
+                "/prepare/youtube/I5e6ftNpGsU/ja/subtitles?mode=mp4",
+                headers={"Authorization": "Bearer token"},
+            )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("この動画は利用できません", response.json()["detail"])
+
+    def test_discord_subtitle_options_404_message_is_user_facing(self) -> None:
+        error = bot_main.PrepareApiError(404, "この動画は利用できません。")
+        message = bot_main.subtitle_options_error_message(error)
+        self.assertIn("字幕候補を取得できませんでした", message)
+        self.assertNotIn("APIエラー", message)
+
     def test_discord_prepare_accepts_video_inputs_without_forced_scope_name_error(self) -> None:
         async def run_case(source: str) -> None:
             interaction = SimpleNamespace(
