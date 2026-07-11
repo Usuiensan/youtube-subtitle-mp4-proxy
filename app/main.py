@@ -3482,10 +3482,11 @@ async def prepare_sources(
                 else source_dir(key) / f"subtitle.{lang}{subtitle.suffix.lower()}"
             )
             move_replace(original_subtitle, saved_original_subtitle)
-            if subtitle != saved_original_subtitle:
+            original_subtitle = saved_original_subtitle
+            if subtitle != original_subtitle:
                 move_replace(subtitle, saved_subtitle)
             else:
-                saved_subtitle = saved_original_subtitle
+                saved_subtitle = original_subtitle
             if subtitle_meta.get("translated"):
                 translation_meta_path(key).write_text(
                     json.dumps(subtitle_meta, ensure_ascii=True, indent=2),
@@ -3516,7 +3517,12 @@ async def prepare_sources(
     move_replace(video, saved_video)
     if original_subtitle != subtitle:
         move_replace(original_subtitle, saved_original_subtitle)
-    move_replace(subtitle, saved_subtitle)
+        original_subtitle = saved_original_subtitle
+        move_replace(subtitle, saved_subtitle)
+    else:
+        move_replace(subtitle, saved_original_subtitle)
+        original_subtitle = saved_original_subtitle
+        saved_subtitle = saved_original_subtitle
     if subtitle_meta.get("translated"):
         translation_meta_path(key).write_text(
             json.dumps(subtitle_meta, ensure_ascii=True, indent=2),

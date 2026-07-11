@@ -1026,8 +1026,24 @@ class YoutubeProxyBot(discord.Client):
                 mention_author=False,
             )
             return
+        candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
+        if not candidates:
+            await message.reply(
+                f"字幕準備候補を確認しました。\n{title}\n字幕候補が見つかりませんでした。",
+                mention_author=False,
+            )
+            return
+        view = SubtitleChoiceView(
+            requester_id=message.author.id,
+            video_id=video_id,
+            lang="ja",
+            mode="mp4",
+            options_body=options_body,
+            archive_immediately=False,
+        )
         await message.reply(
-            f"字幕準備候補を確認しました。\n{title}\n`/prepare url:{video_id} lang:ja mode:MP4` を実行すると準備できます。",
+            f"字幕準備候補を確認しました。\n{title}\n翻訳元字幕と翻訳方式を選んでください。",
+            view=view,
             mention_author=False,
         )
 
