@@ -4938,7 +4938,7 @@ async def index() -> str:
       letter-spacing: 0.02em;
     }}
     main {{
-      width: min(960px, 100%);
+      width: min(1440px, 100%);
       margin-inline: auto;
     }}
     h1 {{
@@ -5193,8 +5193,33 @@ async def index() -> str:
     }}
     .compare-video {{
       width: 100%;
-      max-height: 52vh;
+      aspect-ratio: 16 / 9;
+      max-height: none;
       background: #000;
+    }}
+    .compare-layout {{
+      display: grid;
+      grid-template-columns: minmax(0, 380px) minmax(0, 1fr);
+      gap: calc(24 / 16 * 1rem);
+      align-items: start;
+    }}
+    .compare-sidebar {{
+      display: grid;
+      gap: calc(16 / 16 * 1rem);
+      position: sticky;
+      top: calc(16 / 16 * 1rem);
+    }}
+    .compare-stage {{
+      display: grid;
+      gap: calc(16 / 16 * 1rem);
+      min-width: 0;
+    }}
+    .compare-controls {{
+      display: grid;
+      gap: calc(12 / 16 * 1rem);
+    }}
+    .compare-results {{
+      align-items: start;
     }}
     .profile-grid, .compare-results {{
       display: grid;
@@ -5233,6 +5258,12 @@ async def index() -> str:
       font-weight: 600;
     }}
     @media (max-width: 47.999rem) {{
+      .compare-layout {{
+        grid-template-columns: 1fr;
+      }}
+      .compare-sidebar {{
+        position: static;
+      }}
       .row {{
         grid-template-columns: 1fr;
       }}
@@ -5421,34 +5452,40 @@ async def index() -> str:
       <div id="monitorJobs" class="job-list"></div>
     </section>
     <section id="comparePanel" class="tool" aria-labelledby="compareTab" hidden>
-      <form id="compareForm">
-        <label>
-          YouTube URL / 動画ID
-          <input id="compareUrl" name="compareUrl" type="text" placeholder="https://www.youtube.com/watch?v=... or dQw4w9WgXcQ" autocomplete="off">
-        </label>
-        <div class="row">
-          <label>
-            翻訳元字幕
-            <input id="compareSourceLang" name="compareSourceLang" value="" maxlength="64" autocomplete="off">
-          </label>
-          <label>
-            翻訳先
-            <input id="compareTargetLang" name="compareTargetLang" value="ja" maxlength="12" autocomplete="off">
-          </label>
+      <div class="compare-layout">
+        <div class="compare-sidebar">
+          <form id="compareForm" class="compare-controls">
+            <label>
+              YouTube URL / 動画ID
+              <input id="compareUrl" name="compareUrl" type="text" placeholder="https://www.youtube.com/watch?v=... or dQw4w9WgXcQ" autocomplete="off">
+            </label>
+            <div class="row">
+              <label>
+                翻訳元字幕
+                <input id="compareSourceLang" name="compareSourceLang" value="" maxlength="64" autocomplete="off">
+              </label>
+              <label>
+                翻訳先
+                <input id="compareTargetLang" name="compareTargetLang" value="ja" maxlength="12" autocomplete="off">
+              </label>
+            </div>
+            <div class="actions">
+              <button type="button" id="compareLoadVariantsButton" class="secondary">字幕候補を読み込む</button>
+              <button type="button" id="comparePrepareButton">比較用に準備</button>
+            </div>
+            <label>
+              再生する動画
+              <select id="comparePlaybackSource" name="comparePlaybackSource"></select>
+            </label>
+            <output id="compareStatus"></output>
+          </form>
+          <div id="compareVariants" class="job-list"></div>
         </div>
-        <div class="actions">
-          <button type="button" id="compareLoadVariantsButton" class="secondary">字幕候補を読み込む</button>
-          <button type="button" id="comparePrepareButton">比較用に準備</button>
+        <div class="compare-stage">
+          <video id="compareVideo" class="compare-video" controls></video>
+          <div id="compareResults" class="compare-results"></div>
         </div>
-        <label>
-          再生する動画
-          <select id="comparePlaybackSource" name="comparePlaybackSource"></select>
-        </label>
-        <output id="compareStatus"></output>
-      </form>
-      <div id="compareVariants" class="job-list"></div>
-      <video id="compareVideo" class="compare-video" controls></video>
-      <div id="compareResults" class="compare-results"></div>
+      </div>
     </section>
     <section id="chatPanel" class="tool" aria-labelledby="chatTab" hidden>
       <div class="row">

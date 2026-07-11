@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from app import main as app_main
+from app import translation_worker
 from bot import main as bot_main
 
 
@@ -69,6 +70,27 @@ class GeminiTranslationTests(unittest.TestCase):
         )
         self.assertIn("Qwen 3 8B", text)
         self.assertIn("qwen3:8b", text)
+
+    def test_translation_worker_prompt_is_single_subtitle_and_minimal(self) -> None:
+        payload = {
+            "video_title": "Sample title",
+            "source_language": "en",
+            "target_language": "ja",
+            "context_before": [
+                {"id": "1", "text": "First line"},
+                {"id": "2", "text": "Second line"},
+            ],
+            "context_after": [
+                {"id": "4", "text": "Fourth line"},
+            ],
+        }
+        prompt = translation_worker.build_single_subtitle_prompt({"id": "3", "text": "Translate me"}, payload)
+        self.assertIn("Translate exactly one subtitle", prompt)
+        self.assertIn("Current subtitle:", prompt)
+        self.assertIn("Translate me", prompt)
+        self.assertNotIn("前5つの字幕", prompt)
+        self.assertNotIn("これを訳せ（字幕１つだけ）", prompt)
+        self.assertNotIn("previous_japanese", prompt)
 
 
 if __name__ == "__main__":

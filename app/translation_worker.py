@@ -168,22 +168,12 @@ def format_context_lines(items: list[dict[str, Any]], *, include_translation: bo
 
 
 def build_single_subtitle_prompt(item: dict[str, Any], payload: dict[str, Any]) -> str:
-    previous_japanese = payload.get("previous_japanese")
-    translated_by_id = {}
-    if isinstance(previous_japanese, list):
-        translated_by_id = {
-            str(prev.get("id")): str(prev.get("text") or "")
-            for prev in previous_japanese
-            if isinstance(prev, dict)
-        }
     before = []
     context_before = payload.get("context_before")
     if isinstance(context_before, list):
         for entry in context_before[-5:]:
             if isinstance(entry, dict):
-                copy = dict(entry)
-                copy["translated_text"] = translated_by_id.get(str(entry.get("id")), "")
-                before.append(copy)
+                before.append(dict(entry))
 
     after = []
     context_after = payload.get("context_after")
@@ -191,13 +181,20 @@ def build_single_subtitle_prompt(item: dict[str, Any], payload: dict[str, Any]) 
         after = [entry for entry in context_after[:5] if isinstance(entry, dict)]
 
     title = str(payload.get("video_title") or "").strip() or "不明"
+    source_language = str(payload.get("source_language") or "").strip() or "unknown"
+    target_language = str(payload.get("target_language") or "").strip() or "ja"
     text = str(item.get("text") or "")
     return (
-        f"動画タイトル（原語で）\n{title}\n\n"
-        f"前5つの字幕（原語）（日本語）\n{format_context_lines(before, include_translation=True)}\n\n"
-        f"これを訳せ（字幕１つだけ）\n{text}\n\n"
-        f"後5つの字幕（原語）\n{format_context_lines(after)}\n\n"
-        "出力は日本語訳だけ。説明、引用符、番号、前後の字幕の訳は出さない。"
+        f"You are a subtitle translator.\n"
+        f"Translate exactly one subtitle from {source_language} to {target_language}.\n"
+        f"Video title: {title}\n\n"
+        f"Previous subtitles:\n{format_context_lines(before)}\n\n"
+        f"Current subtitle:\n{text}\n\n"
+        f"Next subtitles:\n{format_context_lines(after)}\n\n"
+        "Rules:\n"
+        "- Output only the translation of the current subtitle.\n"
+        "- Do not add explanations, numbering, quotes, or labels.\n"
+        "- Preserve names, numbers, URLs, and line breaks when needed."
     )
 
 
