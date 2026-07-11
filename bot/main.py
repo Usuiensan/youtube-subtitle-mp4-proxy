@@ -518,6 +518,11 @@ def batch_status_message(body: dict[str, Any], fallback_user_id: int | None = No
     failed = counts.get("failed", 0)
     running = counts.get("running", 0)
     queued = counts.get("queued", 0)
+    completed = ready + failed
+    percent = (completed / total * 100.0) if total else 0.0
+    bar_width = 15
+    filled = int(round(percent / 100 * bar_width))
+    progress_bar = f"`[{'█' * filled}{'░' * (bar_width - filled)}] {percent:5.1f}%`"
     mention = mention_text(body, fallback_user_id)
     prefix = f"{mention} " if mention and status in {"ready", "failed"} else ""
 
@@ -526,6 +531,7 @@ def batch_status_message(body: dict[str, Any], fallback_user_id: int | None = No
         lines = [
             f"{prefix}{label}",
             str(name),
+            progress_bar,
             f"ready {ready}/{total} / failed {failed}",
         ]
         items = body.get("items") if isinstance(body.get("items"), list) else []
@@ -548,6 +554,7 @@ def batch_status_message(body: dict[str, Any], fallback_user_id: int | None = No
     return (
         f"{mode.upper()}を一括準備しています。{eta_text(body)}\n"
         f"{name}\n"
+        f"{progress_bar}\n"
         f"ready {ready}/{total} / running {running} / queued {queued} / failed {failed}"
     )
 
@@ -801,6 +808,7 @@ async def notify_when_done(
     )
     deadline = time.monotonic() + timeout_seconds
     latest: dict[str, Any] | None = None
+    reported_ready_items: set[str] = set()
 
     async def send_notification(content: str, *, public: bool) -> None:
         channel = interaction.channel
@@ -835,6 +843,27 @@ async def notify_when_done(
             except discord.HTTPException:
                 pass
 
+    async def report_batch_item_completions(body: dict[str, Any]) -> None:
+        if not isinstance(body.get("counts"), dict):
+            return
+        items = body.get("items") if isinstance(body.get("items"), list) else []
+        for item in items:
+            if not isinstance(item, dict) or item.get("status") != "ready" or not item.get("url"):
+                continue
+            key = str(item.get("url") or item.get("video_id") or "")
+            if not key or key in reported_ready_items:
+                continue
+            reported_ready_items.add(key)
+            title = str(item.get("title") or item.get("video_id") or "動画")
+            url = public_url(item.get("url"))
+            try:
+                await interaction.followup.send(
+                    f"1件準備できました。\n{title}\n{url}",
+                    ephemeral=True,
+                )
+            except discord.HTTPException:
+                return
+
     is_first_poll = True
     last_content = None
     last_edit_time = 0.0
@@ -854,6 +883,7 @@ async def notify_when_done(
                 + settings.poll_timeout_grace_seconds
             )
             deadline = max(deadline, eta_deadline)
+        await report_batch_item_completions(latest)
         if latest.get("status") in {"ready", "failed"}:
             notification = latest.get("notification") or {}
             if isinstance(latest.get("counts"), dict):

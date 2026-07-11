@@ -151,6 +151,8 @@ bot はスラッシュコマンド `/prepare` を提供します。
 
 Discord bot の完了待ちは単体ジョブでは `DISCORD_PREPARE_POLL_TIMEOUT_SECONDS`、一括ジョブでは `DISCORD_PREPARE_BATCH_POLL_TIMEOUT_SECONDS` を使います。既定では一括ジョブを24時間まで追跡し、サーバー側の `estimated_ready_at` が後ろへ伸びた場合は `DISCORD_PREPARE_POLL_TIMEOUT_GRACE_SECONDS` 分の余裕を足して待機期限も延長します。タイムアウトしても準備ジョブ自体はサーバー側で継続している可能性があります。`/prepare/batches/:batchId` は認証付きAPIなので、Discord上のリンクとして直接開く用途には使いません。
 
+一括準備の進捗表示は `ready + failed` を全体完了数として進捗バーに反映します。各動画が ready になった時点で、bot はコマンド実行者だけに見える控えめな「1件準備できました」通知を出します。チャンネル全体の公開通知は一括ジョブ全体が完了した時だけです。
+
 字幕スタイルやエンコード設定だけを変えて焼き込み直したい場合は、Discord の `/reburn` を使います。入力形式は `/prepare` と同じで、既存の `source/` 配下にある動画・元字幕・翻訳済み字幕を再利用し、YouTubeからの再ダウンロードやLLM/Google再翻訳を行わずにMP4/HLS出力だけを作り直します。
 再利用可能な準備済み動画をまとめて作り直す場合は `/reburn-all` を使います。`lang:all` で全言語、`lang:ja` などで対象言語を絞れます。対象はSSD/HDDに残っていて、かつ `source/` 配下の動画・字幕が残っているものです。
 
