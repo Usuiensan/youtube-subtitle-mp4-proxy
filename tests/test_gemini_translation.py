@@ -92,6 +92,13 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertNotIn("これを訳せ（字幕１つだけ）", prompt)
         self.assertNotIn("previous_japanese", prompt)
 
+    def test_dm_command_parser_strips_slash_prefix(self) -> None:
+        command, args = bot_main.parse_dm_command("/prepare https://youtu.be/dQw4w9WgXcQ lang=ja")
+        self.assertEqual(command, "prepare")
+        self.assertEqual(args[0], "https://youtu.be/dQw4w9WgXcQ")
+        self.assertEqual(bot_main.parse_dm_flag(args, "lang"), "ja")
+        self.assertTrue(bot_main.parse_dm_bool("yes"))
+
 
 if __name__ == "__main__":
     unittest.main()

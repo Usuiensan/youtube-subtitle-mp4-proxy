@@ -215,6 +215,8 @@ def build_single_subtitle_prompt(item: dict[str, Any], payload: dict[str, Any]) 
     title = str(payload.get("video_title") or "").strip() or "不明"
     source_language = str(payload.get("source_language") or "").strip() or "unknown"
     target_language = str(payload.get("target_language") or "").strip() or "ja"
+    source_language_code = source_language
+    target_language_code = target_language
     topic = str(payload.get("topic") or "").strip()
     glossary = str(payload.get("glossary") or "").strip()
     template = str(payload.get("prompt_template") or "").strip() or DEFAULT_SINGLE_SUBTITLE_PROMPT_TEMPLATE
@@ -223,7 +225,9 @@ def build_single_subtitle_prompt(item: dict[str, Any], payload: dict[str, Any]) 
         template,
         {
             "source_language": source_language,
+            "source_language_code": source_language_code,
             "target_language": target_language,
+            "target_language_code": target_language_code,
             "video_title": title,
             "channel_name": str(payload.get("channel_name") or "").strip() or "不明",
             "topic": topic,

@@ -77,6 +77,10 @@ def default_translation_prompt_file() -> Path:
     return Path(__file__).resolve().parent.parent / "prompts" / "translation-prompt.txt"
 
 
+def default_translategemma_prompt_file() -> Path:
+    return Path(__file__).resolve().parent.parent / "prompts" / "translategemma-prompt.txt"
+
+
 load_env_file(ENV_FILE)
 
 
@@ -99,7 +103,7 @@ class Settings:
     cache_ttl_seconds = int(os.getenv("CACHE_TTL_SECONDS", "86400"))
     job_timeout_seconds = int(os.getenv("JOB_TIMEOUT_SECONDS", "7200"))
     subtitle_font = os.getenv("SUBTITLE_FONT", "Noto Sans JP")
-    subtitle_font_size = int(os.getenv("SUBTITLE_FONT_SIZE", "20"))
+    subtitle_font_size = int(os.getenv("SUBTITLE_FONT_SIZE", "22"))
     subtitle_margin_v = int(os.getenv("SUBTITLE_MARGIN_V", "34"))
     subtitle_margin_l = int(os.getenv("SUBTITLE_MARGIN_L", "24"))
     subtitle_margin_r = int(os.getenv("SUBTITLE_MARGIN_R", "24"))
@@ -133,6 +137,7 @@ class Settings:
         "qwen3_14b": os.getenv("LOCAL_LLM_MODEL_QWEN3_14B", "qwen3:14b").strip(),
         "aya_expanse_8b": os.getenv("LOCAL_LLM_MODEL_AYA_EXPANSE_8B", "aya-expanse:8b").strip(),
         "gemma3_12b": os.getenv("LOCAL_LLM_MODEL_GEMMA3_12B", "gemma3:12b").strip(),
+        "translategemma_12b": os.getenv("LOCAL_LLM_MODEL_TRANSLATEGEMMA_12B", "translategemma:12b").strip(),
         "gemini_2_5_flash": os.getenv("LOCAL_LLM_MODEL_GEMINI_2_5_FLASH", "gemini-2.5-flash").strip(),
         # Legacy aliases kept for compatibility with older settings.
         "local_llm": os.getenv("LOCAL_LLM_MODEL", "qwen3:4b-instruct").strip(),
@@ -144,6 +149,7 @@ class Settings:
         "qwen3_14b": "Qwen 3 14B",
         "aya_expanse_8b": "Aya Expanse 8B",
         "gemma3_12b": "Gemma 3 12B",
+        "translategemma_12b": "TranslateGemma 12B",
         "gemini_2_5_flash": "Gemini Flash",
         "local_llm": os.getenv("LOCAL_LLM_LABEL", "Default LLM"),
         "remote_llm": os.getenv("REMOTE_LLM_LABEL", "Remote LLM"),
@@ -167,6 +173,11 @@ class Settings:
         read_text_file(os.getenv("TRANSLATION_PROMPT_TEMPLATE_FILE"))
         or read_text_file(str(default_translation_prompt_file()))
         or os.getenv("TRANSLATION_PROMPT_TEMPLATE", "")
+    )
+    translategemma_prompt_template = (
+        read_text_file(os.getenv("TRANSLATEGEMMA_PROMPT_TEMPLATE_FILE"))
+        or read_text_file(str(default_translategemma_prompt_file()))
+        or os.getenv("TRANSLATEGEMMA_PROMPT_TEMPLATE", "")
     )
     google_cloud_project = os.getenv("GOOGLE_CLOUD_PROJECT", "")
     gemini_api_key = os.getenv("GEMINI_API_KEY", "")
@@ -844,16 +855,17 @@ def cache_key(
     lang: str,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
+    subtitle_font_size: int | None = None,
 ) -> str:
     variant = variant_id(subtitle_source_lang, translation_engine)
     if variant:
-        return f"{video_id}_{lang}_{variant}_{render_profile_id()}"
-    return f"{video_id}_{lang}_{render_profile_id()}"
+        return f"{video_id}_{lang}_{variant}_{render_profile_id(subtitle_font_size)}"
+    return f"{video_id}_{lang}_{render_profile_id(subtitle_font_size)}"
 
 
-def render_profile_id() -> str:
+def render_profile_id(subtitle_font_size: int | None = None) -> str:
     return hashlib.sha1(
-        "\n".join(["dual-subtitle-layout-v5-720p", subtitle_force_style(), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
+        "\n".join(["dual-subtitle-layout-v5-720p", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
     ).hexdigest()[:8]
 
 
@@ -1795,6 +1807,7 @@ def translation_profile_options() -> list[dict]:
         "qwen3_14b",
         "aya_expanse_8b",
         "gemma3_12b",
+        "translategemma_12b",
     ]
     options = [
         {
@@ -2003,6 +2016,9 @@ def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
         provider_name = "openai_compatible"
     elif normalized == "gemini_2_5_flash":
         provider_name = "gemini_api"
+    prompt_template = settings.translation_prompt_template
+    if normalized == "translategemma_12b":
+        prompt_template = settings.translategemma_prompt_template
     return TranslationSettings(
         enabled=settings.translation_enabled,
         target_window_seconds=settings.local_llm_target_window_seconds,
@@ -2016,7 +2032,7 @@ def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
         fallback_engine=settings.translation_fallback_engine,
         glossary=settings.translation_glossary,
         topic=settings.translation_topic,
-        prompt_template=settings.translation_prompt_template,
+        prompt_template=prompt_template,
         google_project=settings.google_cloud_project,
         provider_name=provider_name,
     )
@@ -2219,12 +2235,13 @@ def escape_filter_value(value: str) -> str:
     return value.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
 
 
-def subtitle_force_style(font_name: str | None = None) -> str:
+def subtitle_force_style(font_name: str | None = None, font_size: int | None = None) -> str:
     resolved_font = font_name or settings.subtitle_font
+    resolved_font_size = font_size if isinstance(font_size, int) and font_size > 0 else settings.subtitle_font_size
     return ",".join(
         [
             f"FontName={resolved_font}",
-            f"FontSize={settings.subtitle_font_size}",
+            f"FontSize={resolved_font_size}",
             f"PrimaryColour={settings.subtitle_primary_colour}",
             f"BackColour={settings.subtitle_back_colour}",
             "BorderStyle=4",
@@ -2537,13 +2554,13 @@ def find_japanese_font_spec() -> tuple[str | None, str | None]:
     return None, None
 
 
-def ffmpeg_subtitle_arg(path: Path, subtitle_meta: dict | None = None) -> str:
+def ffmpeg_subtitle_arg(path: Path, subtitle_meta: dict | None = None, *, subtitle_font_size: int | None = None) -> str:
     value = path.as_posix()
     font_file, font_name = find_japanese_font_spec()
     subtitle_font_name = font_name or settings.subtitle_font
     filter_str = (
         f"subtitles='{escape_filter_value(value)}':"
-        f"force_style='{escape_filter_value(subtitle_force_style(subtitle_font_name))}'"
+        f"force_style='{escape_filter_value(subtitle_force_style(subtitle_font_name, subtitle_font_size))}'"
     )
     drawtext_filters = subtitle_overlay_drawtext_filters(subtitle_meta, font_file, subtitle_font_name)
     if drawtext_filters:
@@ -3195,13 +3212,14 @@ async def burn_subtitles(
     duration_seconds: float | None = None,
     subtitle_meta: dict | None = None,
     original_subtitle: Path | None = None,
+    subtitle_font_size: int | None = None,
 ) -> None:
     tmp_output = destination.with_suffix(".tmp.mp4")
     start_t = time.time()
     vf_args = (
-        ffmpeg_dual_subtitle_args(original_subtitle, subtitle, subtitle_meta)
+        ffmpeg_dual_subtitle_args(original_subtitle, subtitle, subtitle_meta, subtitle_font_size=subtitle_font_size)
         if original_subtitle is not None and original_subtitle != subtitle
-        else ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta)]
+        else ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta, subtitle_font_size=subtitle_font_size)]
     )
     await run_ffmpeg_with_optional_nvenc_fallback(
         [
@@ -3234,6 +3252,7 @@ async def create_hls(
     duration_seconds: float | None = None,
     subtitle_meta: dict | None = None,
     original_subtitle: Path | None = None,
+    subtitle_font_size: int | None = None,
 ) -> None:
     destination_dir.mkdir(parents=True, exist_ok=True)
     for old_file in destination_dir.glob("*"):
@@ -3242,9 +3261,9 @@ async def create_hls(
 
     start_t = time.time()
     vf_args = (
-        ffmpeg_dual_subtitle_args(original_subtitle, subtitle, subtitle_meta)
+        ffmpeg_dual_subtitle_args(original_subtitle, subtitle, subtitle_meta, subtitle_font_size=subtitle_font_size)
         if original_subtitle is not None and original_subtitle != subtitle
-        else ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta)]
+        else ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta, subtitle_font_size=subtitle_font_size)]
     )
     await run_ffmpeg_with_optional_nvenc_fallback(
         [
@@ -3500,27 +3519,31 @@ def ffmpeg_dual_subtitle_args(
     original_subtitle: Path,
     translated_subtitle: Path,
     subtitle_meta: dict | None = None,
+    *,
+    subtitle_font_size: int | None = None,
 ) -> list[str]:
     original_ass = original_subtitle.with_suffix(".left.ass")
     translated_ass = translated_subtitle.with_suffix(".right.ass")
-    dual_font_size = max(round(settings.subtitle_font_size * 1.65), 33)
-    # 0.3:4.5:0.3:4.5:0.3 at fixed 720p PlayResX=1280.
+    base_font_size = subtitle_font_size if isinstance(subtitle_font_size, int) and subtitle_font_size > 0 else settings.subtitle_font_size
+    dual_font_size = max(round(base_font_size * 2.0), 36) 
+    # 字のサイズを手動変更2026-07-11_(Sat)_22-03-51
     play_res_x = 1280
-    unit = play_res_x / 9.9
-    side_gap = round(unit * 0.3)
-    column_width = round(unit * 4.5)
-    center_gap = round(unit * 0.3)
-    left_margin = max(settings.subtitle_margin_l, side_gap)
-    right_margin = max(settings.subtitle_margin_r, side_gap)
-    left_column_right_margin = max(right_margin, play_res_x - (side_gap + column_width))
-    right_column_left_margin = side_gap + column_width + center_gap
+    left_safe_margin = round(play_res_x * 0.10)
+    right_safe_margin = round(play_res_x * 0.10)
+    center_gap = round(play_res_x * 0.10)
+    available_width = play_res_x - left_safe_margin - right_safe_margin - center_gap
+    column_width = max(round(available_width / 2), 1)
+    left_margin = max(settings.subtitle_margin_l, left_safe_margin)
+    right_margin = max(settings.subtitle_margin_r, right_safe_margin)
+    left_column_right_margin = max(right_margin, play_res_x - (left_safe_margin + column_width))
+    right_column_left_margin = left_safe_margin + column_width + center_gap
     bottom_margin = max(settings.subtitle_margin_v, 52)
     source_subtitles = load_srt(original_subtitle)
     translated_subtitles = load_srt(translated_subtitle)
     source_subtitles, translated_subtitles = paired_wrap_subtitles(
         source_subtitles,
         translated_subtitles,
-        width_chars=max(column_width / max(dual_font_size * 0.55, 1.0), 8.0),
+        width_chars=max(column_width / max(dual_font_size * 0.52, 1.0), 7.0),
     )
     build_ass_from_srt(
         original_subtitle,
@@ -3693,6 +3716,7 @@ async def prepare_sources(
     duration_seconds: float | None = None,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
+    subtitle_font_size: int | None = None,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
 ) -> tuple[Path, Path, Path, dict]:
@@ -3831,10 +3855,11 @@ async def create_mp4(
     job_id: str | None = None,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
+    subtitle_font_size: int | None = None,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
 ) -> Path:
-    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
+    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine, subtitle_font_size)
     final_output = output_path(key)
     prepared = prepared_output_path(key)
     if prepared:
@@ -3858,6 +3883,7 @@ async def create_mp4(
             duration_seconds=duration,
             subtitle_source_lang=subtitle_source_lang,
             translation_engine=translation_engine,
+            subtitle_font_size=subtitle_font_size,
             reuse_cached_subtitle=reuse_cached_subtitle,
             reuse_source_video=reuse_source_video,
         )
@@ -3873,6 +3899,7 @@ async def create_mp4(
                 duration_seconds=duration,
                 subtitle_meta=subtitle_meta,
                 original_subtitle=original_subtitle,
+                subtitle_font_size=subtitle_font_size,
             )
             write_meta(key, video_id, lang, info, "mp4")
             return final_output
@@ -3886,10 +3913,11 @@ async def create_hls_job(
     job_id: str | None = None,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
+    subtitle_font_size: int | None = None,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
 ) -> Path:
-    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
+    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine, subtitle_font_size)
     playlist = hls_playlist_path(key)
     prepared = prepared_hls_playlist_path(key)
     if prepared:
@@ -3913,6 +3941,7 @@ async def create_hls_job(
             duration_seconds=duration,
             subtitle_source_lang=subtitle_source_lang,
             translation_engine=translation_engine,
+            subtitle_font_size=subtitle_font_size,
             reuse_cached_subtitle=reuse_cached_subtitle,
             reuse_source_video=reuse_source_video,
         )
@@ -3929,6 +3958,7 @@ async def create_hls_job(
                 duration_seconds=duration,
                 subtitle_meta=subtitle_meta,
                 original_subtitle=original_subtitle,
+                subtitle_font_size=subtitle_font_size,
             )
             return playlist
     finally:
@@ -3941,10 +3971,11 @@ async def get_or_create_mp4(
     job_id: str | None = None,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
+    subtitle_font_size: int | None = None,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
 ) -> Path:
-    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
+    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine, subtitle_font_size)
     cached = prepared_output_path(key)
     if cached:
         return cached
@@ -3959,6 +3990,7 @@ async def get_or_create_mp4(
                     job_id=job_id,
                     subtitle_source_lang=subtitle_source_lang,
                     translation_engine=translation_engine,
+                    subtitle_font_size=subtitle_font_size,
                     reuse_cached_subtitle=reuse_cached_subtitle,
                     reuse_source_video=reuse_source_video,
                 )
@@ -3992,10 +4024,11 @@ async def get_or_start_hls(
     job_id: str | None = None,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
+    subtitle_font_size: int | None = None,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
 ) -> Path:
-    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
+    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine, subtitle_font_size)
     cached = prepared_hls_playlist_path(key)
     if cached:
         return cached
@@ -4031,10 +4064,11 @@ async def get_or_create_hls(
     job_id: str | None = None,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
+    subtitle_font_size: int | None = None,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
 ) -> Path:
-    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
+    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine, subtitle_font_size)
     cached = prepared_hls_playlist_path(key)
     if cached:
         return cached
@@ -4180,7 +4214,7 @@ def prepare_ready_path(
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
 ) -> Path | None:
-    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
+    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine, subtitle_font_size)
     if mode == "hls":
         return hot_hls_playlist_path(key)
     return hot_output_path(key)
@@ -4196,6 +4230,18 @@ def validate_discord_user_id(discord_user_id: str | None) -> str | None:
 
 def discord_mention(discord_user_id: str) -> str:
     return f"<@{discord_user_id}>"
+
+
+def validate_subtitle_font_size(value: str | None) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        size = int(value)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid subtitle font size")
+    if size < 12 or size > 60:
+        raise HTTPException(status_code=400, detail="subtitleFontSize must be between 12 and 60")
+    return size
 
 
 def estimate_archive_prepare_seconds(key: str) -> int | None:
@@ -4517,6 +4563,7 @@ async def run_prepare_job_once(
             job_id=job_id,
             subtitle_source_lang=subtitle_source_lang,
             translation_engine=translation_engine,
+            subtitle_font_size=subtitle_font_size,
             reuse_cached_subtitle=reuse_cached_subtitle,
             reuse_source_video=reuse_source_video,
         )
@@ -4527,6 +4574,7 @@ async def run_prepare_job_once(
             job_id=job_id,
             subtitle_source_lang=subtitle_source_lang,
             translation_engine=translation_engine,
+            subtitle_font_size=subtitle_font_size,
             reuse_cached_subtitle=reuse_cached_subtitle,
             reuse_source_video=reuse_source_video,
         )
@@ -4629,6 +4677,7 @@ async def enqueue_prepare_job(
     discord_user_id: str | None,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
+    subtitle_font_size: int | None = None,
     archive_immediately: bool = False,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
@@ -4650,6 +4699,7 @@ async def enqueue_prepare_job(
             "url": url,
             "subtitle": read_subtitle_meta(cache_id),
             "requesters": [],
+            "subtitle_font_size": subtitle_font_size,
             "archived_immediately": False,
         }
         add_job_requester(job, discord_user_id)
@@ -4700,6 +4750,7 @@ async def enqueue_prepare_job(
             "archive_immediately": archive_immediately,
             "reuse_cached_subtitle": reuse_cached_subtitle,
             "reuse_source_video": reuse_source_video,
+            "subtitle_font_size": subtitle_font_size,
         }
         if cached_info:
             if cached_info.get("title"):
@@ -4721,6 +4772,7 @@ async def enqueue_prepare_job(
                 url,
                 subtitle_source_lang=subtitle_source_lang,
                 translation_engine=normalized_engine,
+                subtitle_font_size=subtitle_font_size,
                 archive_immediately=archive_immediately,
                 reuse_cached_subtitle=reuse_cached_subtitle,
                 reuse_source_video=reuse_source_video,
@@ -5182,6 +5234,8 @@ async def enqueue_prepare_batch(
     max_items: int,
     discord_user_id: str | None,
     archive_immediately: bool = False,
+    subtitle_font_size: int | None = None,
+    subtitle_font_size: int | None = None,
 ) -> tuple[int, dict]:
     if archive_immediately and mode != "mp4":
         raise HTTPException(status_code=400, detail="archiveImmediately is supported only for mp4")
@@ -5206,6 +5260,8 @@ async def enqueue_prepare_batch(
             mode,
             discord_user_id,
             archive_immediately=archive_immediately,
+            subtitle_font_size=subtitle_font_size,
+            subtitle_font_size=subtitle_font_size,
         )
         if body.get("status") in {"queued", "running"}:
             any_pending = True
@@ -5251,6 +5307,7 @@ async def enqueue_reburn_batch(
     max_items: int,
     discord_user_id: str | None,
     archive_immediately: bool = False,
+    subtitle_font_size: int | None = None,
 ) -> tuple[int, dict]:
     if archive_immediately and mode != "mp4":
         raise HTTPException(status_code=400, detail="archiveImmediately is supported only for mp4")
@@ -5337,6 +5394,7 @@ async def enqueue_reburn_all(
     max_items: int,
     discord_user_id: str | None,
     archive_immediately: bool = False,
+    subtitle_font_size: int | None = None,
 ) -> tuple[int, dict]:
     if archive_immediately and mode != "mp4":
         raise HTTPException(status_code=400, detail="archiveImmediately is supported only for mp4")
@@ -5767,11 +5825,15 @@ async def index() -> str:
       background: var(--color-gray-50);
       padding: calc(12 / 16 * 1rem) calc(16 / 16 * 1rem);
       overflow-wrap: anywhere;
+      font-size: var(--compare-subtitle-font-size);
+      line-height: 1.55;
     }}
     .compare-result strong {{
       display: block;
       color: var(--color-gray-900);
       margin-bottom: calc(8 / 16 * 1rem);
+      font-size: 0.95rem;
+      line-height: 1.2;
     }}
     .error {{
       color: var(--color-error);
@@ -5993,6 +6055,16 @@ async def index() -> str:
               <button type="button" id="compareLoadVariantsButton" class="secondary">字幕候補を読み込む</button>
               <button type="button" id="comparePrepareButton">比較用に準備</button>
             </div>
+            <div class="row">
+              <label>
+                字幕サイズ
+                <input id="compareFontSize" name="compareFontSize" type="range" min="12" max="28" step="1" value="16">
+              </label>
+              <label>
+                表示サイズ
+                <input id="compareFontSizeValue" name="compareFontSizeValue" type="text" value="16px" readonly>
+              </label>
+            </div>
             <label>
               再生する動画
               <select id="comparePlaybackSource" name="comparePlaybackSource"></select>
@@ -6106,10 +6178,37 @@ async def index() -> str:
     const compareTargetLang = document.getElementById("compareTargetLang");
     const compareLoadVariantsButton = document.getElementById("compareLoadVariantsButton");
     const comparePrepareButton = document.getElementById("comparePrepareButton");
+    const compareFontSize = document.getElementById("compareFontSize");
+    const compareFontSizeValue = document.getElementById("compareFontSizeValue");
     const comparePlaybackSource = document.getElementById("comparePlaybackSource");
     const compareStatus = document.getElementById("compareStatus");
     const compareVideo = document.getElementById("compareVideo");
     const compareResults = document.getElementById("compareResults");
+    const compareResults = document.getElementById("compareResults");
+    const compareFontStorageKey = "compareSubtitleFontSize";
+
+    function setCompareFontSize(px) {{
+      const clamped = Math.min(28, Math.max(12, Number(px) || 16));
+      compareStage.style.setProperty("--compare-subtitle-font-size", `${{clamped}}px`);
+      compareFontSize.value = String(clamped);
+      compareFontSizeValue.value = `${{clamped}}px`;
+      try {{
+        localStorage.setItem(compareFontStorageKey, String(clamped));
+      }} catch {{
+        /* ignore storage failures */
+      }}
+    }}
+
+    try {{
+      const stored = Number(localStorage.getItem(compareFontStorageKey));
+      if (Number.isFinite(stored)) {{
+        setCompareFontSize(stored);
+      }} else {{
+        setCompareFontSize(Number(compareFontSize.value));
+      }}
+    }} catch {{
+      setCompareFontSize(Number(compareFontSize.value));
+    }}
     const chatPanel = document.getElementById("chatPanel");
     const chatModel = document.getElementById("chatModel");
     const chatTemperature = document.getElementById("chatTemperature");
@@ -7131,6 +7230,7 @@ async def index() -> str:
     notifyButton.addEventListener("click", requestNotifications);
     compareLoadVariantsButton.addEventListener("click", loadCompareVariants);
     comparePrepareButton.addEventListener("click", prepareCompare);
+    compareFontSize.addEventListener("input", () => setCompareFontSize(compareFontSize.value));
     comparePlaybackSource.addEventListener("change", () => {{
       compareVideo.src = comparePlaybackSource.value || "";
     }});
@@ -7512,6 +7612,7 @@ async def prepare_youtube(
     subtitle_source_lang: str | None = Query(None, alias="subtitleSourceLang"),
     translation_engine: str | None = Query(None, alias="translationEngine"),
     archive_immediately: bool = Query(False, alias="archiveImmediately"),
+    subtitle_font_size: int | None = Query(None, alias="subtitleFontSize"),
 ) -> JSONResponse:
     require_prepare_auth(request)
     validate_input(video_id, lang)
@@ -7536,6 +7637,7 @@ async def prepare_youtube(
         discord_user_id,
         subtitle_source_lang=subtitle_source_lang,
         translation_engine=translation_engine,
+        subtitle_font_size=subtitle_font_size,
         archive_immediately=archive_immediately,
     )
     return JSONResponse(body, status_code=status_code)
@@ -7692,6 +7794,7 @@ async def prepare_youtube_batch(
     max_items: int = Query(5000, alias="maxItems"),
     discord_user_id: str | None = Query(None, alias="discordUserId"),
     archive_immediately: bool = Query(False, alias="archiveImmediately"),
+    subtitle_font_size: int | None = Query(None, alias="subtitleFontSize"),
 ) -> JSONResponse:
     require_prepare_auth(request)
     if not LANG_RE.fullmatch(lang):
@@ -7714,6 +7817,7 @@ async def prepare_youtube_batch(
         max_items,
         discord_user_id,
         archive_immediately,
+        subtitle_font_size,
     )
     return JSONResponse(body, status_code=status_code)
 
@@ -7728,6 +7832,7 @@ async def prepare_youtube_reburn_batch(
     max_items: int = Query(5000, alias="maxItems"),
     discord_user_id: str | None = Query(None, alias="discordUserId"),
     archive_immediately: bool = Query(False, alias="archiveImmediately"),
+    subtitle_font_size: int | None = Query(None, alias="subtitleFontSize"),
 ) -> JSONResponse:
     require_prepare_auth(request)
     if not LANG_RE.fullmatch(lang):
@@ -7750,6 +7855,7 @@ async def prepare_youtube_reburn_batch(
         max_items,
         discord_user_id,
         archive_immediately,
+        subtitle_font_size,
     )
     return JSONResponse(body, status_code=status_code)
 
@@ -7762,6 +7868,7 @@ async def prepare_youtube_reburn_all(
     max_items: int = Query(5000, alias="maxItems"),
     discord_user_id: str | None = Query(None, alias="discordUserId"),
     archive_immediately: bool = Query(False, alias="archiveImmediately"),
+    subtitle_font_size: int | None = Query(None, alias="subtitleFontSize"),
 ) -> JSONResponse:
     require_prepare_auth(request)
     if lang in {"", "all", "*"}:
