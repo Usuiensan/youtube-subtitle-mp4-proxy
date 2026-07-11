@@ -397,6 +397,7 @@ $env:FFMPEG_VIDEO_CQ="23"
 ```
 
 CPU エンコードに戻す場合は `FFMPEG_VIDEO_ENCODER=libx264` を指定します。NVENC を使うには、NVIDIA ドライバーと `h264_nvenc` 対応の FFmpeg が必要です。
+`FFMPEG_VIDEO_PRESET=veryfast` は `libx264` 用で、`h264_nvenc` では使えません。NVENC では `fast`、`medium`、`slow`、`p1` から `p7` などを使ってください。無効な値が設定されている場合、アプリは `fast` にフォールバックします。
 
 `Driver does not support the required nvenc API version` が出る場合は、FFmpeg が要求する NVENC API に対して NVIDIA ドライバーが古い状態です。この場合、アプリは CPU エンコードに自動フォールバックします。GPU を使い切りたい場合は NVIDIA ドライバーを更新してください。
 

@@ -2495,11 +2495,14 @@ def subtitle_overlay_drawtext_filters(
 def ffmpeg_video_args(encoder: str | None = None) -> list[str]:
     encoder = (encoder or settings.ffmpeg_video_encoder).strip().lower()
     if encoder in {"nvenc", "h264_nvenc"}:
+        nvenc_preset = (settings.ffmpeg_video_preset or "fast").strip().lower()
+        if nvenc_preset not in {"default", "slow", "medium", "fast", "hp", "hq", "bd", "ll", "llhq", "llhp", "lossless", "losslesshp", "p1", "p2", "p3", "p4", "p5", "p6", "p7"}:
+            nvenc_preset = "fast"
         return [
             "-c:v",
             "h264_nvenc",
             "-preset",
-            settings.ffmpeg_video_preset or "fast",
+            nvenc_preset,
             "-rc",
             "vbr",
             "-cq",
