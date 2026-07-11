@@ -31910,6 +31910,53 @@ async def fetch_subtitle_options(video_id: str, lang: str, mode: str) -> dict[st
     return body
 
 
+def status_message(body: dict[str, Any], user_id: int | None = None) -> str:
+    status = str(body.get("status") or "unknown")
+    title = str(body.get("title") or body.get("video_id") or "unknown")
+    mode = str(body.get("mode") or "mp4").upper()
+    mention = f"<@{user_id}> " if user_id else ""
+    lines = [f"{mention}{mode}準備状況: {status}", f"動画タイトル {title}"]
+
+    if status == "ready":
+        url = body.get("url")
+        if isinstance(url, str) and url:
+            lines = [f"{mention}{mode}を準備できました。", f"動画タイトル {title}", "URL", f"```{url}```"]
+        if body.get("archived_immediately"):
+            lines.append("準備後すぐHDDへ退避しました。")
+        return "\n".join(lines)
+
+    if status == "failed":
+        error = str(body.get("error") or body.get("detail") or "unknown error")
+        return "\n".join([f"{mention}{mode}準備に失敗しました。", f"動画タイトル {title}", f"エラー: {error}"])
+
+    queue_counts = body.get("queue_counts")
+    if isinstance(queue_counts, dict):
+        download = queue_counts.get("download", 0)
+        translation = queue_counts.get("translation", 0)
+        encode = queue_counts.get("encode", 0)
+        lines.append(f"順番待ち: ダウンロード{download} / 翻訳{translation} / エンコード{encode}")
+
+    progress = body.get("progress")
+    if isinstance(progress, dict):
+        stage = progress.get("stage") or progress.get("label")
+        percent = progress.get("percent")
+        if stage:
+            lines.append(f"進捗: {stage}")
+        if isinstance(percent, (int, float)):
+            lines.append(f"{float(percent):.1f}%")
+
+    eta_seconds = body.get("eta_seconds")
+    if isinstance(eta_seconds, (int, float)) and eta_seconds > 0:
+        lines.append(f"あと約{int(eta_seconds)}秒で終了（予想）")
+
+    status_url = body.get("status_url")
+    if isinstance(status_url, str) and status_url:
+        lines.append("状態確認URL")
+        lines.append(f"```{status_url}```")
+
+    return "\n".join(lines)
+
+
 async def clear_video(video_id: str, lang: str) -> tuple[int, dict[str, Any]]:
     return await prepare_api_request(
         "POST",
@@ -251704,10 +251751,6 @@ async def clear_all_command(
 
             channel = None
 
-    await delete_bot_messages_in_channel(channel if isinstance(channel, discord.abc.Messageable) else None, interaction.client.user.id if interaction.client.user else None)
-
-
-
     try:
 
         _status, body = await clear_all_videos()
@@ -251720,11 +251763,12 @@ async def clear_all_command(
 
 
 
-    await interaction.followup.send(
-
-        body.get("message", "すべての動画を初期化しました。"),
-
-    )
+    message = body.get("message", "すべての動画を初期化しました。")
+    await delete_bot_messages_in_channel(channel if isinstance(channel, discord.abc.Messageable) else None, interaction.client.user.id if interaction.client.user else None)
+    if isinstance(channel, discord.abc.Messageable):
+        await channel.send(str(message))
+    else:
+        await interaction.followup.send(str(message))
 
 
 
