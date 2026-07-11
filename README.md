@@ -110,6 +110,12 @@ Rules:
 export TRANSLATION_PROMPT_TEMPLATE_FILE=/home/masato/youtube-subtitle-mp4-proxy/prompts/translation-prompt.txt
 ```
 
+設定確認は次でできます。
+
+```bash
+python scripts/check_config.py
+```
+
 ### Discord bot からの準備ジョブ
 
 `/youtube/...` と `/youtube-hls/...` は配信専用です。URL を叩いただけでは変換や HDD から SSD への移動を開始しません。MP4 は SSD 側にあれば SSD から返し、HDD アーカイブにだけある場合も昇格せずそのまま返します。HLS は SSD 側に準備済みでない場合 `404` を返します。

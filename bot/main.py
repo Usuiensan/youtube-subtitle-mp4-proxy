@@ -681,6 +681,7 @@ class SubtitleChoiceView(discord.ui.View):
         self.mode = mode
         self.archive_immediately = archive_immediately
         self.source_lang: str | None = None
+        self.target_lang: str = "same"
         self.translation_engine = "google_cloud"
 
         candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
@@ -738,9 +739,27 @@ class SubtitleChoiceView(discord.ui.View):
             max_values=1,
             options=engine_options,
         )
+        target_options = [
+            discord.SelectOption(label="そのまま", value="same", default=True),
+            discord.SelectOption(label="日本語", value="ja"),
+            discord.SelectOption(label="英語", value="en"),
+            discord.SelectOption(label="韓国語", value="ko"),
+            discord.SelectOption(label="中国語(簡体字)", value="zh-Hans"),
+            discord.SelectOption(label="中国語(繁体字)", value="zh-Hant"),
+            discord.SelectOption(label="フランス語", value="fr"),
+            discord.SelectOption(label="ドイツ語", value="de"),
+        ]
+        self.target_select = discord.ui.Select(
+            placeholder="翻訳先を選択",
+            min_values=1,
+            max_values=1,
+            options=target_options,
+        )
         self.source_select.callback = self.on_source_selected
         self.engine_select.callback = self.on_engine_selected
+        self.target_select.callback = self.on_target_selected
         self.add_item(self.source_select)
+        self.add_item(self.target_select)
         self.add_item(self.engine_select)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -751,21 +770,25 @@ class SubtitleChoiceView(discord.ui.View):
 
     async def on_source_selected(self, interaction: discord.Interaction) -> None:
         self.source_lang = self.source_select.values[0]
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=False)
 
     async def on_engine_selected(self, interaction: discord.Interaction) -> None:
         self.translation_engine = self.engine_select.values[0]
+        await interaction.response.defer(ephemeral=False)
+
+    async def on_target_selected(self, interaction: discord.Interaction) -> None:
+        self.target_lang = self.target_select.values[0]
         await interaction.response.defer(ephemeral=True)
 
     @discord.ui.button(label="この設定で準備", style=discord.ButtonStyle.primary)
     async def start_prepare(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
         if not self.source_lang:
-            await interaction.response.send_message("先に翻訳元字幕を選択してください。", ephemeral=True)
+            await interaction.response.send_message("先に翻訳元字幕を選択してください。", ephemeral=False)
             return
         if len(self.source_lang.strip()) > 64:
-            await interaction.response.send_message("翻訳元字幕の指定が不正です。字幕候補を開き直してください。", ephemeral=True)
+            await interaction.response.send_message("翻訳元字幕の指定が不正です。字幕候補を開き直してください。", ephemeral=False)
             return
-        await interaction.response.defer(thinking=True, ephemeral=True)
+        await interaction.response.defer(thinking=True, ephemeral=False)
         for child in self.children:
             child.disabled = True
         if interaction.message is not None:
@@ -775,9 +798,10 @@ class SubtitleChoiceView(discord.ui.View):
                 pass
 
         try:
+            target_lang = self.source_lang if self.target_lang == "same" else self.target_lang
             _status, body = await prepare_video(
                 self.video_id,
-                self.lang,
+                target_lang,
                 self.mode,
                 interaction.user.id,
                 subtitle_source_lang=self.source_lang,
@@ -785,7 +809,7 @@ class SubtitleChoiceView(discord.ui.View):
                 archive_immediately=self.archive_immediately,
             )
         except PrepareApiError as error:
-            await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}", ephemeral=True)
+            await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}", ephemeral=False)
             return
 
         content = status_message(body, interaction.user.id)
@@ -794,13 +818,13 @@ class SubtitleChoiceView(discord.ui.View):
             await interaction.followup.send(
                 "準備済みURLを投稿しました。" if posted else content,
                 allowed_mentions=discord.AllowedMentions(users=True),
-                ephemeral=posted,
+                ephemeral=False,
             )
         else:
             await interaction.followup.send(
                 content,
                 allowed_mentions=discord.AllowedMentions(users=True),
-                ephemeral=True,
+                ephemeral=False,
             )
         status_url = body.get("status_url")
         if body.get("status") in {"queued", "running"} and isinstance(status_url, str):
@@ -1033,19 +1057,19 @@ async def prepare_command(
     max_items: int | None = None,
     archive_immediately: bool = False,
 ) -> None:
-    await interaction.response.defer(thinking=True, ephemeral=True)
+    await interaction.response.defer(thinking=True, ephemeral=False)
 
     if not settings.discord_prepare_token:
-        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=True)
+        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=False)
         return
 
     selected_mode = mode.value if mode else "mp4"
     selected_max_items = max_items if max_items is not None else settings.prepare_batch_max_items
     if selected_max_items < 1 or selected_max_items > 5000:
-        await interaction.followup.send("max_items は 1 から 5000 の範囲で指定してください。", ephemeral=True)
+        await interaction.followup.send("max_items は 1 から 5000 の範囲で指定してください。", ephemeral=False)
         return
     if archive_immediately and selected_mode != "mp4":
-        await interaction.followup.send("archive_immediately は MP4 のみ対応です。", ephemeral=True)
+        await interaction.followup.send("archive_immediately は MP4 のみ対応です。", ephemeral=False)
         return
 
     try:
@@ -1066,12 +1090,12 @@ async def prepare_command(
                 try:
                     options_body = await fetch_subtitle_options(video_id, lang, selected_mode)
                 except PrepareApiError as error:
-                    await interaction.followup.send(f"字幕候補取得APIエラー ({error.status_code}): {error.detail}", ephemeral=True)
+                    await interaction.followup.send(f"字幕候補取得APIエラー ({error.status_code}): {error.detail}", ephemeral=False)
                     return
                 if options_body.get("requires_choice"):
                     candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
                     if not candidates:
-                        await interaction.followup.send(str(options_body.get("error") or "翻訳可能な手動字幕がありません。"), ephemeral=True)
+                        await interaction.followup.send(str(options_body.get("error") or "翻訳可能な手動字幕がありません。"), ephemeral=False)
                         return
                     title = options_body.get("title") or video_id
                     view = SubtitleChoiceView(
@@ -1094,14 +1118,10 @@ async def prepare_command(
                             f"日本語字幕が見つかりませんでした。\n{title}\n"
                             "翻訳元字幕と翻訳エンジンを選択してください。"
                         )
-                    await interaction.followup.send(
-                        prompt,
-                        view=view,
-                        ephemeral=True,
-                    )
+                    await interaction.followup.send(prompt, view=view, ephemeral=False)
                     return
                 if options_body.get("error"):
-                    await interaction.followup.send(str(options_body["error"]), ephemeral=True)
+                    await interaction.followup.send(str(options_body["error"]), ephemeral=False)
                     return
             _status, body = await prepare_video(
                 video_id,
@@ -1122,10 +1142,10 @@ async def prepare_command(
                 source_type="videos" if looks_like_manual_video_list(url) else "auto",
             )
         except PrepareApiError as error:
-            await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}", ephemeral=True)
+            await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}", ephemeral=False)
             return
     except PrepareApiError as error:
-        await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}", ephemeral=True)
+        await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}", ephemeral=False)
         return
 
     content = status_message(body, interaction.user.id)
@@ -1197,14 +1217,14 @@ async def reburn_command(
             source_type=source_type,
         )
     except PrepareApiError as error:
-        await interaction.followup.send(f"再焼き込みAPIエラー ({error.status_code}): {error.detail}", ephemeral=True)
+        await interaction.followup.send(f"再焼き込みAPIエラー ({error.status_code}): {error.detail}", ephemeral=False)
         return
 
     content = status_message(body, interaction.user.id)
     await interaction.followup.send(
         content,
         allowed_mentions=discord.AllowedMentions(users=True),
-        ephemeral=True,
+        ephemeral=False,
     )
 
     status_url = body.get("status_url")
@@ -1235,16 +1255,16 @@ async def reburn_all_command(
     await interaction.response.defer(thinking=True, ephemeral=True)
 
     if not settings.discord_prepare_token:
-        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=True)
+        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=False)
         return
 
     selected_mode = mode.value if mode else "mp4"
     selected_max_items = max_items if max_items is not None else settings.prepare_batch_max_items
     if selected_max_items < 1 or selected_max_items > 5000:
-        await interaction.followup.send("max_items は 1 から 5000 の範囲で指定してください。", ephemeral=True)
+        await interaction.followup.send("max_items は 1 から 5000 の範囲で指定してください。", ephemeral=False)
         return
     if archive_immediately and selected_mode != "mp4":
-        await interaction.followup.send("archive_immediately は MP4 のみ対応です。", ephemeral=True)
+        await interaction.followup.send("archive_immediately は MP4 のみ対応です。", ephemeral=False)
         return
 
     try:
@@ -1256,14 +1276,14 @@ async def reburn_all_command(
             archive_immediately,
         )
     except PrepareApiError as error:
-        await interaction.followup.send(f"全件再焼き込みAPIエラー ({error.status_code}): {error.detail}", ephemeral=True)
+        await interaction.followup.send(f"全件再焼き込みAPIエラー ({error.status_code}): {error.detail}", ephemeral=False)
         return
 
     content = status_message(body, interaction.user.id)
     await interaction.followup.send(
         content,
         allowed_mentions=discord.AllowedMentions(users=True),
-        ephemeral=True,
+        ephemeral=False,
     )
 
     status_url = body.get("status_url")
@@ -1332,7 +1352,7 @@ async def archive_all_command(
     await interaction.response.defer(thinking=True, ephemeral=True)
 
     if not settings.discord_prepare_token:
-        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=True)
+        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=False)
         return
 
     try:
@@ -1343,7 +1363,7 @@ async def archive_all_command(
 
     await interaction.followup.send(
         body.get("message", "SSD上の動画をHDDへ退避しました。"),
-        ephemeral=True,
+        ephemeral=False,
     )
 
 

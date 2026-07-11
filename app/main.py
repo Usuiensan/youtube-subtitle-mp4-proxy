@@ -815,6 +815,7 @@ class CommandError(Exception):
         super().__init__(message)
         self.args_list = args
         self.message = message
+        self.stderr = message
 
 
 def variant_id(
@@ -2601,6 +2602,7 @@ async def run_ffmpeg_with_progress(args: list[str], job_id: str, duration_second
     )
     
     parser = FfmpegProgressParser(duration_seconds)
+    stderr_chunks: list[str] = []
     
     async def read_stdout():
         while True:
@@ -2632,6 +2634,7 @@ async def run_ffmpeg_with_progress(args: list[str], job_id: str, duration_second
             line = await process.stderr.readline()
             if not line:
                 break
+            stderr_chunks.append(line.decode("utf-8", errors="replace"))
             
     try:
         await asyncio.wait_for(
@@ -2645,7 +2648,13 @@ async def run_ffmpeg_with_progress(args: list[str], job_id: str, duration_second
         raise HTTPException(status_code=504, detail="ffmpeg timed out")
         
     if process.returncode != 0:
-        raise CommandError(args, f"ffmpeg failed with exit status {process.returncode}")
+        stderr_text = "".join(stderr_chunks).strip()
+        message = f"ffmpeg failed with exit status {process.returncode}"
+        if stderr_text:
+            message = f"{message}\n{stderr_text}"
+        error = CommandError(args, message)
+        error.stderr = stderr_text
+        raise error
 
 
 async def run_ffmpeg_with_optional_nvenc_fallback(
@@ -2661,9 +2670,10 @@ async def run_ffmpeg_with_optional_nvenc_fallback(
         return
     except CommandError as error:
         if not wants_nvenc() or not is_nvenc_driver_error(error.message):
+            stderr_text = getattr(error, "stderr", "") or error.message
             raise HTTPException(
                 status_code=502,
-                detail=error.message[-1000:] or f"Command failed: {error.args_list[0]}",
+                detail=stderr_text[-4000:] or f"Command failed: {error.args_list[0]}",
             ) from error
 
         print(
@@ -2998,18 +3008,18 @@ async def burn_subtitles(
 ) -> None:
     tmp_output = destination.with_suffix(".tmp.mp4")
     start_t = time.time()
+    vf_args = (
+        ffmpeg_dual_subtitle_args(original_subtitle, subtitle)
+        if original_subtitle is not None and original_subtitle != subtitle
+        else ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta)]
+    )
     await run_ffmpeg_with_optional_nvenc_fallback(
         [
             "ffmpeg",
             "-y",
             "-i",
             str(video),
-            "-vf",
-            *(
-                ffmpeg_dual_subtitle_args(original_subtitle, subtitle)
-                if original_subtitle is not None and original_subtitle != subtitle
-                else ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta)]
-            ),
+            *vf_args,
             *ffmpeg_video_args(),
             "-c:a",
             "aac",
@@ -3041,18 +3051,18 @@ async def create_hls(
             old_file.unlink()
 
     start_t = time.time()
+    vf_args = (
+        ffmpeg_dual_subtitle_args(original_subtitle, subtitle)
+        if original_subtitle is not None and original_subtitle != subtitle
+        else ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta)]
+    )
     await run_ffmpeg_with_optional_nvenc_fallback(
         [
             "ffmpeg",
             "-y",
             "-i",
             str(video),
-            "-vf",
-            *(
-                ffmpeg_dual_subtitle_args(original_subtitle, subtitle)
-                if original_subtitle is not None and original_subtitle != subtitle
-                else ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta)]
-            ),
+            *vf_args,
             *ffmpeg_video_args(),
             "-c:a",
             "aac",
