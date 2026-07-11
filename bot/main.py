@@ -151531,7 +151531,7 @@ class YoutubeProxyBot(discord.Client):
 
 
 
-        if is_direct_message(message):
+        if message.guild is None:
 
 
 
@@ -182582,6 +182582,7 @@ async def prepare_command(
 
 
     archive_immediately: bool = False,
+    _forced_scope: str | None = None,
 
 
 
