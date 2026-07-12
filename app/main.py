@@ -3240,11 +3240,7 @@ async def burn_subtitles(
 ) -> None:
     tmp_output = destination.with_suffix(".tmp.mp4")
     start_t = time.time()
-    vf_args = (
-        ffmpeg_dual_subtitle_args(original_subtitle, subtitle, subtitle_meta, subtitle_font_size=subtitle_font_size)
-        if original_subtitle is not None and original_subtitle != subtitle
-        else ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta, subtitle_font_size=subtitle_font_size)]
-    )
+    vf_args = ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta, subtitle_font_size=subtitle_font_size)]
     await run_ffmpeg_with_optional_nvenc_fallback(
         [
             "ffmpeg",
@@ -3284,11 +3280,7 @@ async def create_hls(
             old_file.unlink()
 
     start_t = time.time()
-    vf_args = (
-        ffmpeg_dual_subtitle_args(original_subtitle, subtitle, subtitle_meta, subtitle_font_size=subtitle_font_size)
-        if original_subtitle is not None and original_subtitle != subtitle
-        else ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta, subtitle_font_size=subtitle_font_size)]
-    )
+    vf_args = ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta, subtitle_font_size=subtitle_font_size)]
     await run_ffmpeg_with_optional_nvenc_fallback(
         [
             "ffmpeg",

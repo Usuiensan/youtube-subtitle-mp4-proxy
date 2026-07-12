@@ -388,7 +388,7 @@ async def translate_srt_with_local_worker(
                     index=sub.index,
                     start=sub.start,
                     end=sub.end,
-                    content=f"{sub.content}\n───\n{translated_text}",
+                    content=f"{sub.content}\n{translated_text}",
                     proprietary=sub.proprietary,
                 )
             )
