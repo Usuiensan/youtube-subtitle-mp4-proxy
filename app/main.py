@@ -3671,6 +3671,8 @@ def prepared_subtitle_bundle_for_key(key: str) -> dict:
 
 
 def prepared_subtitle_file_response(key: str, kind: str, request: Request) -> FileResponse:
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", key):
+        raise HTTPException(status_code=400, detail="Invalid cache key")
     paths = prepared_subtitle_download_paths(key)
     if kind not in paths:
         raise HTTPException(status_code=404, detail="Unknown subtitle kind")
@@ -7738,13 +7740,11 @@ async def prepared_source_video(key: str, request: Request) -> Response:
 
 @app.get("/prepared/{key}/source.srt")
 async def prepared_source_subtitle(key: str, request: Request) -> FileResponse:
-    require_prepare_auth(request)
     return prepared_subtitle_file_response(key, "source", request)
 
 
 @app.get("/prepared/{key}/translated.srt")
 async def prepared_translated_subtitle(key: str, request: Request) -> FileResponse:
-    require_prepare_auth(request)
     return prepared_subtitle_file_response(key, "translated", request)
 
 

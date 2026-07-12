@@ -76,6 +76,39 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         response = TestClient(app_main.app).post("/prepare/youtube/dQw4w9WgXcQ/ja?mode=mp4")
         self.assertIn(response.status_code, {401, 403, 503})
 
+    def test_prepared_srt_download_does_not_require_prepare_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            original_hot_dir = app_main.settings.cache_hot_dir
+            original_token = app_main.settings.discord_prepare_token
+            app_main.settings.cache_hot_dir = Path(tmp)
+            app_main.settings.discord_prepare_token = "token"
+            try:
+                key = app_main.cache_key("dQw4w9WgXcQ", "ja")
+                source_dir = app_main.source_dir(key)
+                source_dir.mkdir(parents=True, exist_ok=True)
+                subtitle_path = source_dir / "subtitle.ja.srt"
+                subtitle_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nhello\n", encoding="utf-8")
+                app_main.entry_dir(key).joinpath("source.json").write_text(
+                    (
+                        '{"video_id":"dQw4w9WgXcQ","lang":"ja",'
+                        '"subtitle":"source/subtitle.ja.srt",'
+                        '"subtitle_meta":{"requested_language":"ja","source_language":"ja"}}'
+                    ),
+                    encoding="utf-8",
+                )
+
+                response = TestClient(app_main.app).get(f"/prepared/{key}/source.srt")
+                self.assertEqual(response.status_code, 200)
+                self.assertIn("hello", response.text)
+            finally:
+                app_main.settings.cache_hot_dir = original_hot_dir
+                app_main.settings.discord_prepare_token = original_token
+
+    def test_prepared_source_mp4_still_requires_prepare_token(self) -> None:
+        with patch.object(app_main.settings, "discord_prepare_token", "token"):
+            response = TestClient(app_main.app).get("/prepared/dQw4w9WgXcQ_ja/source.mp4")
+        self.assertEqual(response.status_code, 401)
+
     def test_unavailable_video_info_maps_to_404(self) -> None:
         import asyncio
 
