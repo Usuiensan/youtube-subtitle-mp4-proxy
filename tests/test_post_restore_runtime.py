@@ -109,6 +109,29 @@ class PostRestoreRuntimeTests(unittest.TestCase):
             response = TestClient(app_main.app).get("/prepared/dQw4w9WgXcQ_ja/source.mp4")
         self.assertEqual(response.status_code, 401)
 
+    def test_dual_subtitle_args_include_overlay_without_name_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            original = work / "source.srt"
+            translated = work / "translated.srt"
+            original.write_text("1\n00:00:00,000 --> 00:00:01,000\nhello\n", encoding="utf-8")
+            translated.write_text("1\n00:00:00,000 --> 00:00:01,000\nこんにちは\n", encoding="utf-8")
+
+            args = app_main.ffmpeg_dual_subtitle_args(
+                original,
+                translated,
+                {
+                    "requested_language": "ja",
+                    "source_language": "en",
+                    "translated": True,
+                    "translation_engine": "google_cloud",
+                },
+            )
+
+        self.assertEqual(args[0], "-vf")
+        self.assertIn("drawtext=", args[1])
+        self.assertIn("Google Cloud", args[1])
+
     def test_unavailable_video_info_maps_to_404(self) -> None:
         import asyncio
 

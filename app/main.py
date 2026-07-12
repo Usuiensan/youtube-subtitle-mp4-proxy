@@ -2492,6 +2492,45 @@ def get_subtitle_overlay_label(subtitle_meta: dict) -> str:
     return "[subs]"
 
 
+def escape_drawtext_value(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "\\'")
+        .replace("%", "\\%")
+        .replace(",", "\\,")
+    )
+
+
+def subtitle_overlay_drawtext_filters(
+    subtitle_meta: dict | None,
+    font_file: str | None,
+    font_name: str,
+) -> list[str]:
+    if not isinstance(subtitle_meta, dict):
+        return []
+    label = get_subtitle_overlay_label(subtitle_meta)
+    lines = [line.strip() for line in label.replace("\r\n", "\n").replace("\r", "\n").split("\n") if line.strip()]
+    if not lines:
+        return []
+    font_option = f":fontfile='{escape_filter_value(font_file)}'" if font_file else f":font='{escape_drawtext_value(font_name)}'"
+    filters = []
+    for index, line in enumerate(lines[:4]):
+        filters.append(
+            "drawtext="
+            f"text='{escape_drawtext_value(line)}'"
+            f"{font_option}"
+            ":x=24"
+            f":y={24 + index * 30}"
+            ":fontsize=20"
+            ":fontcolor=white"
+            ":box=1"
+            ":boxcolor=black@0.55"
+            ":boxborderw=8"
+        )
+    return filters
+
+
 def subtitle_translation_service_label(subtitle_meta: dict) -> str:
     engine = str(subtitle_meta.get("translation_engine") or "").strip()
     requested = str(subtitle_meta.get("translation_engine_requested") or "").strip()
