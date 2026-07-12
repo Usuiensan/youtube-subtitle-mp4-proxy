@@ -8,6 +8,11 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
+$reviewScript = Join-Path $PSScriptRoot "review-before-push-with-venv.ps1"
+if (Test-Path $reviewScript) {
+    & $reviewScript
+}
+
 $status = git status --short
 if (-not $status) {
     Write-Host "No changes to commit."

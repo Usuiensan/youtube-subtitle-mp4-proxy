@@ -881,7 +881,7 @@ def cache_key(
 
 def render_profile_id(subtitle_font_size: int | None = None) -> str:
     return hashlib.sha1(
-        "\n".join(["dual-subtitle-layout-v5-720p", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
+        "\n".join(["dual-subtitle-layout-v6-vertical-srt", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
     ).hexdigest()[:8]
 
 
@@ -2268,9 +2268,9 @@ def subtitle_force_style(font_name: str | None = None, font_size: int | None = N
             f"PrimaryColour={settings.subtitle_primary_colour}",
             f"BackColour={settings.subtitle_back_colour}",
             "BorderStyle=4",
-            "Outline=0",
+            "Outline=1",
             "Shadow=0",
-            f"MarginV={settings.subtitle_margin_v}",
+            f"MarginV={max(settings.subtitle_margin_v, 28)}",
             f"MarginL={settings.subtitle_margin_l}",
             f"MarginR={settings.subtitle_margin_r}",
             "Alignment=2",
@@ -2581,48 +2581,10 @@ def ffmpeg_subtitle_arg(path: Path, subtitle_meta: dict | None = None, *, subtit
     value = path.as_posix()
     font_file, font_name = find_japanese_font_spec()
     subtitle_font_name = font_name or settings.subtitle_font
-    filter_str = (
+    return (
         f"subtitles='{escape_filter_value(value)}':"
         f"force_style='{escape_filter_value(subtitle_force_style(subtitle_font_name, subtitle_font_size))}'"
     )
-    drawtext_filters = subtitle_overlay_drawtext_filters(subtitle_meta, font_file, subtitle_font_name)
-    if drawtext_filters:
-        filter_str = f"{filter_str},{','.join(drawtext_filters)}"
-    return filter_str
-
-
-def subtitle_overlay_drawtext_filters(
-    subtitle_meta: dict | None,
-    font_file: str | None = None,
-    subtitle_font_name: str | None = None,
-) -> list[str]:
-    if not subtitle_meta:
-        return []
-    label = get_subtitle_overlay_label(subtitle_meta)
-    lines = label.split("\n")
-
-    if font_file:
-        font_opt = f":fontfile='{font_file}'"
-    else:
-        font_opt = f":font='{subtitle_font_name}'" if subtitle_font_name else ""
-
-    drawtext_filters = []
-    for i, line in enumerate(lines):
-        escaped_line = (
-            line.replace("\\", "\\\\")
-            .replace("'", "'\\\\''")
-            .replace(":", "\\:")
-            .replace(",", "\\,")
-        )
-        y_expr = f"h/30+{i}*h/20"
-        drawtext_filter = (
-            f"drawtext=text='{escaped_line}'"
-            f":x=w*0.03:y={y_expr}:fontsize=h/24:fontcolor=white@1.0"
-            f":box=1:boxcolor=black@0.75:boxborderw=h/100"
-            f":enable='lt(t,10)'{font_opt}"
-        )
-        drawtext_filters.append(drawtext_filter)
-    return drawtext_filters
 
 
 def ffmpeg_video_args(encoder: str | None = None) -> list[str]:
@@ -5949,11 +5911,14 @@ async def index() -> str:
       <div id="prepareOptions" class="prepare-options" hidden>
         <label>
           Source subtitle
-          <select id="subtitleSource" name="subtitleSource"></select>
+          <select id="subtitleSource" name="subtitleSource">
+            <option value="" selected disabled>翻訳元字幕を選択</option>
+          </select>
         </label>
       <label>
         Translation
-        <select id="translationEngine" name="translationEngine" multiple size="4">
+        <select id="translationEngine" name="translationEngine">
+            <option value="" selected disabled>翻訳方式を選択</option>
             <option value="google_cloud">Google</option>
         </select>
       </label>
@@ -7059,6 +7024,12 @@ async def index() -> str:
       if (!body.requires_choice) return false;
       stopEtaTimer();
       subtitleSource.innerHTML = "";
+      const sourcePlaceholder = document.createElement("option");
+      sourcePlaceholder.value = "";
+      sourcePlaceholder.textContent = "翻訳元字幕を選択";
+      sourcePlaceholder.selected = true;
+      sourcePlaceholder.disabled = true;
+      subtitleSource.appendChild(sourcePlaceholder);
       for (const candidate of body.candidates || []) {{
         const option = document.createElement("option");
         option.value = candidate.language;
@@ -7067,11 +7038,16 @@ async def index() -> str:
       }}
       if (Array.isArray(body.translation_engines)) {{
         translationEngine.innerHTML = "";
+        const enginePlaceholder = document.createElement("option");
+        enginePlaceholder.value = "";
+        enginePlaceholder.textContent = "翻訳方式を選択";
+        enginePlaceholder.selected = true;
+        enginePlaceholder.disabled = true;
+        translationEngine.appendChild(enginePlaceholder);
         for (const engine of body.translation_engines) {{
           const option = document.createElement("option");
           option.value = engine.value;
           option.textContent = engine.label || engine.value;
-          if (engine.default) option.selected = true;
           translationEngine.appendChild(option);
         }}
       }}
@@ -7088,7 +7064,6 @@ async def index() -> str:
       const language = (lang.value || defaultLang).trim();
       const token = prepareToken.value.trim();
       const selectedMode = prepareMode();
-      const selectedEngines = Array.from(translationEngine.selectedOptions).map((option) => option.value).filter(Boolean);
       if (!token) {{
         prepareStatus.textContent = "Prepare token を入力してください。";
         return;
@@ -7116,31 +7091,23 @@ async def index() -> str:
           const needsChoice = await loadSubtitleChoices(videoId, language, selectedMode);
           if (needsChoice) return;
         }}
-        if (!prepareOptions.hidden && subtitleSource.value) {{
+        if (!prepareOptions.hidden && subtitleSource.value && translationEngine.value) {{
           const sourceLang = subtitleSource.value;
-          const engines = selectedEngines.length ? selectedEngines : [translationEngine.value || "google_cloud"];
-          const results = [];
-          for (let index = 0; index < engines.length; index += 1) {{
-            const engine = engines[index];
-            const variantPath = `${{path}}/${{encodeURIComponent(sourceLang)}}/${{encodeURIComponent(engine)}}`;
-            const params = new URLSearchParams({{ mode: selectedMode }});
-            prepareStatus.textContent = `準備中 ${{index + 1}}/${{engines.length}}: ${{sourceLang}} → ${{engine}}`;
-            const body = await apiFetch(`${{variantPath}}?${{params.toString()}}`, {{ method: "POST" }});
-            results.push(body);
-            setPrepareStatus(body);
-            if (body.status === "ready" && !result.textContent) {{
-              result.textContent = publicUrl(body.url);
-              notify("YouTube準備完了", result.textContent);
-            }} else if (body.status_url) {{
-              const latest = await pollPrepare(body.status_url);
-              results[results.length - 1] = latest || body;
-              if (latest?.status === "ready" && !result.textContent) {{
-                result.textContent = publicUrl(latest.url);
-                notify("YouTube準備完了", result.textContent);
-              }}
-            }}
+          const engine = translationEngine.value;
+          const variantPath = `${{path}}/${{encodeURIComponent(sourceLang)}}/${{encodeURIComponent(engine)}}`;
+          const params = new URLSearchParams({{ mode: selectedMode }});
+          prepareStatus.textContent = `準備中: ${{sourceLang}} → ${{engine}}`;
+          const body = await apiFetch(`${{variantPath}}?${{params.toString()}}`, {{ method: "POST" }});
+          setPrepareStatus(body);
+          if (body.status === "ready") {{
+            const url = publicUrl(body.url);
+            result.textContent = url;
+            notify("YouTube準備完了", url);
+            return;
           }}
-          prepareStatus.textContent = `${{results.length}} 件の翻訳パターンを準備しました。`;
+          if (body.status_url) {{
+            await pollPrepare(body.status_url);
+          }}
           return;
         }}
         const params = new URLSearchParams({{ mode: selectedMode }});
@@ -7235,6 +7202,7 @@ async def index() -> str:
     function resetPrepareChoices() {{
       prepareOptions.hidden = true;
       subtitleSource.innerHTML = "";
+      translationEngine.innerHTML = "";
     }}
     input.addEventListener("input", () => {{ resetPrepareChoices(); update(); }});
     lang.addEventListener("input", () => {{ resetPrepareChoices(); update(); }});

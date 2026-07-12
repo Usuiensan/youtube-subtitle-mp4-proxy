@@ -183058,7 +183058,7 @@ class SubtitleChoiceView(discord.ui.View):
 
 
 
-        selected_source_lang = default_source_language(visible_candidates)
+        selected_source_lang = None
 
 
 
@@ -192786,7 +192786,7 @@ class SubtitleChoiceView(discord.ui.View):
 
 
 
-            self.translation_engine = default_option.value if default_option else engine_options[0].value
+            self.translation_engine = default_option.value if default_option else None
 
 
 
@@ -194322,7 +194322,7 @@ class SubtitleChoiceView(discord.ui.View):
 
 
 
-            engine_options.insert(0, discord.SelectOption(label="Google翻訳", value="google_cloud", default=True))
+            engine_options.insert(0, discord.SelectOption(label="Google翻訳", value="google_cloud", default=False))
 
 
 
@@ -260370,7 +260370,15 @@ async def send_dm_text(user: discord.User | discord.Member, content: str) -> Non
 
 
 
-        await user.send(content, allowed_mentions=discord.AllowedMentions(users=True))
+        delete_after = 20 if any(
+            marker in content
+            for marker in ("準備できました", "準備済みURLを投稿しました", "準備完了")
+        ) else None
+        await user.send(
+            content,
+            allowed_mentions=discord.AllowedMentions(users=True),
+            delete_after=delete_after,
+        )
 
 
 

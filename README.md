@@ -162,6 +162,14 @@ ai:
 .\scripts\review-before-push.ps1
 ```
 
+このスクリプトは、AI品質レポートの後に修正候補も表示します。
+
+まとめて実行したい場合は、仮想環境の有効化込みのラッパーも使えます。
+
+```powershell
+.\scripts\review-before-push-with-venv.ps1
+```
+
 補足:
 - Ollama を使う場合、`$env:AI_API_KEY` は不要です
 - `127.0.0.1:11434` はこの PC 上の Ollama 専用です
