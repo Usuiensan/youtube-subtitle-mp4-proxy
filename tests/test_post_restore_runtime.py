@@ -139,6 +139,28 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         self.assertIn("字幕候補を取得できませんでした", message)
         self.assertNotIn("APIエラー", message)
 
+    def test_discord_prepare_api_timeout_is_configurable(self) -> None:
+        class Response:
+            status = 200
+
+            def read(self) -> bytes:
+                return b'{"ok": true}'
+
+            def __enter__(self) -> "Response":
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+                return None
+
+        with patch.object(bot_main.settings, "prepare_api_timeout_seconds", 123.0), patch.object(
+            bot_main.urllib.request, "urlopen", return_value=Response()
+        ) as urlopen:
+            status, body = bot_main.http_json("GET", "http://example.test/status")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"ok": True})
+        self.assertEqual(urlopen.call_args.kwargs["timeout"], 123.0)
+
     def test_discord_prepare_accepts_video_inputs_without_forced_scope_name_error(self) -> None:
         async def run_case(source: str) -> None:
             interaction = SimpleNamespace(

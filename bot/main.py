@@ -20735,6 +20735,7 @@ class Settings:
 
 
     poll_seconds = int(os.getenv("DISCORD_PREPARE_POLL_SECONDS", "10"))
+    prepare_api_timeout_seconds = float(os.getenv("DISCORD_PREPARE_API_TIMEOUT_SECONDS", "90"))
 
 
 
@@ -53509,7 +53510,7 @@ def http_json(method: str, url: str) -> tuple[int, dict[str, Any]]:
 
 
 
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=settings.prepare_api_timeout_seconds) as response:
 
 
 
