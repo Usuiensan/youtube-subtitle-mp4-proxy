@@ -108,7 +108,7 @@ class Settings:
     subtitle_margin_l = int(os.getenv("SUBTITLE_MARGIN_L", "24"))
     subtitle_margin_r = int(os.getenv("SUBTITLE_MARGIN_R", "24"))
     subtitle_primary_colour = os.getenv("SUBTITLE_PRIMARY_COLOUR", "&H00FFFFFF")
-    subtitle_back_colour = os.getenv("SUBTITLE_BACK_COLOUR", "&H40000000")
+    subtitle_back_colour = os.getenv("SUBTITLE_BACK_COLOUR", "&H80000000")
     hls_segment_seconds = int(os.getenv("HLS_SEGMENT_SECONDS", "6"))
     hls_ready_timeout_seconds = int(os.getenv("HLS_READY_TIMEOUT_SECONDS", "1800"))
     ffmpeg_encode_concurrency = max(1, int(os.getenv("FFMPEG_ENCODE_CONCURRENCY", "1")))
