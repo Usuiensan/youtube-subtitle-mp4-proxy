@@ -881,7 +881,7 @@ def cache_key(
 
 def render_profile_id(subtitle_font_size: int | None = None) -> str:
     return hashlib.sha1(
-        "\n".join(["dual-subtitle-layout-v6-vertical-srt", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
+        "\n".join(["dual-subtitle-layout-v7-vertical-srt-timed-label", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
     ).hexdigest()[:8]
 
 
@@ -2514,19 +2514,31 @@ def subtitle_overlay_drawtext_filters(
     if not lines:
         return []
     font_option = f":fontfile='{escape_filter_value(font_file)}'" if font_file else f":font='{escape_drawtext_value(font_name)}'"
-    filters = []
+    label_duration_seconds = 10
+    line_height = 30
+    box_height = len(lines[:4]) * line_height + 14
+    box_width = min(max(max(len(line) for line in lines[:4]) * 13 + 18, 220), 760)
+    enable = f":enable='between(t,0,{label_duration_seconds})'"
+    filters = [
+        "drawbox="
+        "x=24"
+        ":y=24"
+        f":w={box_width}"
+        f":h={box_height}"
+        ":color=black@0.55"
+        ":t=fill"
+        f"{enable}"
+    ]
     for index, line in enumerate(lines[:4]):
         filters.append(
             "drawtext="
             f"text='{escape_drawtext_value(line)}'"
             f"{font_option}"
-            ":x=24"
-            f":y={24 + index * 30}"
+            ":x=32"
+            f":y={31 + index * line_height}"
             ":fontsize=20"
             ":fontcolor=white"
-            ":box=1"
-            ":boxcolor=black@0.55"
-            ":boxborderw=8"
+            f"{enable}"
         )
     return filters
 
@@ -2970,7 +2982,7 @@ async def translate_subtitle_if_needed(
                     index=sub.index,
                     start=sub.start,
                     end=sub.end,
-                    content=translated_text,
+                    content=f"{sub.content}\n{translated_text}",
                     proprietary=sub.proprietary,
                 )
             )

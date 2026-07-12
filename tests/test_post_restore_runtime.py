@@ -128,7 +128,37 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         self.assertIn("subtitles=", arg)
         self.assertIn("translated.srt", arg)
         self.assertIn("drawtext=", arg)
+        self.assertIn("drawbox=", arg)
         self.assertIn("Google Cloud", arg)
+        self.assertIn("enable='between(t,0,10)'", arg)
+        self.assertNotIn(":box=1", arg)
+
+    def test_google_cloud_translation_srt_keeps_source_above_translation(self) -> None:
+        import asyncio
+
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            source = work / "source.srt"
+            source.write_text("1\n00:00:00,000 --> 00:00:01,000\nhello\n", encoding="utf-8")
+
+            with patch.object(app_main, "google_translate_events", return_value={"1": "こんにちは"}):
+                translated, _metadata = asyncio.run(
+                    app_main.translate_subtitle_if_needed(
+                        key="dQw4w9WgXcQ_ja_en_google_cloud_00000000",
+                        subtitle=source,
+                        info={"title": "sample"},
+                        selection={
+                            "requested_language": "ja",
+                            "source_language": "en",
+                            "translated": True,
+                            "translation_engine_requested": "google_cloud",
+                        },
+                        work_dir=work,
+                    )
+                )
+
+            events = app_main.load_srt(translated)
+            self.assertEqual(events[0].content, "hello\nこんにちは")
 
     def test_unavailable_video_info_maps_to_404(self) -> None:
         import asyncio
