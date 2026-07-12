@@ -1,7 +1,8 @@
 param(
     [string]$BaseRef = "origin/main",
     [string]$ConfigPath = ".ai-quality.yml",
-    [string]$AiQualityPlatformPath = "C:\private\ai-quality-platform-2"
+    [string]$AiQualityPlatformPath = "C:\private\ai-quality-platform-2",
+    [switch]$Urgent
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,4 +17,4 @@ if (-not (Test-Path $activateScript)) {
 }
 
 . $activateScript
-& $reviewScript -BaseRef $BaseRef -ConfigPath $ConfigPath -AiQualityPlatformPath $AiQualityPlatformPath
+& $reviewScript -BaseRef $BaseRef -ConfigPath $ConfigPath -AiQualityPlatformPath $AiQualityPlatformPath -Urgent:$Urgent
