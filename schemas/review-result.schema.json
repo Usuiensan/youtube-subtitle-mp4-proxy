@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["reviewer", "verdict", "summary", "findings", "tested", "not_tested"],
+  "properties": {
+    "reviewer": { "type": "string" },
+    "verdict": { "enum": ["PASS", "WARN", "BLOCK", "ERROR"] },
+    "summary": { "type": "string" },
+    "findings": { "type": "array" },
+    "tested": { "type": "array" },
+    "not_tested": { "type": "array" }
+  }
+}
