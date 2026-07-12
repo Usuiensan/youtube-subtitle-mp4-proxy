@@ -6,7 +6,7 @@ reviewers:
   security: true
   final_audit: true
 autofix:
-  enabled: true
+  enabled: false
   max_rounds: 1
 localization:
   human_language: ja
