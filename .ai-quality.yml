@@ -6,8 +6,8 @@ reviewers:
   security: true
   final_audit: true
 autofix:
-  enabled: false
-  max_rounds: 0
+  enabled: true
+  max_rounds: 1
 localization:
   human_language: ja
   commit_language: ja
@@ -15,10 +15,12 @@ localization:
   review_language: ja
   documentation_language: ja
 ai:
-  provider: openai
+  provider: openai-compatible
+  # OllamaのOpenAI互換エンドポイントを指定
+  base_url: http://localhost:11434/v1/chat/completions
   models:
-    review: gpt-4o-mini
-    autofix: gpt-4o-mini
-    fallback: gpt-4o
-    audit: gpt-4o
-    report: gpt-4o-mini
+    review: qwen3:14b    # スペルミスを修正
+    autofix: qwen3:8b
+    fallback: qwen3:14b  # フォールバックモデルを追加
+    audit: qwen3:14b
+    report: gemma3:12b
