@@ -123,11 +123,56 @@ export TRANSLATEGEMMA_PROMPT_TEMPLATE_FILE=/home/masato/youtube-subtitle-mp4-pro
 python scripts/check_config.py
 ```
 
+### ローカル LLM で差分レビューと自動修正
+
+自宅 PC で Ollama などのローカル LLM を使って、手元の Git 差分をレビューさせる場合は `.ai-quality.yml` をローカル向けに設定します。
+
+```yaml
+version: 1
+preset: generic
+risk_level: medium
+reviewers:
+  code: true
+  security: true
+  final_audit: true
+autofix:
+  enabled: true
+  max_rounds: 1
+localization:
+  human_language: ja
+  commit_language: ja
+  pull_request_language: ja
+  review_language: ja
+  documentation_language: ja
+ai:
+  provider: openai-compatible
+  base_url: http://localhost:11434/v1/chat/completions
+  models:
+    review: qwen3:14b
+    autofix: qwen3:14b
+    fallback: qwen3:14b
+    audit: qwen3:14b
+    report: gemma3:12b
+```
+
+実行手順は次の通りです。
+
+```powershell
+.venv\Scripts\Activate.ps1
+git diff HEAD > diff.txt
+python -m ai_quality_platform.cli --config .ai-quality.yml --diff diff.txt --autofix-root .
+```
+
+補足:
+- Ollama を使う場合、`$env:AI_API_KEY` は不要です
+- `localhost:11434` はこの PC からの実行専用です
+- GitHub Actions の runner から自宅 PC の Ollama は参照できないため、Actions で同じ構成を使うには self-hosted runner が必要です
+
 ### PR 作成時の自動レビュー
 
-`.github/workflows/ai-review.yml` を追加しているので、Pull Request を作成・更新すると AI レビューが走ります。
+`.github/workflows/ai-review.yml` は self-hosted runner 前提です。Pull Request を作成・更新すると、`self-hosted`, `windows`, `x64`, `ollama` ラベルを持つ runner 上で AI レビューが走ります。
 
-GitHub Secrets に `OPENAI_API_KEY` を設定してください。レビュー結果は PR コメントとして投稿されます。
+Ollama をその runner 上で起動しておいてください。GitHub Secrets に OpenAI の API key は不要です。レビュー結果は PR コメントとして投稿されます。
 
 ### Discord bot からの準備ジョブ
 
