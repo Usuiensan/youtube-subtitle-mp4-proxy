@@ -2579,17 +2579,26 @@ def google_translate_overage_estimate(characters: int) -> tuple[int, float, floa
     return overage_chars, usd, jpy
 
 
+def google_translate_usage_estimate(characters: int) -> tuple[float, float]:
+    usd = (characters / 1_000_000.0) * settings.google_translate_price_usd_per_million_chars
+    jpy = usd * settings.usd_to_jpy_rate
+    return usd, jpy
+
+
 def enrich_translation_metadata(metadata: dict) -> dict:
     engine = str(metadata.get("translation_engine") or "")
     if engine == "google_cloud":
         characters = int(metadata.get("translation_characters") or 0)
         overage_chars, usd, jpy = google_translate_overage_estimate(characters)
+        usage_usd, usage_jpy = google_translate_usage_estimate(characters)
         return {
             **metadata,
             "translation_provider_label": "Google Cloud Translation",
             "translation_billing_class": "Cloud Translation Basic NMT",
             "translation_free_chars_per_month": settings.google_translate_free_chars_per_month,
             "translation_price_usd_per_million_chars": settings.google_translate_price_usd_per_million_chars,
+            "translation_usage_estimate_usd": usage_usd,
+            "translation_usage_estimate_jpy": usage_jpy,
             "translation_billable_overage_characters": overage_chars,
             "translation_api_cost_usd": usd,
             "translation_api_cost_jpy": jpy,
@@ -2608,6 +2617,28 @@ def enrich_translation_metadata(metadata: dict) -> dict:
         "translation_api_cost_jpy": 0.0 if settings.gemini_billing_mode == "free_tier" else jpy,
         "translation_overage_estimate_usd": usd,
         "translation_overage_estimate_jpy": jpy,
+    }
+
+
+def enrich_existing_subtitle_usage_metadata(metadata: dict, subtitle: Path) -> dict:
+    try:
+        characters = sum(len(sub.content) for sub in load_srt(subtitle))
+    except Exception:
+        characters = 0
+    usage_usd, usage_jpy = google_translate_usage_estimate(characters)
+    return {
+        **metadata,
+        "translation_skipped": True,
+        "translation_skipped_reason": "source_subtitle_available",
+        "translation_provider_label": "Google Cloud Translation",
+        "translation_billing_class": "Cloud Translation Basic NMT",
+        "translation_free_chars_per_month": settings.google_translate_free_chars_per_month,
+        "translation_price_usd_per_million_chars": settings.google_translate_price_usd_per_million_chars,
+        "translation_characters": characters,
+        "translation_usage_estimate_usd": usage_usd,
+        "translation_usage_estimate_jpy": usage_jpy,
+        "translation_api_cost_usd": 0.0,
+        "translation_api_cost_jpy": 0.0,
     }
 
 
@@ -2954,7 +2985,7 @@ async def translate_subtitle_if_needed(
     job_id: str | None = None,
 ) -> tuple[Path, dict]:
     if not selection["translated"]:
-        return subtitle, selection
+        return subtitle, enrich_existing_subtitle_usage_metadata(selection, subtitle)
 
     translated_path = work_dir / f"{subtitle.stem}.ja.translated.srt"
     requested_engine = normalize_translation_engine(selection.get("translation_engine_requested"))

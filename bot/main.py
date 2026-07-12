@@ -157971,7 +157971,9 @@ def translation_usage_text(meta: Any) -> str:
 
 
 
-    if engine not in {"gemini_2_5_flash", "google_cloud"}:
+    translation_skipped = bool(meta.get("translation_skipped"))
+
+    if engine not in {"gemini_2_5_flash", "google_cloud"} and not translation_skipped:
 
 
 
@@ -158483,7 +158485,7 @@ def translation_usage_text(meta: Any) -> str:
 
 
 
-    provider_label = str(meta.get("translation_provider_label") or "Gemini Flash")
+    provider_label = str(meta.get("translation_provider_label") or ("Google Cloud Translation" if translation_skipped else "Gemini Flash"))
 
 
 
@@ -160532,6 +160534,8 @@ def translation_usage_text(meta: Any) -> str:
 
 
     overage_jpy = float(meta.get("translation_overage_estimate_jpy") or 0.0)
+    usage_usd = float(meta.get("translation_usage_estimate_usd") or 0.0)
+    usage_jpy = float(meta.get("translation_usage_estimate_jpy") or 0.0)
 
 
 
@@ -162067,7 +162071,9 @@ def translation_usage_text(meta: Any) -> str:
 
 
 
-    if api_cost_usd:
+    if translation_skipped:
+        lines.append("API料金: 追加費用なし（出元の翻訳済み字幕を使用）")
+    elif api_cost_usd:
 
 
 
@@ -164372,6 +164378,8 @@ def translation_usage_text(meta: Any) -> str:
 
 
         lines.append(f"月間無料枠: {free_chars:,}文字")
+    if (engine == "google_cloud" or translation_skipped) and (usage_usd or usage_jpy):
+        lines.append(f"通常単価換算: ${usage_usd:,.4f} / ¥{usage_jpy:,.2f}")
 
 
 

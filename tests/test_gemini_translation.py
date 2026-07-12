@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from app import main as app_main
 from app import translation_worker
@@ -57,6 +59,42 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertIn("Gemini Flash", text)
         self.assertIn("課金区分: Gemini API Free Tier", text)
         self.assertIn("翻訳文字数: 18,420文字", text)
+
+    def test_google_cloud_usage_text_shows_usage_estimate_inside_free_tier(self) -> None:
+        metadata = app_main.enrich_translation_metadata(
+            {
+                "translation_engine": "google_cloud",
+                "translation_characters": 29881,
+            }
+        )
+        text = bot_main.translation_usage_text(metadata)
+        self.assertEqual(metadata["translation_api_cost_jpy"], 0.0)
+        self.assertGreater(metadata["translation_usage_estimate_jpy"], 0.0)
+        self.assertIn("API料金: ¥0.00", text)
+        self.assertIn("通常単価換算: $0.5976 / ¥95.62", text)
+
+    def test_existing_translated_subtitle_usage_text_shows_no_extra_cost_and_estimate(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            subtitle = Path(temp_dir) / "subtitle.ja.srt"
+            subtitle.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\nこんにちは\n\n"
+                "2\n00:00:01,000 --> 00:00:02,000\n世界\n",
+                encoding="utf-8",
+            )
+            metadata = app_main.enrich_existing_subtitle_usage_metadata(
+                {
+                    "requested_language": "ja",
+                    "source_language": "ja",
+                    "translated": False,
+                    "source_kind": "manual",
+                },
+                subtitle,
+            )
+
+        text = bot_main.translation_usage_text(metadata)
+        self.assertEqual(metadata["translation_characters"], 7)
+        self.assertIn("API料金: 追加費用なし（出元の翻訳済み字幕を使用）", text)
+        self.assertIn("通常単価換算: $0.0001 / ¥0.02", text)
 
     def test_bot_translation_status_uses_model_label(self) -> None:
         text = bot_main.subtitle_status_text(
