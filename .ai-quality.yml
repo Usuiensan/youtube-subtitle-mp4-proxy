@@ -1,0 +1,24 @@
+version: 1
+preset: generic
+risk_level: medium
+reviewers:
+  code: true
+  security: true
+  final_audit: true
+autofix:
+  enabled: false
+  max_rounds: 0
+localization:
+  human_language: ja
+  commit_language: ja
+  pull_request_language: ja
+  review_language: ja
+  documentation_language: ja
+ai:
+  provider: openai
+  models:
+    review: gpt-4o-mini
+    autofix: gpt-4o-mini
+    fallback: gpt-4o
+    audit: gpt-4o
+    report: gpt-4o-mini

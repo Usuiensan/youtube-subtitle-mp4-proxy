@@ -123,6 +123,12 @@ export TRANSLATEGEMMA_PROMPT_TEMPLATE_FILE=/home/masato/youtube-subtitle-mp4-pro
 python scripts/check_config.py
 ```
 
+### PR 作成時の自動レビュー
+
+`.github/workflows/ai-review.yml` を追加しているので、Pull Request を作成・更新すると AI レビューが走ります。
+
+GitHub Secrets に `OPENAI_API_KEY` を設定してください。レビュー結果は PR コメントとして投稿されます。
+
 ### Discord bot からの準備ジョブ
 
 `/youtube/...` と `/youtube-hls/...` は配信専用です。URL を叩いただけでは変換や HDD から SSD への移動を開始しません。MP4 は SSD 側にあれば SSD から返し、HDD アーカイブにだけある場合も昇格せずそのまま返します。HLS は SSD 側に準備済みでない場合 `404` を返します。
