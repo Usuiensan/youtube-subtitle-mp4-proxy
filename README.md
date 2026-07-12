@@ -170,7 +170,7 @@ python -m ai_quality_platform.cli --config .ai-quality.yml --diff diff.txt --aut
 
 ### PR 作成時の自動レビュー
 
-`.github/workflows/ai-review.yml` は self-hosted runner 前提です。Pull Request を作成・更新すると、`self-hosted`, `windows`, `x64`, `ollama` ラベルを持つ runner 上で AI レビューが走ります。
+`.github/workflows/ai-quality.yml` は self-hosted runner 前提です。Pull Request を作成・更新すると、`self-hosted`, `windows`, `x64`, `ollama` ラベルを持つ runner 上で AI レビューが走ります。
 
 Ollama をその runner 上で起動しておいてください。GitHub Secrets に OpenAI の API key は不要です。レビュー結果は PR コメントとして投稿されます。
 
