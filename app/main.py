@@ -4942,6 +4942,9 @@ def youtube_api_get_sync(path: str, params: dict[str, str | int]) -> dict:
     except urllib.error.URLError as error:
         raise HTTPException(status_code=502, detail=str(error.reason)) from error
 
+    except TimeoutError as error:
+        raise HTTPException(status_code=504, detail="Request timed out") from error
+
 
 async def youtube_api_get(path: str, params: dict[str, str | int]) -> dict:
     return await asyncio.to_thread(youtube_api_get_sync, path, params)
