@@ -127,7 +127,8 @@ class PostRestoreRuntimeTests(unittest.TestCase):
 
         self.assertIn("subtitles=", arg)
         self.assertIn("translated.srt", arg)
-        self.assertNotIn("drawtext=", arg)
+        self.assertIn("drawtext=", arg)
+        self.assertIn("Google Cloud", arg)
 
     def test_unavailable_video_info_maps_to_404(self) -> None:
         import asyncio

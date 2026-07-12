@@ -2620,10 +2620,14 @@ def ffmpeg_subtitle_arg(path: Path, subtitle_meta: dict | None = None, *, subtit
     value = path.as_posix()
     font_file, font_name = find_japanese_font_spec()
     subtitle_font_name = font_name or settings.subtitle_font
-    return (
+    subtitle_filter = (
         f"subtitles='{escape_filter_value(value)}':"
         f"force_style='{escape_filter_value(subtitle_force_style(subtitle_font_name, subtitle_font_size))}'"
     )
+    drawtext_filters = subtitle_overlay_drawtext_filters(subtitle_meta, font_file, subtitle_font_name)
+    if drawtext_filters:
+        return f"{subtitle_filter},{','.join(drawtext_filters)}"
+    return subtitle_filter
 
 
 def ffmpeg_video_args(encoder: str | None = None) -> list[str]:
