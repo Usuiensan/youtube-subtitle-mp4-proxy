@@ -6,7 +6,7 @@ reviewers:
   security: true
   final_audit: true
 autofix:
-  enabled: true
+  enabled: false
   max_rounds: 1
 localization:
   human_language: ja
@@ -15,12 +15,11 @@ localization:
   review_language: ja
   documentation_language: ja
 ai:
-  provider: openai-compatible
-  # OllamaのOpenAI互換エンドポイントを指定
-  base_url: http://localhost:11434/v1/chat/completions
+  provider: ollama
+  base_url: http://127.0.0.1:11434/api/generate
   models:
-    review: qwen3:14b    # スペルミスを修正
+    review: qwen3:14b
     autofix: qwen3:8b
-    fallback: qwen3:14b  # フォールバックモデルを追加
+    fallback: qwen3:14b
     audit: qwen3:14b
     report: gemma3:12b

@@ -123,11 +123,49 @@ export TRANSLATEGEMMA_PROMPT_TEMPLATE_FILE=/home/masato/youtube-subtitle-mp4-pro
 python scripts/check_config.py
 ```
 
-### PR 作成時の自動レビュー
+### ローカル LLM で差分レビュー
 
-`.github/workflows/ai-review.yml` を追加しているので、Pull Request を作成・更新すると AI レビューが走ります。
+自宅 PC で Ollama などのローカル LLM を使って、手元の Git 差分をレビューさせる場合は `.ai-quality.yml` をローカル向けに設定します。
 
-GitHub Secrets に `OPENAI_API_KEY` を設定してください。レビュー結果は PR コメントとして投稿されます。
+```yaml
+version: 1
+preset: generic
+risk_level: medium
+reviewers:
+  code: true
+  security: true
+  final_audit: true
+autofix:
+  enabled: false
+  max_rounds: 1
+localization:
+  human_language: ja
+  commit_language: ja
+  pull_request_language: ja
+  review_language: ja
+  documentation_language: ja
+ai:
+  provider: ollama
+  base_url: http://127.0.0.1:11434/api/generate
+  models:
+    review: qwen3:14b
+    autofix: qwen3:14b
+    fallback: qwen3:14b
+    audit: qwen3:14b
+    report: gemma3:12b
+```
+
+実行手順は次の通りです。
+
+```powershell
+.venv\Scripts\Activate.ps1
+.\scripts\review-before-push.ps1
+```
+
+補足:
+- Ollama を使う場合、`$env:AI_API_KEY` は不要です
+- `127.0.0.1:11434` はこの PC 上の Ollama 専用です
+- レポートを確認して必要な修正を入れ、再実行してから push してください
 
 ### Discord bot からの準備ジョブ
 
