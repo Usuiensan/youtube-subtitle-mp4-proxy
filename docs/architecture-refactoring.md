@@ -22,6 +22,9 @@
 | `app.media_stream` | ローカルメディアの非同期チャンク読み出し | ファイル |
 | `app.hls_playlist` | HLS プレイリストの URL 書き換え | なし |
 | `app.config_files` | `.env` とプロンプトファイルの読み込み | ファイル |
+| `app.command_errors` | 外部コマンドのエラー型・分類 | なし |
+| `app.command_runner` | 非同期 subprocess の起動・timeout・終了処理 | プロセス |
+| `app.ytdlp_args` | yt-dlp の引数生成・cookies 引数除去 | なし |
 
 ## 拡張時のルール
 
@@ -34,4 +37,4 @@
 
 ## 未分離の大きな責務
 
-`app.main` には、準備ジョブの orchestration、`yt-dlp`／`ffmpeg` 実行、キャッシュ昇格・退避、HTTP ルートが残っている。これらは共有状態と設定への依存が大きいため、次に分離する場合は、まずジョブ状態と外部コマンドのインターフェースをテストで固定してから段階的に移動する。
+`app.main` には、準備ジョブの orchestration、`yt-dlp`／`ffmpeg` の呼び出し制御、キャッシュ昇格・退避、HTTP ルートが残っている。外部プロセスの基本実行は `app.command_runner` に分離済みだが、yt-dlp の semaphore／rate limit と ffmpeg の進捗管理は共有状態を持つため、次に分離する場合は、まずジョブ状態と外部コマンドのインターフェースをテストで固定してから段階的に移動する。
