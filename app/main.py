@@ -1289,6 +1289,9 @@ def ytdlp_cookies_file_for_command() -> str | None:
 
 def yt_dlp_base_args() -> list[str]:
     args = [yt_dlp_executable(), "--ignore-config"]
+    deno = shutil.which("deno")
+    if deno:
+        args.extend(["--js-runtimes", f"deno:{deno}"])
     cookies_file = ytdlp_cookies_file_for_command()
     if cookies_file:
         args.extend(["--cookies", cookies_file])
