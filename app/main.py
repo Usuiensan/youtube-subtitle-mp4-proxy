@@ -39,6 +39,22 @@ from app.translation import (
     save_srt,
     translate_srt_with_local_worker,
 )
+from app.metrics import MetricsManager
+from app.validation import (
+    validate_discord_user_id,
+    validate_input,
+    validate_lang,
+    validate_subtitle_font_size,
+)
+from app.yamaplayer_helpers import (
+    normalize_max_items,
+    normalize_yamaplayer_mode,
+    normalize_yamaplayer_url_mode,
+    split_yamaplayer_sources,
+    yamaplayer_export_response,
+    yamaplayer_playlist_entry,
+    yamaplayer_track_url,
+)
 
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -207,69 +223,6 @@ settings = Settings()
 _system_metrics: deque[dict] = deque(maxlen=max(1, int(settings.system_metrics_history_seconds / max(settings.system_metrics_interval_seconds, 1)) + 60))
 _last_cpu_times: tuple[int, int] | None = None
 _metrics_task: asyncio.Task | None = None
-
-
-class MetricsManager:
-    def __init__(self, file_path: Path):
-        self.file_path = file_path
-        self.data = {
-            "download_speed": [],      # bytes per second
-            "encode_speed_ratio": [],  # video_duration / encode_time
-            "translate_speed": [],     # subtitle_events / translate_time
-            "archive_speed": []        # bytes per second
-        }
-        self.load()
-
-    def load(self):
-        if self.file_path.exists():
-            try:
-                self.data = json.loads(self.file_path.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-
-    def save(self):
-        try:
-            self.file_path.parent.mkdir(parents=True, exist_ok=True)
-            self.file_path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-
-    def record_download(self, size_bytes: float, time_seconds: float):
-        if time_seconds > 0:
-            self.data.setdefault("download_speed", []).append(size_bytes / time_seconds)
-            self.save()
-
-    def record_encode(self, duration: float, time_seconds: float):
-        if time_seconds > 0:
-            self.data.setdefault("encode_speed_ratio", []).append(duration / time_seconds)
-            self.save()
-
-    def record_translate(self, events_count: int, time_seconds: float):
-        if time_seconds > 0:
-            self.data.setdefault("translate_speed", []).append(events_count / time_seconds)
-            self.save()
-
-    def record_archive(self, size_bytes: float, time_seconds: float):
-        if time_seconds > 0:
-            self.data.setdefault("archive_speed", []).append(size_bytes / time_seconds)
-            self.save()
-
-    def get_avg(self, key: str, fallback: float) -> float:
-        vals = self.data.get(key)
-        if not vals:
-            return fallback
-        # keep last 50 entries
-        vals = vals[-50:]
-        return sum(vals) / len(vals)
-
-    def reset(self):
-        self.data = {
-            "download_speed": [],
-            "encode_speed_ratio": [],
-            "translate_speed": [],
-            "archive_speed": [],
-        }
-        self.save()
 
 
 metrics_manager = MetricsManager(settings.cache_hot_dir / "metrics.json")
@@ -1504,17 +1457,6 @@ def default_serving_key(video_id: str, lang: str, mode: str) -> str:
         elif hot_output_path(key) or archived_output_path(key):
             return key
     return exact
-
-
-def validate_input(video_id: str, lang: str) -> None:
-    if not VIDEO_ID_RE.fullmatch(video_id):
-        raise HTTPException(status_code=400, detail="Invalid YouTube video id")
-    validate_lang(lang)
-
-
-def validate_lang(lang: str) -> None:
-    if not LANG_RE.fullmatch(lang):
-        raise HTTPException(status_code=400, detail="Invalid subtitle language")
 
 
 def validate_translation_variant(source_lang: str, translation_engine: str) -> str:
@@ -4437,28 +4379,8 @@ def prepare_ready_path(
     return hot_output_path(key)
 
 
-def validate_discord_user_id(discord_user_id: str | None) -> str | None:
-    if discord_user_id is None or discord_user_id == "":
-        return None
-    if not re.fullmatch(r"\d{17,20}", discord_user_id):
-        raise HTTPException(status_code=400, detail="Invalid Discord user id")
-    return discord_user_id
-
-
 def discord_mention(discord_user_id: str) -> str:
     return f"<@{discord_user_id}>"
-
-
-def validate_subtitle_font_size(value: str | None) -> int | None:
-    if value is None or value == "":
-        return None
-    try:
-        size = int(value)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid subtitle font size")
-    if size < 12 or size > 60:
-        raise HTTPException(status_code=400, detail="subtitleFontSize must be between 12 and 60")
-    return size
 
 
 def estimate_archive_prepare_seconds(key: str) -> int | None:
@@ -5265,84 +5187,6 @@ def manual_video_tracks(source: str, max_items: int) -> list[dict[str, str]]:
         if len(tracks) >= max_items:
             break
     return tracks
-
-
-def normalize_yamaplayer_mode(mode: int) -> int:
-    if mode not in {0, 1, 2}:
-        raise HTTPException(status_code=400, detail="mode must be 0, 1, or 2")
-    return mode
-
-
-def normalize_max_items(max_items: int) -> int:
-    if max_items < 1 or max_items > 5000:
-        raise HTTPException(status_code=400, detail="maxItems must be between 1 and 5000")
-    return max_items
-
-
-def normalize_yamaplayer_url_mode(url_mode: str) -> str:
-    if url_mode not in {"original", "mp4", "hls"}:
-        raise HTTPException(status_code=400, detail="urlMode must be original, mp4, or hls")
-    return url_mode
-
-
-def yamaplayer_track_url(
-    track: dict[str, str],
-    url_mode: str,
-    lang: str,
-    base_url: str,
-) -> str:
-    if url_mode == "original":
-        return track["url"]
-
-    video_id = track["video_id"]
-    route = "youtube-hls" if url_mode == "hls" else "youtube"
-    return f"{base_url}/{route}/{video_id}/{lang}"
-
-
-def yamaplayer_playlist_entry(
-    playlist_name: str,
-    youtube_list_id: str,
-    tracks: list[dict[str, str]],
-    mode: int,
-    url_mode: str,
-    lang: str,
-    base_url: str,
-) -> dict:
-    return {
-        "active": True,
-        "name": playlist_name,
-        "youtubeListId": youtube_list_id,
-        "tracks": [
-            {
-                "mode": mode,
-                "title": track["title"],
-                "url": yamaplayer_track_url(track, url_mode, lang, base_url),
-            }
-            for track in tracks
-        ],
-    }
-
-
-def yamaplayer_export_response(playlists: list[dict], filename_base: str) -> Response:
-    body = {"playlists": playlists}
-    filename = re.sub(r"[^A-Za-z0-9_.-]+", "_", filename_base).strip("_") or "yamaplayer"
-    return Response(
-        json.dumps(body, ensure_ascii=False, indent=2),
-        media_type="application/json; charset=utf-8",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}.json"',
-            "Cache-Control": "no-cache",
-        },
-    )
-
-
-def split_yamaplayer_sources(sources: str) -> list[str]:
-    values = [line.strip() for line in sources.splitlines() if line.strip()]
-    if not values:
-        raise HTTPException(status_code=400, detail="At least one source is required")
-    if len(values) > 100:
-        raise HTTPException(status_code=400, detail="sources must contain 100 items or fewer")
-    return values
 
 
 def detect_yamaplayer_source_type(source: str) -> str:
