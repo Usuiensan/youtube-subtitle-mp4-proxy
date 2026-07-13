@@ -1952,10 +1952,7 @@ def subtitle_tracks(info: dict) -> dict[str, str]:
 def subtitle_candidates(info: dict, requested_lang: str) -> list[dict]:
     tracks = subtitle_tracks(info)
     candidates = []
-    requested_normalized = normalize_lang(requested_lang)
     for lang, source_kind in tracks.items():
-        if normalize_lang(lang) == requested_normalized:
-            continue
         candidates.append(
             {
                 "language": lang,
@@ -1984,20 +1981,6 @@ def subtitle_choice_body(info: dict, requested_lang: str) -> dict:
         "requested_language": requested_lang,
         "translation_enabled": settings.translation_enabled,
     }
-    if requested:
-        body.update(
-            {
-                "requires_choice": False,
-                "selection": {
-                    "requested_language": requested_lang,
-                    "source_language": requested,
-                    "translated": False,
-                    "source_kind": "automatic" if requested not in manual_subtitles else "manual",
-                },
-            }
-        )
-        return body
-
     candidates = subtitle_candidates(info, requested_lang)
     body.update(
         {
