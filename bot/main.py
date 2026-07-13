@@ -209443,7 +209443,7 @@ class SubtitleChoiceView(discord.ui.View):
 
 
 
-            await interaction.response.send_message("先に翻訳元字幕を選択してください。", ephemeral=False)
+            await interaction.response.send_message("先に翻訳元字幕を選択してください。", ephemeral=False, silent=True)
 
 
 
@@ -210211,7 +210211,7 @@ class SubtitleChoiceView(discord.ui.View):
 
 
 
-            await interaction.response.send_message("翻訳元字幕の指定が不正です。字幕候補を開き直してください。", ephemeral=False)
+            await interaction.response.send_message("翻訳元字幕の指定が不正です。字幕候補を開き直してください。", ephemeral=False, silent=True)
 
 
 
@@ -216099,7 +216099,7 @@ class SubtitleChoiceView(discord.ui.View):
 
 
 
-            await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}", ephemeral=False)
+            await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}", ephemeral=False, silent=True)
 
 
 
@@ -329264,7 +329264,7 @@ async def prepare_command(
 
 
 
-        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=False)
+        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=False, silent=True)
 
 
 
@@ -330546,7 +330546,7 @@ async def prepare_command(
 
 
 
-        await interaction.followup.send("max_items は 1 から 5000 の範囲で指定してください。", ephemeral=False)
+        await interaction.followup.send("max_items は 1 から 5000 の範囲で指定してください。", ephemeral=False, silent=True)
 
 
 
@@ -331314,7 +331314,7 @@ async def prepare_command(
 
 
 
-        await interaction.followup.send("archive_immediately は MP4 のみ対応です。", ephemeral=False)
+        await interaction.followup.send("archive_immediately は MP4 のみ対応です。", ephemeral=False, silent=True)
 
 
 
@@ -336690,7 +336690,7 @@ async def prepare_command(
 
 
 
-                    await interaction.followup.send(subtitle_options_error_message(error), ephemeral=False)
+                    await interaction.followup.send(subtitle_options_error_message(error), ephemeral=False, silent=True)
 
 
 
@@ -337970,7 +337970,7 @@ async def prepare_command(
 
 
 
-                        await interaction.followup.send(str(options_body.get("error") or "翻訳可能な手動字幕がありません。"), ephemeral=False)
+                        await interaction.followup.send(str(options_body.get("error") or "翻訳可能な手動字幕がありません。"), ephemeral=False, silent=True)
 
 
 
@@ -343858,7 +343858,7 @@ async def prepare_command(
 
 
 
-                    await interaction.followup.send(prompt, view=view, ephemeral=False)
+                    await interaction.followup.send(prompt, view=view, ephemeral=False, silent=True)
 
 
 
@@ -344626,7 +344626,7 @@ async def prepare_command(
 
 
 
-                    await interaction.followup.send(str(options_body["error"]), ephemeral=False)
+                    await interaction.followup.send(str(options_body["error"]), ephemeral=False, silent=True)
 
 
 
@@ -350770,7 +350770,7 @@ async def prepare_command(
 
 
 
-        await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}", ephemeral=False)
+        await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}", ephemeral=False, silent=True)
 
 
 
@@ -369204,7 +369204,7 @@ async def reburn_command(
 
 
 
-        await interaction.followup.send(f"再焼き込みAPIエラー ({error.status_code}): {error.detail}", ephemeral=False)
+        await interaction.followup.send(f"再焼き込みAPIエラー ({error.status_code}): {error.detail}", ephemeral=False, silent=True)
 
 
 
@@ -378933,7 +378933,7 @@ async def reburn_all_command(
 
 
 
-        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=False)
+        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=False, silent=True)
 
 
 
@@ -380469,7 +380469,7 @@ async def reburn_all_command(
 
 
 
-        await interaction.followup.send("max_items は 1 から 5000 の範囲で指定してください。", ephemeral=False)
+        await interaction.followup.send("max_items は 1 から 5000 の範囲で指定してください。", ephemeral=False, silent=True)
 
 
 
@@ -381237,7 +381237,7 @@ async def reburn_all_command(
 
 
 
-        await interaction.followup.send("archive_immediately は MP4 のみ対応です。", ephemeral=False)
+        await interaction.followup.send("archive_immediately は MP4 のみ対応です。", ephemeral=False, silent=True)
 
 
 
@@ -384309,7 +384309,7 @@ async def reburn_all_command(
 
 
 
-        await interaction.followup.send(f"全件再焼き込みAPIエラー ({error.status_code}): {error.detail}", ephemeral=False)
+        await interaction.followup.send(f"全件再焼き込みAPIエラー ({error.status_code}): {error.detail}", ephemeral=False, silent=True)
 
 
 
@@ -391477,7 +391477,7 @@ async def clear_command(
 
 
 
-        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。")
+        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", silent=True)
 
 
 
@@ -393013,7 +393013,7 @@ async def clear_command(
 
 
 
-        await interaction.followup.send(str(error))
+        await interaction.followup.send(str(error), silent=True)
 
 
 
@@ -398431,7 +398431,7 @@ async def archive_all_command(
 
 
 
-        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=False)
+        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=False, silent=True)
 
 
 
