@@ -49,6 +49,7 @@ from app.config_files import (
     read_text_file,
 )
 from app.http_range import parse_range
+from app.json_files import read_json_object
 from app.hls_playlist import rewrite_playlist
 from app.media_stream import file_iterator
 from app.validation import (
@@ -966,16 +967,6 @@ def read_subtitle_meta(key: str) -> dict:
     return {}
 
 
-def read_json_file(path: Path) -> dict:
-    try:
-        if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-    return {}
-
-
 def prepared_variant_from_meta(subtitle_meta: dict) -> tuple[str | None, str | None]:
     if not subtitle_meta.get("translated"):
         return None, None
@@ -987,8 +978,8 @@ def prepared_variant_from_meta(subtitle_meta: dict) -> tuple[str | None, str | N
 
 
 def prepared_cache_entry_body(request: Request, key: str, base_dir: Path, storage: str) -> dict | None:
-    source_meta = read_json_file(base_dir / "source.json")
-    meta = read_json_file(base_dir / "meta.json")
+    source_meta = read_json_object(base_dir / "source.json")
+    meta = read_json_object(base_dir / "meta.json")
     merged = {**meta, **source_meta}
     video_id = merged.get("video_id")
     lang = merged.get("lang")
@@ -3862,8 +3853,9 @@ def prepared_subtitle_file_response(key: str, kind: str, request: Request) -> Fi
         raise HTTPException(status_code=404, detail="Subtitle is not prepared")
     suffix = path.suffix.lower() or ".srt"
     subtitle_meta = read_subtitle_meta(key)
-    video_id = str(read_json_file(entry_dir(key) / "source.json").get("video_id") or key)
-    lang = str(read_json_file(entry_dir(key) / "source.json").get("lang") or subtitle_meta.get("requested_language") or "ja")
+    source_meta = read_json_object(entry_dir(key) / "source.json")
+    video_id = str(source_meta.get("video_id") or key)
+    lang = str(source_meta.get("lang") or subtitle_meta.get("requested_language") or "ja")
     label = "source" if kind == "source" else "translated"
     filename = f"{video_id}_{lang}_{label}{suffix}"
     return FileResponse(
@@ -7292,7 +7284,7 @@ def _list_cached_variants_for_video(request: Request, video_id: str) -> list[dic
         for child in root.iterdir():
             if not child.is_dir() or child.name.startswith("."):
                 continue
-            source_meta = read_json_file(child / "source.json")
+            source_meta = read_json_object(child / "source.json")
             if source_meta.get("video_id") != video_id:
                 continue
             subtitle_meta = source_meta.get("subtitle_meta") if isinstance(source_meta.get("subtitle_meta"), dict) else {}
