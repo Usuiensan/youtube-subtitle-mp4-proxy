@@ -122123,15 +122123,20 @@ def status_message(body: dict[str, Any], fallback_user_id: int | None = None) ->
 
 
 
+        links = []
         urls = []
         url = public_url(body.get("url"))
         if url:
+            links.append(f"変換済み動画: {url}")
             urls.append(f"```text\n{url}\n```")
         source_url = youtube_watch_url(body.get("video_id"))
         if source_url:
+            links.append(f"元動画: {source_url}")
             urls.append(f"```text\n{source_url}\n```")
+        link_block = "\n".join(links)
         url_block = "\n".join(urls)
-        return f"{prefix}準備できました。{title_part}{subtitle_part}{usage_part}{archive_part}" + (f"\n{url_block}" if url_block else "")
+        blocks = "\n".join(part for part in (link_block, url_block) if part)
+        return f"{prefix}準備できました。{title_part}{subtitle_part}{usage_part}{archive_part}" + (f"\n{blocks}" if blocks else "")
 
 
 
@@ -164379,7 +164384,10 @@ def translation_usage_text(meta: Any) -> str:
 
         lines.append(f"月間無料枠: {free_chars:,}文字")
     if (engine == "google_cloud" or translation_skipped) and (usage_usd or usage_jpy):
+        unit_usd = (usage_usd / characters * 1_000_000) if characters else 0.0
         lines.append(f"通常単価換算: ${usage_usd:,.4f} / ¥{usage_jpy:,.2f}")
+        if unit_usd:
+            lines.append(f"計算根拠: {characters:,}文字 × ${unit_usd:,.2f}/100万文字")
 
 
 
@@ -166427,7 +166435,7 @@ def translation_usage_text(meta: Any) -> str:
 
 
 
-    lines.append(f"無料枠超過時の概算料金: ${overage_usd:,.4f} / ¥{overage_jpy:,.2f}")
+    lines.append(f"今回の無料枠適用後見込み: ${overage_usd:,.4f} / ¥{overage_jpy:,.2f}")
 
 
 

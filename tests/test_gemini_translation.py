@@ -72,6 +72,8 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertGreater(metadata["translation_usage_estimate_jpy"], 0.0)
         self.assertIn("API料金: ¥0.00", text)
         self.assertIn("通常単価換算: $0.5976 / ¥95.62", text)
+        self.assertIn("計算根拠: 29,881文字 × $20.00/100万文字", text)
+        self.assertIn("今回の無料枠適用後見込み: $0.0000 / ¥0.00", text)
 
     def test_existing_translated_subtitle_usage_text_shows_no_extra_cost_and_estimate(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -95,6 +97,19 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertEqual(metadata["translation_characters"], 7)
         self.assertIn("API料金: 追加費用なし（出元の翻訳済み字幕を使用）", text)
         self.assertIn("通常単価換算: $0.0001 / ¥0.02", text)
+
+    def test_ready_status_includes_clickable_and_code_block_urls(self) -> None:
+        text = bot_main.status_message(
+            {
+                "status": "ready",
+                "url": "https://lab.usuiensan.dev/youtube/nXdVG45wveo/ja/en/google_cloud",
+                "video_id": "nXdVG45wveo",
+                "subtitle": {},
+            }
+        )
+        self.assertIn("変換済み動画: https://lab.usuiensan.dev/youtube/nXdVG45wveo/ja/en/google_cloud", text)
+        self.assertIn("元動画: https://www.youtube.com/watch?v=nXdVG45wveo", text)
+        self.assertIn("```text\nhttps://lab.usuiensan.dev/youtube/nXdVG45wveo/ja/en/google_cloud\n```", text)
 
     def test_bot_translation_status_uses_model_label(self) -> None:
         text = bot_main.subtitle_status_text(

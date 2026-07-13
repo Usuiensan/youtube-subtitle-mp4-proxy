@@ -926,7 +926,7 @@ def cache_key(
 
 def render_profile_id(subtitle_font_size: int | None = None) -> str:
     return hashlib.sha1(
-        "\n".join(["dual-subtitle-layout-v7-vertical-srt-timed-label", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
+        "\n".join(["dual-subtitle-layout-v8-vertical-srt-timed-label-spaced", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
     ).hexdigest()[:8]
 
 
@@ -3137,7 +3137,7 @@ async def translate_subtitle_if_needed(
                     index=sub.index,
                     start=sub.start,
                     end=sub.end,
-                    content=f"{sub.content}\n{translated_text}",
+                    content=f"{sub.content}\n　\n{translated_text}",
                     proprietary=sub.proprietary,
                 )
             )

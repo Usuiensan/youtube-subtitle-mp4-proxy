@@ -158,7 +158,7 @@ class PostRestoreRuntimeTests(unittest.TestCase):
                 )
 
             events = app_main.load_srt(translated)
-            self.assertEqual(events[0].content, "hello\nこんにちは")
+            self.assertEqual(events[0].content, "hello\n　\nこんにちは")
 
     def test_unavailable_video_info_maps_to_404(self) -> None:
         import asyncio
