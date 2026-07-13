@@ -24,7 +24,14 @@ tar -xzf "$ARCHIVE" -C "$STAGE"
 "$APP_DIR/.venv/bin/python" -m compileall -q "$STAGE/app" "$STAGE/bot"
 grep -q 'silent=True' "$STAGE/bot/main.py"
 
-cp -a "$APP_DIR" "$BACKUP"
+mkdir -p "$BACKUP"
+rsync -a --delete \
+    --exclude='.venv/' \
+    --exclude='.env*' \
+    --exclude='.pytest_cache/' \
+    --exclude='cache/' \
+    --exclude='data/' \
+    "$APP_DIR/" "$BACKUP/"
 systemctl stop youtube-mp4-proxy-discord youtube-mp4-proxy
 rsync -a --delete --exclude='.venv/' --exclude='.env*' --exclude='.pytest_cache/' --exclude='cache/' --exclude='data/' "$STAGE/" "$APP_DIR/"
 systemctl start youtube-mp4-proxy
