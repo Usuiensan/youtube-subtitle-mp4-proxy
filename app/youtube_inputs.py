@@ -7,8 +7,7 @@ import urllib.parse
 
 from fastapi import HTTPException
 
-YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,}$")
-VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+from app.input_patterns import VIDEO_ID_RE, YOUTUBE_ID_RE
 
 
 def parse_youtube_url(value: str) -> urllib.parse.ParseResult:

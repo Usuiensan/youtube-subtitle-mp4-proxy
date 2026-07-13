@@ -10,9 +10,7 @@ import re
 
 from fastapi import HTTPException
 
-
-VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
-LANG_RE = re.compile(r"^[A-Za-z0-9_-]{2,64}$")
+from app.input_patterns import LANG_RE, VIDEO_ID_RE
 
 
 def validate_input(video_id: str, lang: str) -> None:

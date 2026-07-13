@@ -50,6 +50,7 @@ from app.config_files import (
     read_text_file,
 )
 from app.http_range import parse_range
+from app.input_patterns import LANG_RE, VIDEO_ID_RE, YOUTUBE_ID_RE
 from app.json_files import read_json_object
 from app.hls_playlist import rewrite_playlist
 from app.media_stream import file_iterator
@@ -77,10 +78,7 @@ from app.youtube_inputs import (
 )
 
 
-VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
-LANG_RE = re.compile(r"^[A-Za-z0-9_-]{2,64}$")
 KEY_RE = re.compile(r"^[A-Za-z0-9_-]{11}(?:_[A-Za-z0-9_-]{2,32})+_[a-f0-9]{8}$")
-YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,}$")
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env.local"
 
 
