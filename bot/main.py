@@ -200995,7 +200995,7 @@ class SubtitleChoiceView(discord.ui.View):
 
 
 
-            placeholder="翻訳先を選択",
+            placeholder="翻訳先を選択（そのまま＝翻訳なし）",
 
 
 
@@ -202788,6 +202788,8 @@ class SubtitleChoiceView(discord.ui.View):
 
 
         self.target_select.callback = self.on_target_selected
+        self.engine_select.disabled = True
+        self.engine_select.placeholder = "翻訳なし（そのまま）"
 
 
 
@@ -207908,6 +207910,11 @@ class SubtitleChoiceView(discord.ui.View):
 
 
         self.target_lang = self.target_select.values[0]
+        translate = self.target_lang != "same"
+        self.engine_select.disabled = not translate
+        self.engine_select.placeholder = "翻訳エンジンを選択" if translate else "翻訳なし（そのまま）"
+        if not translate:
+            self.translation_engine = None
 
 
 
