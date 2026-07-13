@@ -54,6 +54,7 @@ from app.command_errors import (
     is_ytdlp_requested_format_unavailable_error,
     is_youtube_video_unavailable_error,
 )
+from app.command_runner import run_command as run_subprocess_command
 from app.http_range import parse_range
 from app.input_patterns import LANG_RE, VIDEO_ID_RE, YOUTUBE_ID_RE
 from app.json_files import read_json_object
@@ -1652,34 +1653,12 @@ async def run_command_unlimited(
     cwd: Path | None = None,
     raise_http: bool = True,
 ) -> str:
-    process = await asyncio.create_subprocess_exec(
-        *args,
-        cwd=str(cwd) if cwd else None,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    return await run_subprocess_command(
+        args,
+        cwd=cwd,
+        timeout_seconds=settings.job_timeout_seconds,
+        raise_http=raise_http,
     )
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=settings.job_timeout_seconds
-        )
-    except asyncio.TimeoutError:
-        process.kill()
-        await process.communicate()
-        raise HTTPException(status_code=504, detail="Conversion timed out")
-
-    if process.returncode != 0:
-        message = stderr.decode("utf-8", errors="replace").strip()
-        print(
-            f"Command failed: {' '.join(args)}\n{message}",
-            flush=True,
-        )
-        if not raise_http:
-            raise CommandError(args, message)
-        raise HTTPException(
-            status_code=502,
-            detail=message[-1000:] or f"Command failed: {args[0]}",
-        )
-    return stdout.decode("utf-8", errors="replace")
 
 
 async def fetch_video_info(video_id: str) -> dict:
