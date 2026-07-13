@@ -171,6 +171,29 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 404)
         self.assertIn("この動画は利用できません", raised.exception.detail)
 
+    def test_youtube_restriction_error_keeps_diagnostic(self) -> None:
+        import asyncio
+
+        error = app_main.CommandError(
+            ["yt-dlp"],
+            "ERROR: [youtube] abcdefghi01: Sign in to confirm your age. This video may be inappropriate for some users.",
+        )
+        with patch.object(app_main, "run_command", new=AsyncMock(side_effect=error)):
+            with self.assertRaises(app_main.HTTPException) as raised:
+                asyncio.run(app_main.fetch_video_info("abcdefghi01"))
+
+        self.assertEqual(raised.exception.status_code, 404)
+        self.assertIn("年齢確認", raised.exception.detail)
+        self.assertIn("Sign in to confirm your age", raised.exception.detail)
+
+    def test_missing_ytdlp_cookies_file_is_explicit_error(self) -> None:
+        with patch.object(app_main.settings, "ytdlp_cookies_file", "Z:/missing/cookies.txt"):
+            with self.assertRaises(app_main.HTTPException) as raised:
+                app_main.yt_dlp_base_args()
+
+        self.assertEqual(raised.exception.status_code, 500)
+        self.assertIn("YTDLP_COOKIES_FILE が存在しません", raised.exception.detail)
+
     def test_unavailable_video_subtitle_api_returns_404(self) -> None:
         error = app_main.CommandError(["yt-dlp"], "ERROR: [youtube] I5e6ftNpGsU: This video is not available")
         with patch.object(app_main.settings, "discord_prepare_token", "token"), patch.object(

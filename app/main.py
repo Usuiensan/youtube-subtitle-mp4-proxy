@@ -844,6 +844,18 @@ def is_youtube_video_unavailable_error(message: str) -> bool:
     return any(
         marker in text
         for marker in (
+            "confirm you're not a bot",
+            "content isn't available",
+            "content is not available",
+            "cookies",
+            "country",
+            "geo-restricted",
+            "not available in your country",
+            "please sign in",
+            "po token",
+            "sign in to confirm your age",
+            "sign in to confirm you’re not a bot",
+            "this video may be inappropriate",
             "this video is not available",
             "video unavailable",
             "private video",
@@ -1480,6 +1492,12 @@ def validate_translation_variant(source_lang: str, translation_engine: str) -> s
 def yt_dlp_base_args() -> list[str]:
     args = [yt_dlp_executable(), "--ignore-config"]
     if settings.ytdlp_cookies_file:
+        cookies_file = Path(settings.ytdlp_cookies_file).expanduser()
+        if not cookies_file.exists():
+            raise HTTPException(
+                status_code=500,
+                detail=f"YTDLP_COOKIES_FILE が存在しません: {cookies_file}",
+            )
         args.extend(["--cookies", settings.ytdlp_cookies_file])
     if settings.ytdlp_proxy:
         args.extend(["--proxy", settings.ytdlp_proxy])
@@ -1726,7 +1744,14 @@ async def fetch_video_info(video_id: str) -> dict:
     except CommandError as error:
         detail = error.stderr or error.message or str(error)
         if is_youtube_video_unavailable_error(detail):
-            raise HTTPException(status_code=404, detail="この動画は利用できません。削除、非公開、地域制限、またはYouTube側の制限の可能性があります。") from error
+            hint = (
+                "この動画は利用できません。削除、非公開、地域制限、年齢確認、bot判定、"
+                "またはYouTube側の制限の可能性があります。"
+            )
+            diagnostic = detail[-500:].strip()
+            if diagnostic:
+                hint += f" yt-dlp: {diagnostic}"
+            raise HTTPException(status_code=404, detail=hint) from error
         raise HTTPException(status_code=502, detail=detail[-1000:] or "Failed to fetch YouTube video info") from error
     info = json.loads(raw)
     await enrich_video_info_titles(info, video_id)
