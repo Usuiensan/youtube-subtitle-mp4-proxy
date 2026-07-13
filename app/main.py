@@ -886,6 +886,20 @@ def yt_dlp_fallback_format_selector() -> str:
     return "bestvideo*+bestaudio/best"
 
 
+def yt_dlp_args_without_cookies(args: list[str]) -> list[str]:
+    stripped: list[str] = []
+    skip_next = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--cookies":
+            skip_next = True
+            continue
+        stripped.append(arg)
+    return stripped
+
+
 def variant_id(
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
@@ -1799,24 +1813,32 @@ async def fetch_video_info(video_id: str) -> dict:
     except CommandError as error:
         detail = error.stderr or error.message or str(error)
         if is_ytdlp_requested_format_unavailable_error(detail):
-            retry_args = list(info_args)
+            retry_args_list = []
+            fallback_args = list(info_args)
             try:
-                retry_args[retry_args.index("-f") + 1] = yt_dlp_fallback_format_selector()
+                fallback_args[fallback_args.index("-f") + 1] = yt_dlp_fallback_format_selector()
             except (ValueError, IndexError):
-                retry_args = base_args + [
+                fallback_args = base_args + [
                     "--dump-single-json",
                     "--skip-download",
                     "--no-warnings",
                     url,
                 ]
-            try:
-                raw = await run_command(retry_args, raise_http=False)
-            except CommandError as retry_error:
-                detail = retry_error.stderr or retry_error.message or str(retry_error)
-            else:
-                info = json.loads(raw)
-                await enrich_video_info_titles(info, video_id)
-                return info
+            retry_args_list.append(fallback_args)
+            if "--cookies" in info_args:
+                retry_args_list.append(yt_dlp_args_without_cookies(info_args))
+                retry_args_list.append(yt_dlp_args_without_cookies(fallback_args))
+            for retry_args in retry_args_list:
+                try:
+                    raw = await run_command(retry_args, raise_http=False)
+                except CommandError as retry_error:
+                    detail = retry_error.stderr or retry_error.message or str(retry_error)
+                    if not is_ytdlp_requested_format_unavailable_error(detail):
+                        break
+                else:
+                    info = json.loads(raw)
+                    await enrich_video_info_titles(info, video_id)
+                    return info
         if is_youtube_video_unavailable_error(detail):
             hint = (
                 "この動画は利用できません。削除、非公開、地域制限、年齢確認、bot判定、"
@@ -3316,16 +3338,28 @@ async def download_sources(
             retry_args[retry_args.index("-f") + 1] = fallback_format_selector
         except (ValueError, IndexError):
             raise error
-        if job_id:
-            update_job_progress(
-                job_id,
-                "download",
-                0.0,
-                details="指定フォーマットが利用できないため、best形式で再試行しています。",
-            )
-            await run_yt_dlp_with_progress(retry_args, job_id=job_id, cwd=work_dir)
-        else:
-            await run_command(retry_args, cwd=work_dir)
+        retry_args_list = [retry_args]
+        if "--cookies" in dl_args:
+            retry_args_list.append(yt_dlp_args_without_cookies(dl_args))
+            retry_args_list.append(yt_dlp_args_without_cookies(retry_args))
+        last_error = error
+        for index, candidate_args in enumerate(retry_args_list):
+            try:
+                if job_id:
+                    details = "指定フォーマットが利用できないため、条件を変えて再試行しています。"
+                    if "--cookies" not in candidate_args:
+                        details = "cookies 使用時に指定フォーマットが利用できないため、cookies なしで再試行しています。"
+                    update_job_progress(job_id, "download", 0.0, details=details)
+                    await run_yt_dlp_with_progress(candidate_args, job_id=job_id, cwd=work_dir)
+                else:
+                    await run_command(candidate_args, cwd=work_dir)
+            except CommandError as retry_error:
+                last_error = retry_error
+                detail = retry_error.stderr or retry_error.message or str(retry_error)
+                if not is_ytdlp_requested_format_unavailable_error(detail) or index == len(retry_args_list) - 1:
+                    raise last_error
+            else:
+                break
     end_t = time.time()
     
     video = find_downloaded_video(work_dir)

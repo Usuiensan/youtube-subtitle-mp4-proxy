@@ -255,6 +255,32 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[1][calls[1].index("-f") + 1], app_main.yt_dlp_fallback_format_selector())
 
+    def test_fetch_video_info_retries_without_cookies_when_cookie_formats_are_missing(self) -> None:
+        import asyncio
+
+        calls: list[list[str]] = []
+
+        async def fake_run_command(args: list[str], raise_http: bool = True) -> str:
+            calls.append(args)
+            if "--cookies" in args:
+                raise app_main.CommandError(
+                    args,
+                    "ERROR: [youtube] jrAS3MDxCeA: Requested format is not available. Use --list-formats for a list of available formats",
+                )
+            return '{"id":"jrAS3MDxCeA","title":"sample","duration":105,"subtitles":{"fr":[{}]}}'
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cookies = Path(tmp) / "cookies.txt"
+            cookies.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+            with patch.object(app_main.settings, "ytdlp_cookies_file", str(cookies)), patch.object(
+                app_main.settings, "cache_hot_dir", Path(tmp) / "cache"
+            ), patch.object(app_main, "run_command", new=fake_run_command):
+                info = asyncio.run(app_main.fetch_video_info("jrAS3MDxCeA"))
+
+        self.assertEqual(info["id"], "jrAS3MDxCeA")
+        self.assertGreaterEqual(len(calls), 3)
+        self.assertNotIn("--cookies", calls[-1])
+
     def test_download_sources_retries_with_best_format_when_requested_format_missing(self) -> None:
         import asyncio
 
