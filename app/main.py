@@ -57,6 +57,7 @@ from app.input_patterns import LANG_RE, VIDEO_ID_RE, YOUTUBE_ID_RE
 from app.json_files import read_json_object
 from app.hls_playlist import rewrite_playlist
 from app.media_stream import file_iterator
+from app.progress import FfmpegProgressParser, YtdlpProgressParser
 from app.validation import (
     validate_discord_user_id,
     validate_input,
@@ -589,58 +590,6 @@ def estimate_job_completion_eta(job_id: str) -> int | None:
         if ahead_remaining is not None:
             queue_delay += ahead_remaining
     return max(0, own_remaining + queue_delay)
-
-
-class YtdlpProgressParser:
-    def __init__(self):
-        self.percent = 0.0
-        self.speed = ""
-        self.eta = ""
-        self.percent_re = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
-        self.speed_re = re.compile(r"at\s+(\S+)")
-        self.eta_re = re.compile(r"ETA\s+(\S+)")
-
-    def parse_line(self, line: str):
-        pct_match = self.percent_re.search(line)
-        if pct_match:
-            try:
-                self.percent = float(pct_match.group(1))
-            except ValueError:
-                pass
-        speed_match = self.speed_re.search(line)
-        if speed_match:
-            self.speed = speed_match.group(1)
-        eta_match = self.eta_re.search(line)
-        if eta_match:
-            self.eta = eta_match.group(1)
-
-
-class FfmpegProgressParser:
-    def __init__(self, duration_seconds: float):
-        self.duration = duration_seconds
-        self.out_time_seconds = 0.0
-        self.speed = 1.0
-        self.percent = 0.0
-
-    def parse_line(self, line: str):
-        if "=" in line:
-            parts = line.strip().split("=", 1)
-            if len(parts) == 2:
-                key, val = parts
-                if key == "out_time_us":
-                    try:
-                        us = int(val)
-                        self.out_time_seconds = us / 1000000.0
-                        if self.duration > 0:
-                            self.percent = min(100.0, (self.out_time_seconds / self.duration) * 100.0)
-                    except ValueError:
-                        pass
-                elif key == "speed":
-                    val_str = val.strip().replace("x", "")
-                    try:
-                        self.speed = float(val_str)
-                    except ValueError:
-                        pass
 
 
 def update_job_progress(
