@@ -17,6 +17,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections import deque
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import AsyncIterator
@@ -543,10 +544,6 @@ async def system_metrics_loop() -> None:
         await asyncio.sleep(max(1.0, settings.system_metrics_interval_seconds))
 
 
-app = FastAPI(title="YouTube subtitle burned MP4 proxy")
-
-
-@app.on_event("startup")
 async def start_system_metrics() -> None:
     global _metrics_task
     if not settings.system_metrics_enabled:
@@ -554,6 +551,32 @@ async def start_system_metrics() -> None:
     load_system_metrics_history()
     if _metrics_task is None or _metrics_task.done():
         _metrics_task = asyncio.create_task(system_metrics_loop())
+
+
+async def stop_system_metrics() -> None:
+    global _metrics_task
+    if _metrics_task is None or _metrics_task.done():
+        _metrics_task = None
+        return
+    _metrics_task.cancel()
+    try:
+        await _metrics_task
+    except asyncio.CancelledError:
+        pass
+    finally:
+        _metrics_task = None
+
+
+@asynccontextmanager
+async def app_lifespan(_app: FastAPI):
+    await start_system_metrics()
+    try:
+        yield
+    finally:
+        await stop_system_metrics()
+
+
+app = FastAPI(title="YouTube subtitle burned MP4 proxy", lifespan=app_lifespan)
 
 _global_encode_lock = asyncio.Semaphore(settings.ffmpeg_encode_concurrency)
 _inflight_lock = asyncio.Lock()
