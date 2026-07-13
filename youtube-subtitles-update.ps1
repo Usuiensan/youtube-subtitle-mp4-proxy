@@ -1,6 +1,5 @@
 # ローカルのmainをアーカイブ化して本番へ転送し、サーバー側の更新処理を実行します。
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-git pull
 $ErrorActionPreference = 'Stop'
 $repo = $PSScriptRoot
 $sha = (git -C $repo rev-parse HEAD).Trim()
