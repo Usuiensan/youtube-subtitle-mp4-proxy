@@ -867,6 +867,24 @@ def is_youtube_video_unavailable_error(message: str) -> bool:
     )
 
 
+def is_ytdlp_requested_format_unavailable_error(message: str) -> bool:
+    text = message.lower()
+    return "requested format is not available" in text
+
+
+def yt_dlp_download_format_selector() -> str:
+    return (
+        f"bv*[height<={settings.max_height}]+ba/"
+        f"b[height<={settings.max_height}]/"
+        "bv*+ba/"
+        "b"
+    )
+
+
+def yt_dlp_fallback_format_selector() -> str:
+    return "bestvideo*+bestaudio/best"
+
+
 def variant_id(
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
@@ -1736,6 +1754,8 @@ async def fetch_video_info(video_id: str) -> dict:
             + [
                 "--dump-single-json",
                 "--skip-download",
+                "-f",
+                yt_dlp_download_format_selector(),
                 "--no-warnings",
                 url,
             ],
@@ -2761,6 +2781,7 @@ async def run_yt_dlp_with_progress(args: list[str], job_id: str | None = None, c
     
     parser = YtdlpProgressParser()
     stdout_chunks = []
+    stderr_chunks = []
     
     async def read_stdout():
         while True:
@@ -2790,6 +2811,7 @@ async def run_yt_dlp_with_progress(args: list[str], job_id: str | None = None, c
             line = await process.stderr.readline()
             if not line:
                 break
+            stderr_chunks.append(line.decode("utf-8", errors="replace"))
             
     try:
         if job_id:
@@ -2806,7 +2828,8 @@ async def run_yt_dlp_with_progress(args: list[str], job_id: str | None = None, c
         raise HTTPException(status_code=504, detail="yt-dlp download timed out")
         
     if process.returncode != 0:
-        raise CommandError(args, f"yt-dlp failed with exit code {process.returncode}")
+        message = "".join(stderr_chunks).strip()
+        raise CommandError(args, message or f"yt-dlp failed with exit code {process.returncode}")
         
     return "".join(stdout_chunks)
 
@@ -3204,12 +3227,8 @@ async def download_sources(
         translation_engine=translation_engine,
     )
     source_lang = subtitle_selection["source_language"]
-    format_selector = (
-        f"bv*[height<={settings.max_height}]+ba/"
-        f"b[height<={settings.max_height}]/"
-        "bv*+ba/"
-        "b"
-    )
+    format_selector = yt_dlp_download_format_selector()
+    fallback_format_selector = yt_dlp_fallback_format_selector()
     
     start_t = time.time()
     dl_args = yt_dlp_base_args() + [
@@ -3229,10 +3248,30 @@ async def download_sources(
         "%(id)s.%(ext)s",
         url,
     ]
-    if job_id:
-        await run_yt_dlp_with_progress(dl_args, job_id=job_id, cwd=work_dir)
-    else:
-        await run_command(dl_args, cwd=work_dir)
+    try:
+        if job_id:
+            await run_yt_dlp_with_progress(dl_args, job_id=job_id, cwd=work_dir)
+        else:
+            await run_command(dl_args, cwd=work_dir)
+    except CommandError as error:
+        detail = error.stderr or error.message or str(error)
+        if not is_ytdlp_requested_format_unavailable_error(detail):
+            raise
+        retry_args = list(dl_args)
+        try:
+            retry_args[retry_args.index("-f") + 1] = fallback_format_selector
+        except (ValueError, IndexError):
+            raise error
+        if job_id:
+            update_job_progress(
+                job_id,
+                "download",
+                0.0,
+                details="指定フォーマットが利用できないため、best形式で再試行しています。",
+            )
+            await run_yt_dlp_with_progress(retry_args, job_id=job_id, cwd=work_dir)
+        else:
+            await run_command(retry_args, cwd=work_dir)
     end_t = time.time()
     
     video = find_downloaded_video(work_dir)

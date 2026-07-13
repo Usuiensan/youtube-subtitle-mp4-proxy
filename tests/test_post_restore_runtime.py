@@ -194,6 +194,62 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 500)
         self.assertIn("YTDLP_COOKIES_FILE が存在しません", raised.exception.detail)
 
+    def test_fetch_video_info_uses_explicit_format_selector(self) -> None:
+        import asyncio
+
+        calls: list[list[str]] = []
+
+        async def fake_run_command(args: list[str], raise_http: bool = True) -> str:
+            calls.append(args)
+            return '{"id":"eqiJPUAyLbo","title":"sample","duration":188,"subtitles":{"fr":[{}]}}'
+
+        with patch.object(app_main, "run_command", new=fake_run_command):
+            info = asyncio.run(app_main.fetch_video_info("eqiJPUAyLbo"))
+
+        self.assertEqual(info["id"], "eqiJPUAyLbo")
+        self.assertEqual(calls[0][calls[0].index("-f") + 1], app_main.yt_dlp_download_format_selector())
+
+    def test_download_sources_retries_with_best_format_when_requested_format_missing(self) -> None:
+        import asyncio
+
+        calls: list[list[str]] = []
+
+        async def fake_run_command(args: list[str], cwd: Path | None = None, raise_http: bool = True) -> str:
+            calls.append(args)
+            if len(calls) == 1:
+                raise app_main.CommandError(
+                    args,
+                    "ERROR: [youtube] jrAS3MDxCeA: Requested format is not available. Use --list-formats for a list of available formats",
+                )
+            assert cwd is not None
+            (cwd / "jrAS3MDxCeA.mkv").write_bytes(b"video")
+            (cwd / "jrAS3MDxCeA.fr.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nbonjour\n", encoding="utf-8")
+            return ""
+
+        async def fake_translate_subtitle_if_needed(**kwargs: object) -> tuple[Path, dict]:
+            return kwargs["subtitle"], {"requested_language": "fr", "source_language": "fr", "translated": False}  # type: ignore[index]
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            app_main, "run_command", new=fake_run_command
+        ), patch.object(
+            app_main, "translate_subtitle_if_needed", new=fake_translate_subtitle_if_needed
+        ):
+            video, original_subtitle, subtitle, meta = asyncio.run(
+                app_main.download_sources(
+                    "jrAS3MDxCeA",
+                    "fr",
+                    Path(tmp),
+                    {"id": "jrAS3MDxCeA", "subtitles": {"fr": [{}]}},
+                )
+            )
+
+        self.assertEqual(video.name, "jrAS3MDxCeA.mkv")
+        self.assertEqual(original_subtitle.name, "jrAS3MDxCeA.fr.srt")
+        self.assertEqual(subtitle.name, "jrAS3MDxCeA.fr.srt")
+        self.assertFalse(meta["translated"])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1][calls[1].index("-f") + 1], "bestvideo*+bestaudio/best")
+
     def test_unavailable_video_subtitle_api_returns_404(self) -> None:
         error = app_main.CommandError(["yt-dlp"], "ERROR: [youtube] I5e6ftNpGsU: This video is not available")
         with patch.object(app_main.settings, "discord_prepare_token", "token"), patch.object(
