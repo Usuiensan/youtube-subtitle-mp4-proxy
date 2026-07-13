@@ -230194,6 +230194,7 @@ async def notify_when_done(
 
 
                     allowed_mentions=discord.AllowedMentions(users=True),
+                    silent=True,
 
 
 
@@ -232242,6 +232243,7 @@ async def notify_when_done(
 
 
                 allowed_mentions=discord.AllowedMentions(users=True),
+                silent=True,
 
 
 
@@ -258102,6 +258104,7 @@ async def send_public_completion(interaction: discord.Interaction, content: str)
 
 
             allowed_mentions=discord.AllowedMentions(users=True),
+            silent=True,
 
 
 
@@ -370736,6 +370739,7 @@ async def reburn_command(
 
 
         allowed_mentions=discord.AllowedMentions(users=True),
+        silent=True,
 
 
 
