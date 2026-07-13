@@ -437,6 +437,34 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         interaction.followup.send.assert_awaited_once_with("done", ephemeral=True)
         clear_all.assert_awaited_once()
 
+    def test_notify_when_done_deletes_progress_message_after_completion(self) -> None:
+        import asyncio
+
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=123),
+            channel=SimpleNamespace(send=AsyncMock()),
+            channel_id=None,
+            client=SimpleNamespace(fetch_channel=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+            delete_original_response=AsyncMock(),
+        )
+        progress_message = SimpleNamespace(delete=AsyncMock(), edit=AsyncMock())
+        latest = {
+            "status": "ready",
+            "video_id": "dQw4w9WgXcQ",
+            "title": "sample",
+            "url": "http://127.0.0.1:8000/youtube/dQw4w9WgXcQ/ja",
+        }
+
+        with patch.object(bot_main, "fetch_job", new=AsyncMock(return_value=latest)), patch.object(
+            bot_main.asyncio, "sleep", new=AsyncMock()
+        ):
+            asyncio.run(bot_main.notify_when_done(interaction, "http://example.test/jobs/1", progress_message=progress_message))
+
+        progress_message.delete.assert_awaited_once()
+        interaction.delete_original_response.assert_awaited_once()
+        interaction.channel.send.assert_awaited_once()
+
 
 if __name__ == "__main__":
     unittest.main()

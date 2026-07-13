@@ -211995,7 +211995,7 @@ class SubtitleChoiceView(discord.ui.View):
 
 
 
-                await interaction.message.edit(view=self)
+                await interaction.message.delete()
 
 
 
@@ -216860,6 +216860,7 @@ class SubtitleChoiceView(discord.ui.View):
 
 
         content = status_message(body, interaction.user.id)
+        progress_message = None
 
 
 
@@ -219163,7 +219164,7 @@ class SubtitleChoiceView(discord.ui.View):
 
 
 
-            await interaction.followup.send(
+            progress_message = await interaction.followup.send(
 
 
 
@@ -220187,6 +220188,7 @@ class SubtitleChoiceView(discord.ui.View):
 
 
 
+                wait=True,
             )
 
 
@@ -220955,7 +220957,7 @@ class SubtitleChoiceView(discord.ui.View):
 
 
 
-            asyncio.create_task(notify_when_done(interaction, status_url))
+            asyncio.create_task(notify_when_done(interaction, status_url, progress_message=progress_message))
 
 
 
@@ -224028,6 +224030,7 @@ async def notify_when_done(
 
 
     status_url: str,
+    progress_message: discord.Message | None = None,
 
 
 
@@ -226332,6 +226335,17 @@ async def notify_when_done(
 
 
     reported_ready_items: set[str] = set()
+
+    async def delete_progress_message() -> None:
+        if progress_message is not None:
+            try:
+                await progress_message.delete()
+            except (discord.NotFound, discord.HTTPException):
+                pass
+        try:
+            await interaction.delete_original_response()
+        except (discord.NotFound, discord.HTTPException):
+            pass
 
 
 
@@ -248604,6 +248618,7 @@ async def notify_when_done(
 
 
             await send_notification(content, public=latest.get("status") == "ready")
+            await delete_progress_message()
 
 
 
@@ -251419,7 +251434,10 @@ async def notify_when_done(
 
 
 
-                    await interaction.edit_original_response(content=content)
+                    if progress_message is not None:
+                        await progress_message.edit(content=content)
+                    else:
+                        await interaction.edit_original_response(content=content)
 
 
 
@@ -351508,6 +351526,7 @@ async def prepare_command(
 
 
     content = status_message(body, interaction.user.id)
+    progress_message = None
 
 
 
@@ -353811,7 +353830,7 @@ async def prepare_command(
 
 
 
-        await interaction.followup.send(
+        progress_message = await interaction.followup.send(
 
 
 
@@ -354835,6 +354854,7 @@ async def prepare_command(
 
 
 
+            wait=True,
         )
 
 
@@ -355859,7 +355879,7 @@ async def prepare_command(
 
 
 
-        asyncio.create_task(notify_when_done(interaction, status_url))
+        asyncio.create_task(notify_when_done(interaction, status_url, progress_message=progress_message))
 
 
 
