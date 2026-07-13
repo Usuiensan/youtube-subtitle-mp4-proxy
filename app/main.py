@@ -40,6 +40,7 @@ from app.translation import (
     translate_srt_with_local_worker,
 )
 from app.metrics import MetricsManager
+from app.cache_layout import CacheLayout
 from app.validation import (
     validate_discord_user_id,
     validate_input,
@@ -226,6 +227,11 @@ _metrics_task: asyncio.Task | None = None
 
 
 metrics_manager = MetricsManager(settings.cache_hot_dir / "metrics.json")
+
+
+def current_cache_layout() -> CacheLayout:
+    """Resolve layout from live settings so tests and runtime overrides work."""
+    return CacheLayout(settings.cache_hot_dir, settings.cache_archive_dir)
 
 
 import ctypes
@@ -904,41 +910,39 @@ def translation_profile_id() -> str:
 
 
 def entry_dir(key: str) -> Path:
-    return settings.cache_hot_dir / key
+    return current_cache_layout().entry_dir(key)
 
 
 def archive_entry_dir(key: str) -> Path | None:
-    if settings.cache_archive_dir is None:
-        return None
-    return settings.cache_archive_dir / key
+    return current_cache_layout().archive_entry_dir(key)
 
 
 def output_path(key: str) -> Path:
-    return entry_dir(key) / "output.mp4"
+    return current_cache_layout().output_path(key)
 
 
 def hls_dir(key: str) -> Path:
-    return entry_dir(key) / "hls"
+    return current_cache_layout().hls_dir(key)
 
 
 def hls_playlist_path(key: str) -> Path:
-    return hls_dir(key) / "index.m3u8"
+    return current_cache_layout().hls_playlist_path(key)
 
 
 def meta_path(key: str) -> Path:
-    return entry_dir(key) / "meta.json"
+    return current_cache_layout().meta_path(key)
 
 
 def source_dir(key: str) -> Path:
-    return entry_dir(key) / "source"
+    return current_cache_layout().source_dir(key)
 
 
 def source_meta_path(key: str) -> Path:
-    return entry_dir(key) / "source.json"
+    return current_cache_layout().source_meta_path(key)
 
 
 def translation_meta_path(key: str) -> Path:
-    return entry_dir(key) / "source" / "translation.json"
+    return current_cache_layout().translation_meta_path(key)
 
 
 def read_subtitle_meta(key: str) -> dict:
