@@ -2,7 +2,7 @@
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $ErrorActionPreference = 'Stop'
-$repo = Split-Path -Parent $PSScriptRoot
+$repo = $PSScriptRoot
 $sha = (git -C $repo rev-parse HEAD).Trim()
 $archive = Join-Path $env:TEMP "youtube-proxy-$sha.tar.gz"
 
