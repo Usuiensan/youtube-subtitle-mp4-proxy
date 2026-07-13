@@ -82,6 +82,11 @@ from app.youtube_inputs import (
     manual_video_tracks,
     parse_youtube_url,
 )
+from app.ytdlp_args import (
+    args_without_cookies,
+    download_format_selector,
+    fallback_format_selector,
+)
 
 
 KEY_RE = re.compile(r"^[A-Za-z0-9_-]{11}(?:_[A-Za-z0-9_-]{2,32})+_[a-f0-9]{8}$")
@@ -783,30 +788,15 @@ def queue_counts_for_job(job_id: str) -> dict[str, int]:
 
 
 def yt_dlp_download_format_selector() -> str:
-    return (
-        f"bv*[height<={settings.max_height}]+ba/"
-        f"b[height<={settings.max_height}]/"
-        "bv*+ba/"
-        "b"
-    )
+    return download_format_selector(settings.max_height)
 
 
 def yt_dlp_fallback_format_selector() -> str:
-    return "bestvideo*+bestaudio/best"
+    return fallback_format_selector()
 
 
 def yt_dlp_args_without_cookies(args: list[str]) -> list[str]:
-    stripped: list[str] = []
-    skip_next = False
-    for arg in args:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == "--cookies":
-            skip_next = True
-            continue
-        stripped.append(arg)
-    return stripped
+    return args_without_cookies(args)
 
 
 def variant_id(
