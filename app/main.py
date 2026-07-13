@@ -10,6 +10,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -1533,7 +1534,11 @@ def ytdlp_cookies_file_for_command() -> str | None:
         )
 
     cookie_dir = settings.cache_hot_dir / ".ytdlp-cookies"
-    cookie_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        cookie_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        cookie_dir = Path(tempfile.gettempdir()) / "youtube-mp4-proxy-ytdlp-cookies"
+        cookie_dir.mkdir(parents=True, exist_ok=True)
     cleanup_ytdlp_cookie_copies(cookie_dir)
     command_cookies_file = cookie_dir / f"cookies-{uuid.uuid4().hex}.txt"
     shutil.copy2(cookies_file, command_cookies_file)
