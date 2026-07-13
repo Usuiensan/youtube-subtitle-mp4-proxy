@@ -41,3 +41,8 @@ def is_youtube_video_unavailable_error(message: str) -> bool:
 
 def is_ytdlp_requested_format_unavailable_error(message: str) -> bool:
     return "requested format is not available" in message.lower()
+
+
+def is_ytdlp_rate_limited_error(message: str) -> bool:
+    text = message.lower()
+    return "429" in text or "too many requests" in text

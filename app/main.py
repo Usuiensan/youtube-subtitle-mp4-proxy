@@ -48,6 +48,7 @@ from app.config_files import (
 from app.command_errors import (
     CommandError,
     is_ytdlp_requested_format_unavailable_error,
+    is_ytdlp_rate_limited_error,
     is_youtube_video_unavailable_error,
 )
 from app.command_runner import run_command as run_subprocess_command
@@ -1484,8 +1485,17 @@ async def run_command(
 ) -> str:
     if is_yt_dlp_command(args):
         async with _ytdlp_semaphore:
-            await wait_for_ytdlp_rate_limit()
-            return await run_command_unlimited(args, cwd=cwd, raise_http=raise_http)
+            for attempt in range(3):
+                await wait_for_ytdlp_rate_limit()
+                try:
+                    return await run_command_unlimited(args, cwd=cwd, raise_http=raise_http)
+                except CommandError as error:
+                    detail = error.stderr or error.message or str(error)
+                    if not is_ytdlp_rate_limited_error(detail) or attempt == 2:
+                        raise
+                    backoff = 60 * (attempt + 1)
+                    print(f"yt-dlp rate limited; retrying after {backoff}s", flush=True)
+                    await asyncio.sleep(backoff)
     return await run_command_unlimited(args, cwd=cwd, raise_http=raise_http)
 
 
