@@ -22,6 +22,7 @@
 | `app.media_stream` | ローカルメディアの非同期チャンク読み出し | ファイル |
 | `app.hls_playlist` | HLS プレイリストの URL 書き換え | なし |
 | `app.config_files` | `.env` とプロンプトファイルの読み込み | ファイル |
+| `app.settings` | 環境変数からアプリ設定を組み立てる | なし（設定ファイルは補助モジュール経由） |
 | `app.command_errors` | 外部コマンドのエラー型・分類 | なし |
 | `app.command_runner` | 非同期 subprocess の起動・timeout・終了処理 | プロセス |
 | `app.ytdlp_args` | yt-dlp の引数生成・cookies 引数除去 | なし |
