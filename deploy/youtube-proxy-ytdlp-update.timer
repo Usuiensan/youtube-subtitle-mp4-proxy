@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic yt-dlp update for YouTube Proxy
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

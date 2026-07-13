@@ -1,0 +1,24 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+APP_DIR="/opt/youtube-mp4-proxy"
+PYTHON="$APP_DIR/.venv/bin/python"
+LOCK="/run/lock/youtube-proxy-ytdlp-update.lock"
+
+exec 9>"$LOCK"
+flock -n 9 || exit 0
+
+old_version=$("$PYTHON" -m yt_dlp --version)
+"$PYTHON" -m pip install --disable-pip-version-check --upgrade yt-dlp
+new_version=$("$PYTHON" -m yt_dlp --version)
+
+if [[ "$old_version" == "$new_version" ]]; then
+    echo "yt-dlp unchanged: $new_version"
+    exit 0
+fi
+
+echo "yt-dlp updated: $old_version -> $new_version"
+systemctl restart youtube-mp4-proxy
+systemctl restart youtube-mp4-proxy-discord
+systemctl is-active --quiet youtube-mp4-proxy
+systemctl is-active --quiet youtube-mp4-proxy-discord

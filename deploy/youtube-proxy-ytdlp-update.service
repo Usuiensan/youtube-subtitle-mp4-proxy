@@ -1,0 +1,9 @@
+[Unit]
+Description=Update yt-dlp for YouTube Proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/youtube-proxy-ytdlp-update
