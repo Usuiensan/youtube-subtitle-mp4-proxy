@@ -49,6 +49,11 @@ from app.config_files import (
     load_env_file,
     read_text_file,
 )
+from app.command_errors import (
+    CommandError,
+    is_ytdlp_requested_format_unavailable_error,
+    is_youtube_video_unavailable_error,
+)
 from app.http_range import parse_range
 from app.input_patterns import LANG_RE, VIDEO_ID_RE, YOUTUBE_ID_RE
 from app.json_files import read_json_object
@@ -774,47 +779,6 @@ def queue_counts_for_job(job_id: str) -> dict[str, int]:
         if phase_index < 2:
             counts["encode"] += 1
     return counts
-
-
-class CommandError(Exception):
-    def __init__(self, args: list[str], message: str) -> None:
-        super().__init__(message)
-        self.args_list = args
-        self.message = message
-        self.stderr = message
-
-
-def is_youtube_video_unavailable_error(message: str) -> bool:
-    text = message.lower()
-    return any(
-        marker in text
-        for marker in (
-            "confirm you're not a bot",
-            "content isn't available",
-            "content is not available",
-            "cookies",
-            "country",
-            "geo-restricted",
-            "not available in your country",
-            "please sign in",
-            "po token",
-            "sign in to confirm your age",
-            "sign in to confirm you’re not a bot",
-            "this video may be inappropriate",
-            "this video is not available",
-            "video unavailable",
-            "private video",
-            "this video is private",
-            "has been removed",
-            "video has been removed",
-            "this video has been removed",
-        )
-    )
-
-
-def is_ytdlp_requested_format_unavailable_error(message: str) -> bool:
-    text = message.lower()
-    return "requested format is not available" in text
 
 
 def yt_dlp_download_format_selector() -> str:
