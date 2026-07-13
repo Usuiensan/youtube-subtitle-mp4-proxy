@@ -1510,13 +1510,18 @@ def validate_translation_variant(source_lang: str, translation_engine: str) -> s
 def yt_dlp_base_args() -> list[str]:
     args = [yt_dlp_executable(), "--ignore-config"]
     if settings.ytdlp_cookies_file:
+        configured_cookies_file = settings.ytdlp_cookies_file
         cookies_file = Path(settings.ytdlp_cookies_file).expanduser()
+        if not cookies_file.exists() and configured_cookies_file == "/etc/youtube-mp4-cookies.txt":
+            default_cookies_file = Path("/etc/default/youtube-mp4-cookies.txt")
+            if default_cookies_file.exists():
+                cookies_file = default_cookies_file
         if not cookies_file.exists():
             raise HTTPException(
                 status_code=500,
                 detail=f"YTDLP_COOKIES_FILE が存在しません: {cookies_file}",
             )
-        args.extend(["--cookies", settings.ytdlp_cookies_file])
+        args.extend(["--cookies", str(cookies_file)])
     if settings.ytdlp_proxy:
         args.extend(["--proxy", settings.ytdlp_proxy])
     if settings.ytdlp_extra_args:

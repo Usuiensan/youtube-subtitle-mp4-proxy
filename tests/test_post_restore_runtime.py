@@ -194,6 +194,26 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 500)
         self.assertIn("YTDLP_COOKIES_FILE が存在しません", raised.exception.detail)
 
+    def test_default_cookies_path_falls_back_to_etc_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            default_file = Path(tmp) / "youtube-mp4-cookies.txt"
+            default_file.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+            original_path = app_main.Path
+
+            def fake_path(value: object = ".") -> Path:
+                if value == "/etc/youtube-mp4-cookies.txt":
+                    return Path(tmp) / "missing.txt"
+                if value == "/etc/default/youtube-mp4-cookies.txt":
+                    return default_file
+                return original_path(value)
+
+            with patch.object(app_main.settings, "ytdlp_cookies_file", "/etc/youtube-mp4-cookies.txt"), patch.object(
+                app_main, "Path", side_effect=fake_path
+            ):
+                args = app_main.yt_dlp_base_args()
+
+        self.assertIn(str(default_file), args)
+
     def test_fetch_video_info_uses_explicit_format_selector(self) -> None:
         import asyncio
 
