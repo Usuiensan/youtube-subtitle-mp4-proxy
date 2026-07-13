@@ -42,6 +42,12 @@ from app.translation import (
 )
 from app.metrics import MetricsManager
 from app.cache_layout import CacheLayout
+from app.config_files import (
+    default_translation_prompt_file,
+    default_translategemma_prompt_file,
+    load_env_file,
+    read_text_file,
+)
 from app.http_range import parse_range
 from app.hls_playlist import rewrite_playlist
 from app.media_stream import file_iterator
@@ -74,40 +80,6 @@ LANG_RE = re.compile(r"^[A-Za-z0-9_-]{2,64}$")
 KEY_RE = re.compile(r"^[A-Za-z0-9_-]{11}(?:_[A-Za-z0-9_-]{2,32})+_[a-f0-9]{8}$")
 YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{10,}$")
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env.local"
-
-
-def load_env_file(path: Path) -> None:
-    if not path.exists():
-        return
-    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = value
-
-
-def read_text_file(path: str | None) -> str:
-    if not path:
-        return ""
-    try:
-        file_path = Path(path)
-        if not file_path.exists():
-            return ""
-        return file_path.read_text(encoding="utf-8").strip()
-    except Exception:
-        return ""
-
-
-def default_translation_prompt_file() -> Path:
-    return Path(__file__).resolve().parent.parent / "prompts" / "translation-prompt.txt"
-
-
-def default_translategemma_prompt_file() -> Path:
-    return Path(__file__).resolve().parent.parent / "prompts" / "translategemma-prompt.txt"
 
 
 load_env_file(ENV_FILE)
