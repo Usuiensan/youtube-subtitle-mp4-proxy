@@ -310572,7 +310572,7 @@ class YoutubeProxyBot(discord.Client):
 
 
 
-            await message.reply("DISCORD_PREPARE_TOKEN が未設定です。", mention_author=False)
+            await message.reply("DISCORD_PREPARE_TOKEN が未設定です。", mention_author=False, silent=True)
 
 
 
@@ -311852,7 +311852,7 @@ class YoutubeProxyBot(discord.Client):
 
 
 
-            await message.reply(subtitle_options_error_message(error), mention_author=False)
+            await message.reply(subtitle_options_error_message(error), mention_author=False, silent=True)
 
 
 
@@ -315693,6 +315693,7 @@ class YoutubeProxyBot(discord.Client):
 
 
                 mention_author=False,
+                silent=True,
 
 
 
@@ -321069,6 +321070,7 @@ class YoutubeProxyBot(discord.Client):
 
 
             mention_author=False,
+            silent=True,
 
 
 
