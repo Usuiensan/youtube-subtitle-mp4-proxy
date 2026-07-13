@@ -25,3 +25,13 @@ def test_run_command_maps_failures_and_timeout() -> None:
     with pytest.raises(HTTPException) as timeout_error:
         asyncio.run(run_command([sys.executable, "-c", "import time; time.sleep(2)"], timeout_seconds=1))
     assert timeout_error.value.status_code == 504
+
+    with pytest.raises(CommandError) as timeout_command_error:
+        asyncio.run(
+            run_command(
+                [sys.executable, "-c", "import time; time.sleep(2)"],
+                timeout_seconds=1,
+                raise_http=False,
+            )
+        )
+    assert timeout_command_error.value.message == "Command timed out"

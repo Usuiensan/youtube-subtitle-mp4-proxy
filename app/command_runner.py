@@ -30,6 +30,8 @@ async def run_command(
     except asyncio.TimeoutError:
         process.kill()
         await process.communicate()
+        if not raise_http:
+            raise CommandError(args, "Command timed out")
         raise HTTPException(status_code=504, detail="Conversion timed out")
 
     if process.returncode != 0:
