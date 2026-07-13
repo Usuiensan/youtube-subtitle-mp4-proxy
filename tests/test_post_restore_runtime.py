@@ -209,6 +209,27 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         self.assertEqual(info["id"], "eqiJPUAyLbo")
         self.assertEqual(calls[0][calls[0].index("-f") + 1], app_main.yt_dlp_download_format_selector())
 
+    def test_fetch_video_info_retries_with_best_format_when_requested_format_missing(self) -> None:
+        import asyncio
+
+        calls: list[list[str]] = []
+
+        async def fake_run_command(args: list[str], raise_http: bool = True) -> str:
+            calls.append(args)
+            if len(calls) == 1:
+                raise app_main.CommandError(
+                    args,
+                    "ERROR: [youtube] jrAS3MDxCeA: Requested format is not available. Use --list-formats for a list of available formats",
+                )
+            return '{"id":"jrAS3MDxCeA","title":"sample","duration":105,"subtitles":{"fr":[{}]}}'
+
+        with patch.object(app_main, "run_command", new=fake_run_command):
+            info = asyncio.run(app_main.fetch_video_info("jrAS3MDxCeA"))
+
+        self.assertEqual(info["id"], "jrAS3MDxCeA")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1][calls[1].index("-f") + 1], app_main.yt_dlp_fallback_format_selector())
+
     def test_download_sources_retries_with_best_format_when_requested_format_missing(self) -> None:
         import asyncio
 

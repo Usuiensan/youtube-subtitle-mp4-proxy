@@ -1748,21 +1748,38 @@ async def run_command_unlimited(
 
 async def fetch_video_info(video_id: str) -> dict:
     url = f"https://www.youtube.com/watch?v={video_id}"
+    base_args = yt_dlp_base_args()
+    info_args = base_args + [
+        "--dump-single-json",
+        "--skip-download",
+        "-f",
+        yt_dlp_download_format_selector(),
+        "--no-warnings",
+        url,
+    ]
     try:
-        raw = await run_command(
-            yt_dlp_base_args()
-            + [
-                "--dump-single-json",
-                "--skip-download",
-                "-f",
-                yt_dlp_download_format_selector(),
-                "--no-warnings",
-                url,
-            ],
-            raise_http=False,
-        )
+        raw = await run_command(info_args, raise_http=False)
     except CommandError as error:
         detail = error.stderr or error.message or str(error)
+        if is_ytdlp_requested_format_unavailable_error(detail):
+            retry_args = list(info_args)
+            try:
+                retry_args[retry_args.index("-f") + 1] = yt_dlp_fallback_format_selector()
+            except (ValueError, IndexError):
+                retry_args = base_args + [
+                    "--dump-single-json",
+                    "--skip-download",
+                    "--no-warnings",
+                    url,
+                ]
+            try:
+                raw = await run_command(retry_args, raise_http=False)
+            except CommandError as retry_error:
+                detail = retry_error.stderr or retry_error.message or str(retry_error)
+            else:
+                info = json.loads(raw)
+                await enrich_video_info_titles(info, video_id)
+                return info
         if is_youtube_video_unavailable_error(detail):
             hint = (
                 "この動画は利用できません。削除、非公開、地域制限、年齢確認、bot判定、"
