@@ -1507,21 +1507,48 @@ def validate_translation_variant(source_lang: str, translation_engine: str) -> s
     return normalize_translation_engine(translation_engine)
 
 
+def cleanup_ytdlp_cookie_copies(cookie_dir: Path) -> None:
+    try:
+        now = time.time()
+        for path in cookie_dir.glob("cookies-*.txt"):
+            if now - path.stat().st_mtime > 86400:
+                path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def ytdlp_cookies_file_for_command() -> str | None:
+    if not settings.ytdlp_cookies_file:
+        return None
+    configured_cookies_file = settings.ytdlp_cookies_file
+    cookies_file = Path(configured_cookies_file).expanduser()
+    if not cookies_file.exists() and configured_cookies_file == "/etc/youtube-mp4-cookies.txt":
+        default_cookies_file = Path("/etc/default/youtube-mp4-cookies.txt")
+        if default_cookies_file.exists():
+            cookies_file = default_cookies_file
+    if not cookies_file.exists():
+        raise HTTPException(
+            status_code=500,
+            detail=f"YTDLP_COOKIES_FILE が存在しません: {cookies_file}",
+        )
+
+    cookie_dir = settings.cache_hot_dir / ".ytdlp-cookies"
+    cookie_dir.mkdir(parents=True, exist_ok=True)
+    cleanup_ytdlp_cookie_copies(cookie_dir)
+    command_cookies_file = cookie_dir / f"cookies-{uuid.uuid4().hex}.txt"
+    shutil.copy2(cookies_file, command_cookies_file)
+    try:
+        command_cookies_file.chmod(0o600)
+    except Exception:
+        pass
+    return str(command_cookies_file)
+
+
 def yt_dlp_base_args() -> list[str]:
     args = [yt_dlp_executable(), "--ignore-config"]
-    if settings.ytdlp_cookies_file:
-        configured_cookies_file = settings.ytdlp_cookies_file
-        cookies_file = Path(settings.ytdlp_cookies_file).expanduser()
-        if not cookies_file.exists() and configured_cookies_file == "/etc/youtube-mp4-cookies.txt":
-            default_cookies_file = Path("/etc/default/youtube-mp4-cookies.txt")
-            if default_cookies_file.exists():
-                cookies_file = default_cookies_file
-        if not cookies_file.exists():
-            raise HTTPException(
-                status_code=500,
-                detail=f"YTDLP_COOKIES_FILE が存在しません: {cookies_file}",
-            )
-        args.extend(["--cookies", str(cookies_file)])
+    cookies_file = ytdlp_cookies_file_for_command()
+    if cookies_file:
+        args.extend(["--cookies", cookies_file])
     if settings.ytdlp_proxy:
         args.extend(["--proxy", settings.ytdlp_proxy])
     if settings.ytdlp_extra_args:

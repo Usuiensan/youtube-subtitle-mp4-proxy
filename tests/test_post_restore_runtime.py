@@ -208,11 +208,16 @@ class PostRestoreRuntimeTests(unittest.TestCase):
                 return original_path(value)
 
             with patch.object(app_main.settings, "ytdlp_cookies_file", "/etc/youtube-mp4-cookies.txt"), patch.object(
+                app_main.settings, "cache_hot_dir", Path(tmp) / "cache"
+            ), patch.object(
                 app_main, "Path", side_effect=fake_path
             ):
                 args = app_main.yt_dlp_base_args()
 
-        self.assertIn(str(default_file), args)
+            copied_file = Path(args[args.index("--cookies") + 1])
+            self.assertTrue(copied_file.exists())
+            self.assertEqual(copied_file.read_text(encoding="utf-8"), default_file.read_text(encoding="utf-8"))
+            self.assertIn(".ytdlp-cookies", str(copied_file))
 
     def test_fetch_video_info_uses_explicit_format_selector(self) -> None:
         import asyncio
