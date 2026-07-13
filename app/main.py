@@ -43,6 +43,7 @@ from app.translation import (
 from app.metrics import MetricsManager
 from app.cache_layout import CacheLayout
 from app.http_range import parse_range
+from app.hls_playlist import rewrite_playlist
 from app.media_stream import file_iterator
 from app.validation import (
     validate_discord_user_id,
@@ -4981,13 +4982,7 @@ def mp4_response(request: Request, path: Path) -> Response:
 def hls_playlist_response(request: Request, key: str, playlist: Path) -> Response:
     base_url = str(request.base_url).rstrip("/")
     lines = playlist.read_text(encoding="utf-8").splitlines()
-    rewritten = []
-    for line in lines:
-        if not line or line.startswith("#") or "://" in line:
-            rewritten.append(line)
-        else:
-            rewritten.append(f"{base_url}/hls/{key}/{line}")
-    body = "\n".join(rewritten) + "\n"
+    body = rewrite_playlist(lines, base_url, key)
     return PlainTextResponse(
         body,
         media_type="application/vnd.apple.mpegurl",
