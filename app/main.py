@@ -1933,12 +1933,47 @@ def manual_subtitle_candidates(info: dict, requested_lang: str) -> list[dict]:
     return candidates
 
 
+def subtitle_tracks(info: dict) -> dict[str, str]:
+    """Return available subtitle languages and their yt-dlp source kind."""
+    tracks: dict[str, str] = {}
+    for key, source_kind in (("subtitles", "manual"), ("automatic_captions", "automatic")):
+        values = info.get(key) or {}
+        if not isinstance(values, dict):
+            continue
+        for lang in values:
+            language = str(lang)
+            tracks.setdefault(language, source_kind)
+    return tracks
+
+
+def subtitle_candidates(info: dict, requested_lang: str) -> list[dict]:
+    tracks = subtitle_tracks(info)
+    candidates = []
+    requested_normalized = normalize_lang(requested_lang)
+    for lang, source_kind in tracks.items():
+        if normalize_lang(lang) == requested_normalized:
+            continue
+        candidates.append(
+            {
+                "language": lang,
+                "name": get_lang_name_ja(lang),
+                "name_en": get_lang_name_en(lang),
+                "source_kind": source_kind,
+            }
+        )
+    return candidates
+
+
 def subtitle_choice_body(info: dict, requested_lang: str) -> dict:
     manual_subtitles = info.get("subtitles") or {}
     if not isinstance(manual_subtitles, dict):
         manual_subtitles = {}
+    automatic_subtitles = info.get("automatic_captions") or {}
+    if not isinstance(automatic_subtitles, dict):
+        automatic_subtitles = {}
+    available_subtitles = {**automatic_subtitles, **manual_subtitles}
 
-    requested = subtitle_lang_available(manual_subtitles, requested_lang)
+    requested = subtitle_lang_available(available_subtitles, requested_lang)
     body = {
         "video_id": info.get("id"),
         "title": info.get("title"),
@@ -1954,13 +1989,13 @@ def subtitle_choice_body(info: dict, requested_lang: str) -> dict:
                     "requested_language": requested_lang,
                     "source_language": requested,
                     "translated": False,
-                    "source_kind": "manual",
+                    "source_kind": "automatic" if requested not in manual_subtitles else "manual",
                 },
             }
         )
         return body
 
-    candidates = manual_subtitle_candidates(info, requested_lang)
+    candidates = subtitle_candidates(info, requested_lang)
     body.update(
         {
             "requires_choice": settings.translation_enabled and bool(candidates),
@@ -1971,7 +2006,7 @@ def subtitle_choice_body(info: dict, requested_lang: str) -> dict:
     if requested_lang != "ja" or not settings.translation_enabled:
         body["error"] = f"No subtitle found for language: {requested_lang}"
     elif not candidates:
-        body["error"] = "No translatable manual subtitle found"
+        body["error"] = "No subtitle found in any language"
     return body
 
 
@@ -2027,27 +2062,31 @@ def select_subtitle_language(
     if not isinstance(manual_subtitles, dict):
         manual_subtitles = {}
 
-    requested = subtitle_lang_available(manual_subtitles, requested_lang)
+    automatic_subtitles = info.get("automatic_captions") or {}
+    if not isinstance(automatic_subtitles, dict):
+        automatic_subtitles = {}
+    available_subtitles = {**automatic_subtitles, **manual_subtitles}
+    requested = subtitle_lang_available(available_subtitles, requested_lang)
     if requested:
         return {
             "requested_language": requested_lang,
             "source_language": requested,
             "translated": False,
-            "source_kind": "manual",
+            "source_kind": "automatic" if requested not in manual_subtitles else "manual",
         }
 
     if requested_lang != "ja" or not settings.translation_enabled:
         raise HTTPException(status_code=422, detail=f"No subtitle found for language: {requested_lang}")
 
     if source_lang:
-        selected = subtitle_lang_available(manual_subtitles, source_lang)
+        selected = subtitle_lang_available(available_subtitles, source_lang)
         if not selected:
             raise HTTPException(status_code=422, detail=f"No subtitle found for source language: {source_lang}")
         return {
             "requested_language": requested_lang,
             "source_language": selected,
             "translated": True,
-            "source_kind": "manual",
+            "source_kind": "automatic" if selected not in manual_subtitles else "manual",
             "translation_engine_requested": normalize_translation_engine(translation_engine),
         }
 
@@ -2064,17 +2103,17 @@ def select_subtitle_language(
         if normalized in seen:
             continue
         seen.add(normalized)
-        selected = subtitle_lang_available(manual_subtitles, lang)
+        selected = subtitle_lang_available(available_subtitles, lang)
         if selected:
             return {
                 "requested_language": requested_lang,
                 "source_language": selected,
                 "translated": True,
-                "source_kind": "manual",
+                "source_kind": "automatic" if selected not in manual_subtitles else "manual",
                 "translation_engine_requested": normalize_translation_engine(translation_engine),
             }
 
-    raise HTTPException(status_code=422, detail="No translatable manual subtitle found")
+    raise HTTPException(status_code=422, detail="No subtitle found in any language")
 
 
 def escape_filter_value(value: str) -> str:
@@ -3005,13 +3044,14 @@ async def download_sources(
         translation_engine=translation_engine,
     )
     source_lang = subtitle_selection["source_language"]
+    subtitle_flag = "--write-auto-subs" if subtitle_selection.get("source_kind") == "automatic" else "--write-subs"
     format_selector = yt_dlp_download_format_selector()
     fallback_format_selector = yt_dlp_fallback_format_selector()
     
     start_t = time.time()
     dl_args = yt_dlp_base_args() + [
         "--no-playlist",
-        "--write-subs",
+        subtitle_flag,
         "--sub-langs",
         source_lang,
         "--convert-subs",
@@ -3097,11 +3137,12 @@ async def download_subtitle_only(
         translation_engine=translation_engine,
     )
     source_lang = subtitle_selection["source_language"]
+    subtitle_flag = "--write-auto-subs" if subtitle_selection.get("source_kind") == "automatic" else "--write-subs"
     start_t = time.time()
     dl_args = yt_dlp_base_args() + [
         "--no-playlist",
         "--skip-download",
-        "--write-subs",
+        subtitle_flag,
         "--sub-langs",
         source_lang,
         "--convert-subs",
