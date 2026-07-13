@@ -40,6 +40,7 @@ from app.translation import (
     save_srt,
     translate_srt_with_local_worker,
 )
+from app.translation_profiles import profile_labels, profile_models
 from app.metrics import MetricsManager
 from app.cache_layout import CacheLayout
 from app.config_files import (
@@ -133,29 +134,9 @@ class Settings:
     local_llm_engine = os.getenv("LOCAL_LLM_ENGINE", "openai_compatible")
     local_llm_model = os.getenv("LOCAL_LLM_MODEL", "qwen3:4b-instruct")
     translation_default_profile = os.getenv("TRANSLATION_DEFAULT_PROFILE", os.getenv("TRANSLATION_PROVIDER", "google_cloud")).strip().lower()
-    local_llm_profile_models = {
-        "qwen3_4b_instruct": os.getenv("LOCAL_LLM_MODEL_QWEN3_4B_INSTRUCT", os.getenv("REMOTE_LLM_MODEL", "qwen3:4b-instruct")).strip(),
-        "qwen3_8b": os.getenv("LOCAL_LLM_MODEL_QWEN3_8B", "qwen3:8b").strip(),
-        "qwen3_14b": os.getenv("LOCAL_LLM_MODEL_QWEN3_14B", "qwen3:14b").strip(),
-        "aya_expanse_8b": os.getenv("LOCAL_LLM_MODEL_AYA_EXPANSE_8B", "aya-expanse:8b").strip(),
-        "gemma3_12b": os.getenv("LOCAL_LLM_MODEL_GEMMA3_12B", "gemma3:12b").strip(),
-        "translategemma_12b": os.getenv("LOCAL_LLM_MODEL_TRANSLATEGEMMA_12B", "translategemma:12b").strip(),
-        "gemini_2_5_flash": os.getenv("LOCAL_LLM_MODEL_GEMINI_2_5_FLASH", "gemini-2.5-flash").strip(),
-        # Legacy aliases kept for compatibility with older settings.
-        "local_llm": os.getenv("LOCAL_LLM_MODEL", "qwen3:4b-instruct").strip(),
-        "remote_llm": os.getenv("REMOTE_LLM_MODEL", os.getenv("LOCAL_LLM_MODEL", "qwen3:4b-instruct")).strip(),
-    }
-    local_llm_profile_labels = {
-        "qwen3_4b_instruct": "Qwen 3 4B Instruct",
-        "qwen3_8b": "Qwen 3 8B",
-        "qwen3_14b": "Qwen 3 14B",
-        "aya_expanse_8b": "Aya Expanse 8B",
-        "gemma3_12b": "Gemma 3 12B",
-        "translategemma_12b": "TranslateGemma 12B",
-        "gemini_2_5_flash": "Gemini Flash",
-        "local_llm": os.getenv("LOCAL_LLM_LABEL", "Default LLM"),
-        "remote_llm": os.getenv("REMOTE_LLM_LABEL", "Remote LLM"),
-    }
+    # Legacy aliases are retained by profile_models for compatibility.
+    local_llm_profile_models = profile_models(os.getenv)
+    local_llm_profile_labels = profile_labels(os.getenv)
     local_llm_timeout_seconds = int(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "300"))
     remote_llm_endpoint = os.getenv("REMOTE_LLM_ENDPOINT", os.getenv("LOCAL_LLM_ENDPOINT", "")).strip()
     remote_llm_health_url = os.getenv("REMOTE_LLM_HEALTH_URL", "").strip()
