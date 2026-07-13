@@ -43,6 +43,7 @@ from app.translation import (
 from app.metrics import MetricsManager
 from app.cache_layout import CacheLayout
 from app.http_range import parse_range
+from app.media_stream import file_iterator
 from app.validation import (
     validate_discord_user_id,
     validate_input,
@@ -4950,18 +4951,6 @@ async def enqueue_prepare_job(
             )
         )
         return 202, job_response_body(job_id, _prepare_jobs[job_id], request)
-
-
-async def file_iterator(path: Path, start: int, end: int) -> AsyncIterator[bytes]:
-    with path.open("rb") as file:
-        file.seek(start)
-        remaining = end - start + 1
-        while remaining > 0:
-            chunk = file.read(min(1024 * 1024, remaining))
-            if not chunk:
-                break
-            remaining -= len(chunk)
-            yield chunk
 
 
 def mp4_response(request: Request, path: Path) -> Response:
