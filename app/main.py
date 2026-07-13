@@ -1949,12 +1949,17 @@ def manual_subtitle_candidates(info: dict, requested_lang: str) -> list[dict]:
 def subtitle_tracks(info: dict) -> dict[str, str]:
     """Return available subtitle languages and their yt-dlp source kind."""
     tracks: dict[str, str] = {}
+    original_language = str(info.get("language") or "").strip().lower()
     for key, source_kind in (("subtitles", "manual"), ("automatic_captions", "automatic")):
         values = info.get(key) or {}
         if not isinstance(values, dict):
             continue
         for lang in values:
             language = str(lang)
+            if source_kind == "automatic" and original_language:
+                normalized = language.lower()
+                if normalized != original_language and not normalized.startswith(f"{original_language}-"):
+                    continue
             tracks.setdefault(language, source_kind)
     return tracks
 
