@@ -1,0 +1,36 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+APP_DIR="/opt/youtube-mp4-proxy"
+APP_USER="youtubeproxy"
+ARCHIVE=""
+
+usage() { echo "Usage: $0 --archive /tmp/release.tar.gz"; exit 2; }
+while (($#)); do
+    case "$1" in
+        --archive) [[ $# -ge 2 ]] || usage; ARCHIVE="$2"; shift 2;;
+        *) usage;;
+    esac
+done
+[[ -n "$ARCHIVE" && -f "$ARCHIVE" ]] || { echo "アーカイブが見つかりません: $ARCHIVE"; exit 1; }
+[[ $(id -u) -eq 0 ]] || { echo "root権限で実行してください"; exit 1; }
+[[ -x "$APP_DIR/.venv/bin/python" ]] || { echo "Python仮想環境が見つかりません"; exit 1; }
+
+TS=$(date +%Y%m%d-%H%M%S)
+STAGE="/tmp/youtube-proxy-release-$TS"
+BACKUP="$APP_DIR.rollback-$TS"
+mkdir -p "$STAGE"
+tar -xzf "$ARCHIVE" -C "$STAGE"
+"$APP_DIR/.venv/bin/python" -m compileall -q "$STAGE/app" "$STAGE/bot"
+grep -q 'silent=True' "$STAGE/bot/main.py"
+
+cp -a "$APP_DIR" "$BACKUP"
+systemctl stop youtube-mp4-proxy-discord youtube-mp4-proxy
+rsync -a --delete --exclude='.venv/' --exclude='.env*' --exclude='.pytest_cache/' --exclude='cache/' --exclude='data/' "$STAGE/" "$APP_DIR/"
+systemctl start youtube-mp4-proxy
+systemctl start youtube-mp4-proxy-discord
+sleep 5
+systemctl is-active --quiet youtube-mp4-proxy
+systemctl is-active --quiet youtube-mp4-proxy-discord
+curl --fail --silent --show-error http://127.0.0.1:8000/healthz
+echo "更新完了: $TS (切り戻し先: $BACKUP)"
