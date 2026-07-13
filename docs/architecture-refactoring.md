@@ -26,6 +26,7 @@
 | `app.command_errors` | 外部コマンドのエラー型・分類 | なし |
 | `app.command_runner` | 非同期 subprocess の起動・timeout・終了処理 | プロセス |
 | `app.ytdlp_args` | yt-dlp の引数生成・cookies 引数除去 | なし |
+| `app.progress` | yt-dlp／ffmpeg の進捗行解析 | なし |
 
 ## 拡張時のルール
 
