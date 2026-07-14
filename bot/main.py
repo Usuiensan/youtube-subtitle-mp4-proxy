@@ -185636,6 +185636,8 @@ class SubtitleChoiceView(discord.ui.View):
 
 
             name_en = str(candidate.get("name_en") or "")
+            source_kind = str(candidate.get("source_kind") or "").strip().lower()
+            source_kind_label = "手動字幕" if source_kind == "manual" else "自動生成字幕"
 
 
 
@@ -186403,7 +186405,7 @@ class SubtitleChoiceView(discord.ui.View):
 
 
 
-                    label=option_label(f"{language} / {name}", 100),
+                    label=option_label(f"{language} / {name} / {source_kind_label}", 100),
 
 
 
