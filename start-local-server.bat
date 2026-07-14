@@ -20,7 +20,7 @@ set "PATH=%CD%\.venv\Scripts;%PATH%"
 echo [youtube-mp4-proxy] Installing/updating dependencies...
 ".venv\Scripts\python.exe" -m pip install -U pip
 if errorlevel 1 goto error
-".venv\Scripts\python.exe" -m pip install -r requirements.txt "yt-dlp[default]"
+".venv\Scripts\python.exe" -m pip install -r requirements.txt
 if errorlevel 1 goto error
 
 where deno >nul 2>nul

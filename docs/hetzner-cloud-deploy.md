@@ -182,7 +182,7 @@ cd /opt/youtube-mp4-proxy
 python3 -m venv .venv
 . .venv/bin/activate
 pip install --upgrade pip
-pip install -r requirements.txt yt-dlp
+pip install -r requirements.txt
 ```
 
 確認:
@@ -391,7 +391,7 @@ yt-dlp更新:
 ```bash
 cd /opt/youtube-mp4-proxy
 . .venv/bin/activate
-pip install -U yt-dlp
+pip install -U "yt-dlp[default,curl-cffi]"
 sudo systemctl restart youtube-mp4-proxy
 ```
 

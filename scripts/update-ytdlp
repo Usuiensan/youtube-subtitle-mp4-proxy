@@ -9,7 +9,7 @@ exec 9>"$LOCK"
 flock -n 9 || exit 0
 
 old_version=$("$PYTHON" -m yt_dlp --version)
-"$PYTHON" -m pip install --disable-pip-version-check --upgrade yt-dlp
+"$PYTHON" -m pip install --disable-pip-version-check --upgrade "yt-dlp[default,curl-cffi]"
 new_version=$("$PYTHON" -m yt_dlp --version)
 
 if [[ "$old_version" == "$new_version" ]]; then

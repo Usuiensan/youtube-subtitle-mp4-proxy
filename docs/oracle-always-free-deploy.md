@@ -99,7 +99,7 @@ cd /opt/youtube-mp4-proxy
 python3 -m venv .venv
 . .venv/bin/activate
 pip install --upgrade pip
-pip install -r requirements.txt yt-dlp
+pip install -r requirements.txt
 ```
 
 確認:
@@ -286,7 +286,7 @@ sudo tail -f /var/log/nginx/error.log
 cd /opt/youtube-mp4-proxy
 git pull
 . .venv/bin/activate
-pip install -r requirements.txt yt-dlp
+pip install -r requirements.txt
 sudo systemctl restart youtube-mp4-proxy
 ```
 
@@ -295,7 +295,7 @@ sudo systemctl restart youtube-mp4-proxy
 ```bash
 cd /opt/youtube-mp4-proxy
 . .venv/bin/activate
-pip install -U yt-dlp
+pip install -U "yt-dlp[default,curl-cffi]"
 sudo systemctl restart youtube-mp4-proxy
 ```
 
@@ -314,7 +314,7 @@ sudo journalctl -u youtube-mp4-proxy -n 100 --no-pager
 ```bash
 cd /opt/youtube-mp4-proxy
 . .venv/bin/activate
-pip install -U yt-dlp
+pip install -U "yt-dlp[default,curl-cffi]"
 sudo systemctl restart youtube-mp4-proxy
 ```
 

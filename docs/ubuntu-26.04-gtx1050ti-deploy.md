@@ -93,7 +93,7 @@ Python環境を作ります。
 python3 -m venv .venv
 . .venv/bin/activate
 pip install --upgrade pip
-pip install -r requirements.txt "yt-dlp[default]"
+pip install -r requirements.txt
 ```
 
 翻訳エンジンを複数選べるようにする場合は、`TRANSLATION_DEFAULT_PROFILE` と `LOCAL_LLM_MODEL_*` を `.env.local` に入れて、RTX 3060 側で公開しているモデル名に合わせてください。
