@@ -41,6 +41,7 @@ from app.translation import (
     translate_srt_with_local_worker,
 )
 from app.metrics import MetricsManager
+from app.google_translation_usage import record as record_google_translation_usage, summary as google_translation_usage_summary
 from app.cache_layout import CacheLayout
 from app.config_files import (
     load_env_file,
@@ -2904,6 +2905,7 @@ async def translate_subtitle_if_needed(
             "translation_characters": translation_characters,
             "translation_request_count": subtitle_count,
         }
+        record_google_translation_usage(settings.google_translation_usage_file, translation_characters)
         return translated_path, enrich_translation_metadata(metadata)
 
     if selected_settings.provider_name == "gemini_api":
@@ -3183,7 +3185,15 @@ async def burn_subtitles(
 ) -> None:
     tmp_output = destination.with_suffix(".tmp.mp4")
     start_t = time.time()
-    vf_args = ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta, subtitle_font_size=subtitle_font_size)]
+    if original_subtitle and subtitle_meta and subtitle_meta.get("translated"):
+        vf_args = ffmpeg_dual_subtitle_args(
+            original_subtitle,
+            subtitle,
+            subtitle_meta,
+            subtitle_font_size=subtitle_font_size,
+        )
+    else:
+        vf_args = ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta, subtitle_font_size=subtitle_font_size)]
     await run_ffmpeg_with_optional_nvenc_fallback(
         [
             "ffmpeg",
@@ -3223,7 +3233,15 @@ async def create_hls(
             old_file.unlink()
 
     start_t = time.time()
-    vf_args = ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta, subtitle_font_size=subtitle_font_size)]
+    if original_subtitle and subtitle_meta and subtitle_meta.get("translated"):
+        vf_args = ffmpeg_dual_subtitle_args(
+            original_subtitle,
+            subtitle,
+            subtitle_meta,
+            subtitle_font_size=subtitle_font_size,
+        )
+    else:
+        vf_args = ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta, subtitle_font_size=subtitle_font_size)]
     await run_ffmpeg_with_optional_nvenc_fallback(
         [
             "ffmpeg",
@@ -7146,6 +7164,11 @@ async def translation_audit_index() -> JSONResponse:
             }
         )
     return JSONResponse({"count": len(items), "items": items})
+
+
+@app.get("/translation-usage/google-cloud")
+async def google_cloud_translation_usage() -> JSONResponse:
+    return JSONResponse(google_translation_usage_summary(settings.google_translation_usage_file))
 
 
 @app.get("/translation-audit/{name}")

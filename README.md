@@ -324,6 +324,7 @@ export REMOTE_LLM_ENDPOINT=http://192.168.68.115:11434/v1/chat/completions
 export REMOTE_LLM_HEALTH_URL=http://192.168.68.115:11434/v1/models
 export REMOTE_LLM_MODEL=qwen3:4b-instruct
 export TRANSLATION_AUDIT_DIR=/var/lib/youtube-proxy/translation-audit
+export GOOGLE_TRANSLATION_USAGE_FILE=/var/lib/youtube-proxy/google-translation-usage.json
 export LOCAL_LLM_MODEL_QWEN3_4B_INSTRUCT=qwen3:4b-instruct
 export LOCAL_LLM_MODEL_QWEN3_8B=qwen3:8b
 export LOCAL_LLM_MODEL_QWEN3_14B=qwen3:14b

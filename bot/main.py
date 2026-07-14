@@ -121100,6 +121100,7 @@ def status_message(body: dict[str, Any], fallback_user_id: int | None = None) ->
 
 
         usage_part = translation_usage_text(body.get("subtitle"))
+        monthly_usage_part = google_monthly_usage_text(body.get("subtitle"))
 
 
 
@@ -122136,7 +122137,7 @@ def status_message(body: dict[str, Any], fallback_user_id: int | None = None) ->
         link_block = "\n".join(links)
         url_block = "\n".join(urls)
         blocks = "\n".join(part for part in (link_block, url_block) if part)
-        return f"{prefix}準備できました。{title_part}{subtitle_part}{usage_part}{archive_part}" + (f"\n{blocks}" if blocks else "")
+        return f"{prefix}準備できました。{title_part}{subtitle_part}{usage_part}{monthly_usage_part}{archive_part}" + (f"\n{blocks}" if blocks else "")
 
 
 
@@ -156950,6 +156951,26 @@ def subtitle_status_text(meta: Any) -> str:
 
 
 
+
+
+def google_monthly_usage_text(meta: Any) -> str:
+    if not isinstance(meta, dict) or str(meta.get("translation_engine") or "") != "google_cloud":
+        return ""
+    try:
+        _status, usage = http_json("GET", f"{settings.youtube_proxy_internal_base_url}/translation-usage/google-cloud")
+    except Exception:
+        return ""
+    used = int(usage.get("used_characters") or 0)
+    remaining = int(usage.get("remaining_characters") or 0)
+    percent = float(usage.get("usage_percent") or 0.0)
+    month = str(usage.get("month") or "")
+    free_tier = int(usage.get("free_tier_characters") or 500_000)
+    overage = max(0, used - free_tier)
+    cost_usd = overage / 1_000_000 * 20.0
+    return (
+        f"\nGoogle翻訳 月次使用量 ({month}): {used:,} / {free_tier:,}文字 ({percent:.2f}%)"
+        f"\n無料枠残り: {remaining:,}文字 / 無料枠超過分概算: ${cost_usd:,.4f}"
+    )
 
 
 def translation_usage_text(meta: Any) -> str:
