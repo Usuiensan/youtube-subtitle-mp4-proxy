@@ -674,7 +674,7 @@ def cache_key(
 
 def render_profile_id(subtitle_font_size: int | None = None) -> str:
     return hashlib.sha1(
-        "\n".join(["dual-subtitle-layout-v8-vertical-srt-timed-label-spaced", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
+        "\n".join(["dual-subtitle-layout-v9-source-blank-translation", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
     ).hexdigest()[:8]
 
 
@@ -3481,56 +3481,42 @@ def ffmpeg_dual_subtitle_args(
     *,
     subtitle_font_size: int | None = None,
 ) -> list[str]:
-    original_ass = original_subtitle.with_suffix(".left.ass")
-    translated_ass = translated_subtitle.with_suffix(".right.ass")
+    combined_ass = original_subtitle.with_suffix(".dual.ass")
     base_font_size = subtitle_font_size if isinstance(subtitle_font_size, int) and subtitle_font_size > 0 else settings.subtitle_font_size
-    dual_font_size = max(round(base_font_size * 2.0), 36) 
-    # 字のサイズを手動変更2026-07-11_(Sat)_22-03-51
-    play_res_x = 1280
-    left_safe_margin = round(play_res_x * 0.10)
-    right_safe_margin = round(play_res_x * 0.10)
-    center_gap = round(play_res_x * 0.10)
-    available_width = play_res_x - left_safe_margin - right_safe_margin - center_gap
-    column_width = max(round(available_width / 2), 1)
-    left_margin = max(settings.subtitle_margin_l, left_safe_margin)
-    right_margin = max(settings.subtitle_margin_r, right_safe_margin)
-    left_column_right_margin = max(right_margin, play_res_x - (left_safe_margin + column_width))
-    right_column_left_margin = left_safe_margin + column_width + center_gap
-    bottom_margin = max(settings.subtitle_margin_v, 52)
+    dual_font_size = max(round(base_font_size * 1.35), 24)
     source_subtitles = load_srt(original_subtitle)
     translated_subtitles = load_srt(translated_subtitle)
     source_subtitles, translated_subtitles = paired_wrap_subtitles(
         source_subtitles,
         translated_subtitles,
-        width_chars=max(column_width / max(dual_font_size * 0.52, 1.0), 7.0),
+        width_chars=max(38.0, 70.0 - dual_font_size * 0.55),
     )
+    combined_subtitles = [
+        srt.Subtitle(
+            index=source_sub.index,
+            start=source_sub.start,
+            end=source_sub.end,
+            content=f"{source_sub.content}\n　\n{translated_sub.content}",
+            proprietary=source_sub.proprietary,
+        )
+        for source_sub, translated_sub in zip(source_subtitles, translated_subtitles)
+    ]
     build_ass_from_srt(
         original_subtitle,
-        original_ass,
+        combined_ass,
         align=1,
-        margin_l=left_margin,
-        margin_r=left_column_right_margin,
-        margin_v=bottom_margin,
+        margin_l=settings.subtitle_margin_l,
+        margin_r=settings.subtitle_margin_r,
+        margin_v=max(settings.subtitle_margin_v, 52),
         font_size=dual_font_size,
         keep_source_line_breaks=False,
-        subtitles_override=source_subtitles,
-    )
-    build_ass_from_srt(
-        translated_subtitle,
-        translated_ass,
-        align=1,
-        margin_l=right_column_left_margin,
-        margin_r=right_margin,
-        margin_v=bottom_margin,
-        font_size=dual_font_size,
-        subtitles_override=translated_subtitles,
+        subtitles_override=combined_subtitles,
     )
     font_file, font_name = find_japanese_font_spec()
     subtitle_font_name = font_name or settings.subtitle_font
     drawtext_filters = subtitle_overlay_drawtext_filters(subtitle_meta, font_file, subtitle_font_name)
     filter_str = (
-        f"ass='{escape_filter_value(original_ass.as_posix())}',"
-        f"ass='{escape_filter_value(translated_ass.as_posix())}'"
+        f"ass='{escape_filter_value(combined_ass.as_posix())}'"
     )
     if drawtext_filters:
         filter_str = f"{filter_str},{','.join(drawtext_filters)}"
@@ -6788,7 +6774,8 @@ async def index() -> str:
       for (const candidate of body.candidates || []) {{
         const option = document.createElement("option");
         option.value = candidate.language;
-        option.textContent = `${{candidate.language}} / ${{candidate.name || candidate.name_en || candidate.language}}`;
+        const kindLabel = candidate.source_kind === "manual" ? "手動字幕" : "自動生成字幕";
+        option.textContent = `${{candidate.language}} / ${{candidate.name || candidate.name_en || candidate.language}} / ${{kindLabel}}`;
         subtitleSource.appendChild(option);
       }}
       if (Array.isArray(body.translation_engines)) {{
