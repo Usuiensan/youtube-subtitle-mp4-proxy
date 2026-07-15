@@ -162098,7 +162098,10 @@ def translation_usage_text(meta: Any) -> str:
 
 
     if translation_skipped:
-        lines.append("API料金: 追加費用なし（出元の翻訳済み字幕を使用）")
+        if str(meta.get("translation_skipped_reason") or "") == "youtube_automatic_translation":
+            lines.append("API料金: 追加費用なし（YouTube自動翻訳字幕を使用）")
+        else:
+            lines.append("API料金: 追加費用なし（出元の翻訳済み字幕を使用）")
     elif api_cost_usd:
 
 

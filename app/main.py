@@ -2068,7 +2068,37 @@ def select_subtitle_language(
     if not isinstance(automatic_subtitles, dict):
         automatic_subtitles = {}
     available_subtitles = {**automatic_subtitles, **manual_subtitles}
-    requested = subtitle_lang_available(available_subtitles, requested_lang)
+
+    # An explicit translation variant (for example /ja/en/google_cloud) must
+    # use the requested source language even when YouTube also exposes an
+    # automatic caption track for the target language.
+    if source_lang:
+        selected = subtitle_lang_available(available_subtitles, source_lang)
+        if not selected:
+            raise HTTPException(status_code=422, detail=f"No subtitle found for source language: {source_lang}")
+        automatic_target = subtitle_lang_available(automatic_subtitles, requested_lang)
+        use_automatic_translation = bool(
+            normalize_lang(selected) != normalize_lang(requested_lang)
+            and automatic_target
+            and requested_lang not in manual_subtitles
+        )
+        return {
+            "requested_language": requested_lang,
+            "source_language": selected,
+            "translated": normalize_lang(selected) != normalize_lang(requested_lang),
+            "source_kind": "automatic" if selected not in manual_subtitles else "manual",
+            "translation_engine_requested": normalize_translation_engine(translation_engine),
+            "use_automatic_translation": use_automatic_translation,
+        }
+
+    # yt-dlp may expose YouTube's machine-translated caption tracks (for
+    # example `ja` on an English video) under automatic_captions. They are
+    # not original subtitles and must not suppress the requested translation.
+    original_language = str(info.get("language") or "").strip().lower()
+    requested_available = dict(manual_subtitles)
+    if original_language and normalize_lang(requested_lang) == normalize_lang(original_language):
+        requested_available.update(automatic_subtitles)
+    requested = subtitle_lang_available(requested_available, requested_lang)
     if requested:
         return {
             "requested_language": requested_lang,
@@ -2079,18 +2109,6 @@ def select_subtitle_language(
 
     if requested_lang != "ja" or not settings.translation_enabled:
         raise HTTPException(status_code=422, detail=f"No subtitle found for language: {requested_lang}")
-
-    if source_lang:
-        selected = subtitle_lang_available(available_subtitles, source_lang)
-        if not selected:
-            raise HTTPException(status_code=422, detail=f"No subtitle found for source language: {source_lang}")
-        return {
-            "requested_language": requested_lang,
-            "source_language": selected,
-            "translated": True,
-            "source_kind": "automatic" if selected not in manual_subtitles else "manual",
-            "translation_engine_requested": normalize_translation_engine(translation_engine),
-        }
 
     priorities: list[str] = []
     video_language = info.get("language")
@@ -2113,6 +2131,11 @@ def select_subtitle_language(
                 "translated": True,
                 "source_kind": "automatic" if selected not in manual_subtitles else "manual",
                 "translation_engine_requested": normalize_translation_engine(translation_engine),
+                "use_automatic_translation": bool(
+                    normalize_lang(selected) != normalize_lang(requested_lang)
+                    and subtitle_lang_available(automatic_subtitles, requested_lang)
+                    and requested_lang not in manual_subtitles
+                ),
             }
 
     raise HTTPException(status_code=422, detail="No subtitle found in any language")
@@ -3047,16 +3070,20 @@ async def download_sources(
         translation_engine=translation_engine,
     )
     source_lang = subtitle_selection["source_language"]
-    subtitle_flag = "--write-auto-subs" if subtitle_selection.get("source_kind") == "automatic" else "--write-subs"
+    use_automatic_translation = bool(subtitle_selection.get("use_automatic_translation"))
+    subtitle_flags = ["--write-auto-subs", "--write-subs"] if use_automatic_translation else [
+        "--write-auto-subs" if subtitle_selection.get("source_kind") == "automatic" else "--write-subs"
+    ]
+    subtitle_languages = f"{source_lang},{lang}" if use_automatic_translation else source_lang
     format_selector = yt_dlp_download_format_selector()
     fallback_format_selector = yt_dlp_fallback_format_selector()
     
     start_t = time.time()
     dl_args = yt_dlp_base_args() + [
         "--no-playlist",
-        subtitle_flag,
+        *subtitle_flags,
         "--sub-langs",
-        source_lang,
+        subtitle_languages,
         "--convert-subs",
         "srt",
         "--paths",
@@ -3109,17 +3136,23 @@ async def download_sources(
     
     video = find_downloaded_video(work_dir)
     original_subtitle = find_subtitle(work_dir, source_lang)
+    automatic_translation = find_subtitle(work_dir, lang) if use_automatic_translation else None
     
     metrics_manager.record_download(video.stat().st_size, end_t - start_t)
     
-    subtitle, subtitle_meta = await translate_subtitle_if_needed(
-        key=cache_key(video_id, lang, subtitle_source_lang, translation_engine),
-        subtitle=original_subtitle,
-        info=info,
-        selection=subtitle_selection,
-        work_dir=work_dir,
-        job_id=job_id,
-    )
+    if automatic_translation and automatic_translation != original_subtitle:
+        subtitle = automatic_translation
+        subtitle_meta = enrich_existing_subtitle_usage_metadata(subtitle_selection, subtitle)
+        subtitle_meta["translation_skipped_reason"] = "youtube_automatic_translation"
+    else:
+        subtitle, subtitle_meta = await translate_subtitle_if_needed(
+            key=cache_key(video_id, lang, subtitle_source_lang, translation_engine),
+            subtitle=original_subtitle,
+            info=info,
+            selection=subtitle_selection,
+            work_dir=work_dir,
+            job_id=job_id,
+        )
     return video, original_subtitle, subtitle, subtitle_meta
 
 
@@ -3140,14 +3173,18 @@ async def download_subtitle_only(
         translation_engine=translation_engine,
     )
     source_lang = subtitle_selection["source_language"]
-    subtitle_flag = "--write-auto-subs" if subtitle_selection.get("source_kind") == "automatic" else "--write-subs"
+    use_automatic_translation = bool(subtitle_selection.get("use_automatic_translation"))
+    subtitle_flags = ["--write-auto-subs", "--write-subs"] if use_automatic_translation else [
+        "--write-auto-subs" if subtitle_selection.get("source_kind") == "automatic" else "--write-subs"
+    ]
+    subtitle_languages = f"{source_lang},{lang}" if use_automatic_translation else source_lang
     start_t = time.time()
     dl_args = yt_dlp_base_args() + [
         "--no-playlist",
         "--skip-download",
-        subtitle_flag,
+        *subtitle_flags,
         "--sub-langs",
-        source_lang,
+        subtitle_languages,
         "--convert-subs",
         "srt",
         "--paths",
@@ -3161,15 +3198,21 @@ async def download_subtitle_only(
     else:
         await run_command(dl_args, cwd=work_dir)
     original_subtitle = find_subtitle(work_dir, source_lang)
+    automatic_translation = find_subtitle(work_dir, lang) if use_automatic_translation else None
     metrics_manager.record_download(original_subtitle.stat().st_size, time.time() - start_t)
-    subtitle, subtitle_meta = await translate_subtitle_if_needed(
-        key=cache_key(video_id, lang, subtitle_source_lang, translation_engine),
-        subtitle=original_subtitle,
-        info=info,
-        selection=subtitle_selection,
-        work_dir=work_dir,
-        job_id=job_id,
-    )
+    if automatic_translation and automatic_translation != original_subtitle:
+        subtitle = automatic_translation
+        subtitle_meta = enrich_existing_subtitle_usage_metadata(subtitle_selection, subtitle)
+        subtitle_meta["translation_skipped_reason"] = "youtube_automatic_translation"
+    else:
+        subtitle, subtitle_meta = await translate_subtitle_if_needed(
+            key=cache_key(video_id, lang, subtitle_source_lang, translation_engine),
+            subtitle=original_subtitle,
+            info=info,
+            selection=subtitle_selection,
+            work_dir=work_dir,
+            job_id=job_id,
+        )
     return original_subtitle, subtitle, subtitle_meta
 
 
