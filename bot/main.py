@@ -121101,6 +121101,7 @@ def status_message(body: dict[str, Any], fallback_user_id: int | None = None) ->
 
         usage_part = translation_usage_text(body.get("subtitle"))
         monthly_usage_part = google_monthly_usage_text(body.get("subtitle"))
+        google_details = google_completion_details(body.get("subtitle"))
 
 
 
@@ -122137,6 +122138,22 @@ def status_message(body: dict[str, Any], fallback_user_id: int | None = None) ->
         link_block = "\n".join(links)
         url_block = "\n".join(urls)
         blocks = "\n".join(part for part in (link_block, url_block) if part)
+        if google_details:
+            title_text_value = str(title or body.get("video_id") or "動画")
+            video_url = public_url(body.get("url"))
+            source_url = youtube_watch_url(body.get("video_id"))
+            lines = [
+                f"{prefix}翻訳・変換が完了しました。",
+                "",
+                f"🎬 **{title_text_value}**",
+                "",
+                google_details,
+            ]
+            if video_url:
+                lines.extend(["", "▶ **変換済み動画**", video_url, f"```\n{video_url}\n```"])
+            if source_url:
+                lines.extend(["", "🔗 **元動画**", source_url, f"```\n{source_url}\n```"])
+            return "\n".join(lines)
         return f"{prefix}準備できました。{title_part}{subtitle_part}{usage_part}{monthly_usage_part}{archive_part}" + (f"\n{blocks}" if blocks else "")
 
 
@@ -156971,6 +156988,53 @@ def google_monthly_usage_text(meta: Any) -> str:
         f"\nGoogle翻訳 月次使用量 ({month}): {used:,} / {free_tier:,}文字 ({percent:.2f}%)"
         f"\n無料枠残り: {remaining:,}文字 / 無料枠超過分概算: ${cost_usd:,.4f}"
     )
+
+
+def google_completion_details(meta: Any) -> str:
+    """Format the Google Translation completion report shown by Discord."""
+    if not isinstance(meta, dict) or str(meta.get("translation_engine") or "") != "google_cloud":
+        return ""
+    characters = int(meta.get("translation_characters") or 0)
+    source = lang_name_ja(meta.get("source_language"))
+    target = lang_name_ja(meta.get("requested_language"))
+    source_kind = "手動" if meta.get("source_kind") == "manual" else "自動生成"
+    normal_usd = float(meta.get("translation_usage_estimate_usd") or 0.0)
+    normal_jpy = float(meta.get("translation_usage_estimate_jpy") or 0.0)
+    try:
+        _status, usage = http_json("GET", f"{settings.youtube_proxy_internal_base_url}/translation-usage/google-cloud")
+    except Exception:
+        usage = {}
+    used = int(usage.get("used_characters") or characters)
+    free_tier = int(usage.get("free_tier_characters") or 500_000)
+    remaining = max(0, int(usage.get("remaining_characters") or (free_tier - used)))
+    percent = float(usage.get("usage_percent") or (used / free_tier * 100 if free_tier else 0.0))
+    month = str(usage.get("month") or "")
+    try:
+        year, month_number = month.split("-", 1)
+        month_label = f"{int(year)}年{int(month_number)}月"
+    except ValueError:
+        month_label = month or "今月"
+    overage = max(0, used - free_tier)
+    unit_jpy = normal_jpy / characters if characters else 0.0
+    estimated_jpy = overage * unit_jpy
+    if overage:
+        bill_line = f"今回の請求見込み: **約¥{estimated_jpy:,.0f}**（月間無料枠超過分）"
+    else:
+        bill_line = "今回の請求見込み: **¥0**（月間無料枠内）"
+    return "\n".join([
+        "**字幕**",
+        f"{source}（{source_kind}） → {target}",
+        "翻訳: Google Cloud Translation（Basic NMT）",
+        f"翻訳文字数: {characters:,}文字",
+        "",
+        "**料金概算**",
+        f"通常料金: 約¥{normal_jpy:,.0f}（${normal_usd:,.4f}）",
+        bill_line,
+        "",
+        f"**{month_label}の無料枠**",
+        f"使用済み: {used:,} / {free_tier:,}文字（{percent:.1f}%）",
+        f"残り: {remaining:,}文字",
+    ])
 
 
 def translation_usage_text(meta: Any) -> str:

@@ -675,7 +675,7 @@ def cache_key(
 
 def render_profile_id(subtitle_font_size: int | None = None) -> str:
     return hashlib.sha1(
-        "\n".join(["dual-subtitle-layout-v11-explicit-youtube-auto", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
+        "\n".join(["dual-subtitle-layout-v12-centered-single-ass", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
     ).hexdigest()[:8]
 
 
@@ -3567,29 +3567,31 @@ def ffmpeg_dual_subtitle_args(
     dual_font_size = max(round(base_font_size * 1.35), 24)
     source_subtitles = load_srt(original_subtitle)
     translated_subtitles = load_srt(translated_subtitle)
-    source_subtitles, translated_subtitles = paired_wrap_subtitles(
-        source_subtitles,
-        translated_subtitles,
-        width_chars=max(38.0, 70.0 - dual_font_size * 0.55),
-    )
+    width_chars = max(38.0, 70.0 - dual_font_size * 0.55)
+
+    def stack_lines(source: str, translated: str) -> str:
+        normalized = translated.replace("\r\n", "\n").replace("\r", "\n")
+        if "\n　\n" in normalized:
+            source, translated = normalized.split("\n　\n", 1)
+        source_lines = wrap_text_to_width(source, width_chars)
+        translated_lines = wrap_text_to_width(translated, width_chars)
+        return "\n".join([*source_lines, "　", *translated_lines])
+
     combined_subtitles = []
     for source_sub, translated_sub in zip(source_subtitles, translated_subtitles):
-        translated_content = translated_sub.content
-        if "\n　\n" not in translated_content.replace("\r\n", "\n").replace("\r", "\n"):
-            translated_content = f"{source_sub.content}\n　\n{translated_content}"
         combined_subtitles.append(
             srt.Subtitle(
                 index=source_sub.index,
                 start=source_sub.start,
                 end=source_sub.end,
-                content=translated_content,
+                content=stack_lines(source_sub.content, translated_sub.content),
                 proprietary=translated_sub.proprietary,
             )
         )
     build_ass_from_srt(
         original_subtitle,
         combined_ass,
-        align=1,
+        align=2,
         margin_l=settings.subtitle_margin_l,
         margin_r=settings.subtitle_margin_r,
         margin_v=max(settings.subtitle_margin_v, 52),
