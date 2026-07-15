@@ -675,7 +675,7 @@ def cache_key(
 
 def render_profile_id(subtitle_font_size: int | None = None) -> str:
     return hashlib.sha1(
-        "\n".join(["dual-subtitle-layout-v9-source-blank-translation", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
+        "\n".join(["dual-subtitle-layout-v11-explicit-youtube-auto", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
     ).hexdigest()[:8]
 
 
@@ -1654,6 +1654,8 @@ def normalize_translation_engine(value: str | None) -> str:
         return "google_cloud"
     if engine in {"google", "google_cloud", "google_translate"}:
         return "google_cloud"
+    if engine in {"youtube_auto", "youtube_automatic", "youtube_auto_translate"}:
+        return "youtube_auto"
     if engine in settings.local_llm_profile_models:
         return engine
     return "google_cloud"
@@ -1676,7 +1678,14 @@ def translation_profile_options() -> list[dict]:
             "model": None,
             "default": True,
             "kind": "cloud",
-        }
+        },
+        {
+            "value": "youtube_auto",
+            "label": "YouTube自動翻訳（無料・品質低下の可能性）",
+            "model": None,
+            "default": False,
+            "kind": "youtube",
+        },
     ]
     for profile_id in profiles:
         model = str(settings.local_llm_profile_models.get(profile_id) or "").strip()
@@ -2037,6 +2046,9 @@ def restrict_translation_engines(
             if engine.get("value") == "google_cloud":
                 filtered.append(engine)
                 continue
+            if engine.get("value") == "youtube_auto":
+                filtered.append(engine)
+                continue
             model = str(engine.get("model") or "").strip()
             if model_available(model):
                 filtered.append(engine)
@@ -2046,7 +2058,7 @@ def restrict_translation_engines(
         return body
     body["translation_engines"] = [
         engine for engine in engines
-        if isinstance(engine, dict) and engine.get("value") == "google_cloud"
+        if isinstance(engine, dict) and engine.get("value") in {"google_cloud", "youtube_auto"}
     ]
     body["llm_available"] = False
     body["llm_unavailable_reason"] = llm_error or "remote LLM is unavailable"
@@ -2081,6 +2093,7 @@ def select_subtitle_language(
             normalize_lang(selected) != normalize_lang(requested_lang)
             and automatic_target
             and requested_lang not in manual_subtitles
+            and normalize_translation_engine(translation_engine) == "youtube_auto"
         )
         return {
             "requested_language": requested_lang,
@@ -2134,7 +2147,8 @@ def select_subtitle_language(
                 "use_automatic_translation": bool(
                     normalize_lang(selected) != normalize_lang(requested_lang)
                     and subtitle_lang_available(automatic_subtitles, requested_lang)
-                    and requested_lang not in manual_subtitles
+                        and requested_lang not in manual_subtitles
+                        and normalize_translation_engine(translation_engine) == "youtube_auto"
                 ),
             }
 
@@ -3071,6 +3085,8 @@ async def download_sources(
     )
     source_lang = subtitle_selection["source_language"]
     use_automatic_translation = bool(subtitle_selection.get("use_automatic_translation"))
+    if normalize_translation_engine(translation_engine) == "youtube_auto" and not use_automatic_translation:
+        raise HTTPException(status_code=422, detail="YouTube自動翻訳字幕が利用できません")
     subtitle_flags = ["--write-auto-subs", "--write-subs"] if use_automatic_translation else [
         "--write-auto-subs" if subtitle_selection.get("source_kind") == "automatic" else "--write-subs"
     ]
@@ -3143,6 +3159,7 @@ async def download_sources(
     if automatic_translation and automatic_translation != original_subtitle:
         subtitle = automatic_translation
         subtitle_meta = enrich_existing_subtitle_usage_metadata(subtitle_selection, subtitle)
+        subtitle_meta["translation_engine"] = "youtube_auto"
         subtitle_meta["translation_skipped_reason"] = "youtube_automatic_translation"
     else:
         subtitle, subtitle_meta = await translate_subtitle_if_needed(
@@ -3174,6 +3191,8 @@ async def download_subtitle_only(
     )
     source_lang = subtitle_selection["source_language"]
     use_automatic_translation = bool(subtitle_selection.get("use_automatic_translation"))
+    if normalize_translation_engine(translation_engine) == "youtube_auto" and not use_automatic_translation:
+        raise HTTPException(status_code=422, detail="YouTube自動翻訳字幕が利用できません")
     subtitle_flags = ["--write-auto-subs", "--write-subs"] if use_automatic_translation else [
         "--write-auto-subs" if subtitle_selection.get("source_kind") == "automatic" else "--write-subs"
     ]
@@ -3203,6 +3222,7 @@ async def download_subtitle_only(
     if automatic_translation and automatic_translation != original_subtitle:
         subtitle = automatic_translation
         subtitle_meta = enrich_existing_subtitle_usage_metadata(subtitle_selection, subtitle)
+        subtitle_meta["translation_engine"] = "youtube_auto"
         subtitle_meta["translation_skipped_reason"] = "youtube_automatic_translation"
     else:
         subtitle, subtitle_meta = await translate_subtitle_if_needed(
@@ -3552,16 +3572,20 @@ def ffmpeg_dual_subtitle_args(
         translated_subtitles,
         width_chars=max(38.0, 70.0 - dual_font_size * 0.55),
     )
-    combined_subtitles = [
-        srt.Subtitle(
-            index=source_sub.index,
-            start=source_sub.start,
-            end=source_sub.end,
-            content=f"{source_sub.content}\n　\n{translated_sub.content}",
-            proprietary=source_sub.proprietary,
+    combined_subtitles = []
+    for source_sub, translated_sub in zip(source_subtitles, translated_subtitles):
+        translated_content = translated_sub.content
+        if "\n　\n" not in translated_content.replace("\r\n", "\n").replace("\r", "\n"):
+            translated_content = f"{source_sub.content}\n　\n{translated_content}"
+        combined_subtitles.append(
+            srt.Subtitle(
+                index=source_sub.index,
+                start=source_sub.start,
+                end=source_sub.end,
+                content=translated_content,
+                proprietary=translated_sub.proprietary,
+            )
         )
-        for source_sub, translated_sub in zip(source_subtitles, translated_subtitles)
-    ]
     build_ass_from_srt(
         original_subtitle,
         combined_ass,
@@ -3570,7 +3594,7 @@ def ffmpeg_dual_subtitle_args(
         margin_r=settings.subtitle_margin_r,
         margin_v=max(settings.subtitle_margin_v, 52),
         font_size=dual_font_size,
-        keep_source_line_breaks=False,
+        keep_source_line_breaks=True,
         subtitles_override=combined_subtitles,
     )
     font_file, font_name = find_japanese_font_spec()
