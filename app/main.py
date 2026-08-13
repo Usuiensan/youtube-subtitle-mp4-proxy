@@ -2615,11 +2615,19 @@ def wants_nvenc() -> bool:
 
 
 def is_nvenc_driver_error(message: str) -> bool:
-    return (
-        "Driver does not support the required nvenc API version" in message
-        or "The minimum required Nvidia driver for nvenc" in message
-        or "Cannot load nvcuda.dll" in message
-        or "No NVENC capable devices found" in message
+    normalized = message.lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "driver does not support the required nvenc api version",
+            "the minimum required nvidia driver for nvenc",
+            "cannot load nvcuda.dll",
+            "no nvenc capable devices found",
+            "error while opening encoder",
+            "could not open encoder",
+            "cannot initialize the h264_nvenc encoder",
+            "cannot init h264_nvenc encoder",
+        )
     )
 
 
