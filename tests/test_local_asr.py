@@ -1,173 +1,137 @@
 import asyncio
-from datetime import timedelta
-from pathlib import Path
-from unittest.mock import AsyncMock
+import json
+import socket
+import urllib.error
+import urllib.request
+from email.message import Message
+from unittest.mock import patch
 
 import pytest
-import srt
 
-from app import main
-from app.asr_client import AsrConfig, AsrServiceError, AsrTranscript, _segment_subtitles, cache_variant
+from app.asr_client import AsrConfig, AsrServiceError, LocalAsrClient
 
 
-def test_asr_segments_become_sorted_srt_without_losing_unicode() -> None:
-    subtitles = _segment_subtitles(
-        [
-            {"start": 3.0, "end": 4.5, "text": "世界"},
-            {"start": 2.5, "end": 2.8, "text": "こんにちは"},
-        ]
-    )
+class FakeResponse:
+    def __init__(self, payload: object, status: int = 200, content_type: str = "application/json") -> None:
+        self.status = status
+        self.headers = Message()
+        self.headers["Content-Type"] = content_type
+        self._body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
 
-    assert [(item.start, item.end, item.content) for item in subtitles] == [
-        (timedelta(seconds=2.5), timedelta(seconds=2.8), "こんにちは"),
-        (timedelta(seconds=3), timedelta(seconds=4.5), "世界"),
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def test_media_session_uploads_chunks_and_reads_timed_results() -> None:
+    responses = [
+        FakeResponse({"session_id": "ses_1", "status": "created", "priority": "batch", "timebase": "media_relative"}),
+        FakeResponse({"accepted": True, "chunk_index": 0}),
+        FakeResponse({"accepted": True, "chunk_index": 1}),
+        FakeResponse({"session_id": "ses_1", "status": "completed"}),
+        FakeResponse({
+            "session_id": "ses_1",
+            "items": [{
+                "result_id": "res_1",
+                "cursor": "1",
+                "chunk_index": 0,
+                "text": "字幕です",
+                "language": "ja",
+                "language_probability": 0.99,
+                "status": "final",
+                "timebase": "media_relative",
+                "segments": [
+                    {"start": 10.25, "end": 11.5, "text": "字幕です"},
+                ],
+            }],
+            "next_cursor": "1",
+            "session_status": "completed",
+        }),
     ]
-    assert "こんにちは" in srt.compose(subtitles)
+
+    def urlopen(_request: urllib.request.Request, timeout: float):
+        assert timeout == 5
+        return responses.pop(0)
+
+    client = LocalAsrClient(AsrConfig("http://127.0.0.1:8080", "token", timeout_seconds=5))
+    with patch("urllib.request.urlopen", side_effect=urlopen) as mocked:
+        transcript = asyncio.run(client.transcribe_chunks([(b"wav-0", 0), (b"wav-1", 10)] , priority="batch"))
+
+    assert not responses
+    assert transcript.session_id == "ses_1"
+    assert transcript.segments[0].start == 10.25
+    assert transcript.segments[0].end == 11.5
+    assert transcript.segments[0].text == "字幕です"
+    requests = [call.args[0] for call in mocked.call_args_list]
+    assert requests[0].full_url == "http://127.0.0.1:8080/v1/audio-sessions"
+    assert json.loads(requests[0].data) == {
+        "source": "media_file",
+        "priority": "batch",
+        "timebase": "media_relative",
+        "language": "auto",
+        "sample_rate": 16000,
+        "channels": 1,
+        "content_type": "audio/wav",
+        "segmentation": {"type": "fixed", "max_chunk_seconds": 30},
+        "retention": {"save_transcript": True, "save_audio": False},
+    }
+    assert requests[1].headers["X-media-offset"] == "0.000000"
+    assert requests[2].headers["X-media-offset"] == "10.000000"
+    assert requests[4].full_url.endswith("/results?after=0&limit=50")
 
 
 @pytest.mark.parametrize(
-    "segments",
-    [
-        [{"start": -1, "end": 1, "text": "bad"}],
-        [{"start": 2, "end": 1, "text": "bad"}],
-        [
-            {"start": 0, "end": 2, "text": "first"},
-            {"start": 0, "end": 2, "text": "first"},
-        ],
-        [
-            {"start": 5, "end": 6, "text": "late"},
-            {"start": 1, "end": 2, "text": "reversed"},
-        ],
-    ],
+    ("status", "code"),
+    [(429, "ASR_QUEUE_FULL"), (429, "ASR_QUEUE_EVICTED"), (503, "ASR_WORKER_FAILED"), (503, "ASR_WORKER_UNAVAILABLE")],
 )
-def test_invalid_asr_segments_are_rejected(segments: list[dict]) -> None:
-    with pytest.raises(AsrServiceError):
-        _segment_subtitles(segments)
-
-
-def test_local_asr_japanese_does_not_enter_translation(monkeypatch, tmp_path: Path) -> None:
-    transcript = AsrTranscript(
-        [_subtitle("日本語の字幕", 0, 2)],
-        "ja",
-        {"subtitle_source": "local_asr", "asr_model": "medium"},
+def test_scheduler_errors_are_preserved(status: int, code: str) -> None:
+    error = urllib.error.HTTPError(
+        "http://asr.test/v1/audio-sessions",
+        status,
+        "error",
+        {},
+        None,
     )
-    transcribe = AsyncMock(return_value=transcript)
-    monkeypatch.setattr(main, "transcribe_media", transcribe)
-    translate = AsyncMock()
-    monkeypatch.setattr(main, "translate_subtitle_if_needed", translate)
-    monkeypatch.setattr(main.settings, "translation_enabled", True)
+    error.read = lambda: json.dumps({"error": {"code": code, "message": "scheduler"}}).encode()  # type: ignore[method-assign]
+    client = LocalAsrClient(AsrConfig("http://asr.test", "token"))
 
-    source, translated, metadata = asyncio.run(
-        main.transcribe_local_asr_subtitle(
-            video=tmp_path / "video.mkv",
-            lang="ja",
-            selection={"requested_language": "ja", "translation_engine_requested": "google_cloud"},
-            work_dir=tmp_path,
-            key="key",
-            priority="media",
-            info={},
-        )
-    )
+    with patch("urllib.request.urlopen", side_effect=error), pytest.raises(AsrServiceError) as raised:
+        asyncio.run(client.create_media_session())
 
-    assert source == translated
-    assert "日本語の字幕" in source.read_text(encoding="utf-8")
-    assert metadata["subtitle_source"] == "local_asr"
-    transcribe.assert_awaited_once()
-    assert transcribe.await_args.kwargs["priority"] == "media"
-    translate.assert_not_awaited()
+    assert (raised.value.code, raised.value.status_code) == (code, status)
 
 
-def test_local_asr_english_reuses_translation_pipeline(monkeypatch, tmp_path: Path) -> None:
-    transcript = AsrTranscript(
-        [_subtitle("English speech", 0, 2)],
-        "en",
-        {"subtitle_source": "local_asr", "asr_model": "medium"},
-    )
-    monkeypatch.setattr(main, "transcribe_media", AsyncMock(return_value=transcript))
-    translated_path = tmp_path / "translated.srt"
-    translate = AsyncMock(
-        return_value=(translated_path, {"translated": True, "translation_engine": "google_cloud"})
-    )
-    monkeypatch.setattr(main, "translate_subtitle_if_needed", translate)
-    monkeypatch.setattr(main.settings, "translation_enabled", True)
-
-    source, translated, metadata = asyncio.run(
-        main.transcribe_local_asr_subtitle(
-            video=tmp_path / "video.mkv",
-            lang="ja",
-            selection={"requested_language": "ja", "translation_engine_requested": "google_cloud"},
-            work_dir=tmp_path,
-            key="key",
-            priority="batch",
-            info={},
-        )
-    )
-
-    assert source.name.endswith(".source.srt")
-    assert translated == translated_path
-    assert metadata["detected_language"] == "en"
-    assert translate.await_args.kwargs["selection"]["source_language"] == "en"
-    assert translate.await_args.kwargs["selection"]["translated"] is True
-    assert translate.await_args.kwargs["selection"]["source_kind"] == "local_asr"
+def test_timeout_is_distinguished_from_worker_failure() -> None:
+    client = LocalAsrClient(AsrConfig("http://asr.test", "token"))
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError(socket.timeout("timed out"))):
+        with pytest.raises(AsrServiceError) as raised:
+            asyncio.run(client.create_media_session())
+    assert (raised.value.code, raised.value.status_code) == ("ASR_TIMEOUT", 504)
 
 
-def test_youtube_subtitle_wins_over_local_asr(monkeypatch) -> None:
-    monkeypatch.setattr(main.settings, "asr_api_url", "https://asr.example")
-    monkeypatch.setattr(main.settings, "asr_token", "token")
-
-    selection = main.select_subtitle_language(
-        {"language": "ja", "subtitles": {"ja": [{}]}, "automatic_captions": {}},
-        "ja",
-    )
-
-    assert selection["source_kind"] == "manual"
-    assert main.resolved_cache_key("video", "ja", {"language": "ja", "subtitles": {"ja": [{}]}}).startswith("video_ja_")
-    assert "local_asr" not in main.resolved_cache_key("video", "ja", {"language": "ja", "subtitles": {"ja": [{}]}})
+def test_health_and_scheduler_status_use_existing_endpoints() -> None:
+    responses = [FakeResponse(b"<html>voice input</html>", content_type="text/html"), FakeResponse({"state": "ready", "queue_length": 0})]
+    client = LocalAsrClient(AsrConfig("http://asr.test", "token", status_url="http://asr.test:8081/internal/asr/status"))
+    with patch("urllib.request.urlopen", side_effect=lambda *_args, **_kwargs: responses.pop(0)):
+        health = asyncio.run(client.health())
+        status = asyncio.run(client.status())
+    assert health["ok"] is True
+    assert health["content_type"] == "text/html"
+    assert status == {"state": "ready", "queue_length": 0}
 
 
-def test_download_with_youtube_subtitle_does_not_call_asr(monkeypatch, tmp_path: Path) -> None:
-    video = tmp_path / "video.mkv"
-    video.write_bytes(b"video")
-    subtitle = tmp_path / "video.ja.srt"
-    subtitle.write_text("1\n00:00:00,000 --> 00:00:01,000\n既存字幕\n", encoding="utf-8")
-    monkeypatch.setattr(main, "run_command", AsyncMock(return_value=""))
-    monkeypatch.setattr(main, "find_downloaded_video", lambda _work_dir: video)
-    transcribe = AsyncMock(side_effect=AssertionError("YouTube subtitle should win"))
-    monkeypatch.setattr(main, "transcribe_media", transcribe)
-    monkeypatch.setattr(main.settings, "asr_api_url", "https://asr.example")
-    monkeypatch.setattr(main.settings, "asr_token", "token")
-
-    _video, original, translated, metadata = asyncio.run(
-        main.download_sources(
-            "video",
-            "ja",
-            tmp_path,
-            {"id": "video", "language": "ja", "subtitles": {"ja": [{}]}},
-        )
-    )
-
-    assert original == subtitle
-    assert translated == subtitle
-    assert metadata["subtitle_source"] == "youtube_manual"
-    transcribe.assert_not_awaited()
-
-
-def test_asr_retry_policy_keeps_queue_full_and_fails_worker_error() -> None:
-    assert main.is_retryable_prepare_error(AsrServiceError("ASR_QUEUE_FULL", "full", 429))
-    assert not main.is_retryable_prepare_error(AsrServiceError("ASR_WORKER_FAILED", "down", 503))
-    assert not main.is_retryable_prepare_error(AsrServiceError("ASR_WORKER_UNAVAILABLE", "down", 503))
-
-
-def test_asr_cache_variant_changes_with_settings() -> None:
-    base = AsrConfig("https://asr.example", "token", "medium", "auto", 30, 60, "v1")
-    changed = AsrConfig("https://asr.example", "token", "large-v3", "auto", 30, 60, "v1")
-    assert cache_variant(base) != cache_variant(changed)
-
-
-def _subtitle(text: str, start: float, end: float) -> srt.Subtitle:
-    return srt.Subtitle(
-        index=1,
-        start=timedelta(seconds=start),
-        end=timedelta(seconds=end),
-        content=text,
+def test_config_reads_local_asr_environment(monkeypatch) -> None:
+    monkeypatch.setenv("LOCAL_ASR_BASE_URL", "http://127.0.0.1:8080/")
+    monkeypatch.setenv("LOCAL_ASR_TOKEN", "secret")
+    monkeypatch.setenv("LOCAL_ASR_STATUS_URL", "http://127.0.0.1:8081/internal/asr/status")
+    config = AsrConfig.from_env()
+    assert (config.api_url, config.token, config.status_url) == (
+        "http://127.0.0.1:8080",
+        "secret",
+        "http://127.0.0.1:8081/internal/asr/status",
     )

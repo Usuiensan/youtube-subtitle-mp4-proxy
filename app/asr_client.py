@@ -1,19 +1,18 @@
-"""Client for the shared discord-transcriber media ASR session API."""
+"""Small client for discord-transcriber's shared audio session API."""
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import math
+import os
+import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import timedelta
 from pathlib import Path
-from typing import Any
-
-import srt
+from typing import Any, Iterable
 
 from app.command_runner import run_command
 
@@ -30,165 +29,317 @@ class AsrServiceError(RuntimeError):
 class AsrConfig:
     api_url: str
     token: str
-    model: str
-    language: str
-    chunk_seconds: int
-    timeout_seconds: int
-    settings_version: str
+    model: str = "shared-worker"
+    language: str = "auto"
+    chunk_seconds: int = 30
+    timeout_seconds: float = 60
+    settings_version: str = "v1"
+    status_url: str | None = None
 
     @property
-    def settings_hash(self) -> str:
-        payload = {
-            "model": self.model,
-            "language": self.language,
-            "chunk_seconds": self.chunk_seconds,
-            "settings_version": self.settings_version,
-        }
-        return hashlib.sha256(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-        ).hexdigest()[:16]
+    def base_url(self) -> str:
+        return self.api_url
+
+    @classmethod
+    def from_env(cls) -> "AsrConfig":
+        return cls(
+            api_url=os.getenv("LOCAL_ASR_BASE_URL", "").rstrip("/"),
+            token=os.getenv("LOCAL_ASR_TOKEN", ""),
+            language=os.getenv("LOCAL_ASR_LANGUAGE", "auto"),
+            chunk_seconds=max(1, int(os.getenv("LOCAL_ASR_CHUNK_SECONDS", "30"))),
+            timeout_seconds=max(1.0, float(os.getenv("LOCAL_ASR_TIMEOUT_SECONDS", "60"))),
+            status_url=os.getenv("LOCAL_ASR_STATUS_URL") or None,
+        )
+
+
+@dataclass(frozen=True)
+class AsrSession:
+    session_id: str
+    status: str
+    priority: str
+    timebase: str
+
+
+@dataclass(frozen=True)
+class AsrSegment:
+    start: float
+    end: float
+    text: str
+
+
+@dataclass(frozen=True)
+class AsrResult:
+    result_id: str
+    cursor: str
+    chunk_index: int
+    text: str
+    started_at: float | str | None
+    ended_at: float | str | None
+    language: str | None
+    language_probability: float | None
+    status: str
+    timebase: str
+    segments: tuple[AsrSegment, ...]
+
+
+@dataclass(frozen=True)
+class AsrResults:
+    session_id: str
+    items: tuple[AsrResult, ...]
+    next_cursor: str
+    session_status: str
 
 
 @dataclass(frozen=True)
 class AsrTranscript:
-    subtitles: list[srt.Subtitle]
-    detected_language: str | None
-    metadata: dict[str, Any]
+    session_id: str
+    results: tuple[AsrResult, ...]
+    session_status: str
+
+    @property
+    def segments(self) -> tuple[AsrSegment, ...]:
+        return tuple(segment for result in self.results for segment in result.segments)
 
 
-def cache_variant(config: AsrConfig) -> str:
-    return f"local_asr_{config.settings_hash}"
+class LocalAsrClient:
+    def __init__(self, config: AsrConfig) -> None:
+        self.config = config
 
-
-def _request_json(
-    config: AsrConfig,
-    path: str,
-    *,
-    method: str,
-    payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    if not config.api_url or not config.token:
-        raise AsrServiceError(
-            "ASR_NOT_CONFIGURED",
-            "共有ASR APIのURLとtokenが設定されていません。",
-            503,
+    async def create_media_session(self, *, priority: str | None = None) -> AsrSession:
+        if priority not in {"media", "batch", None}:
+            raise ValueError("media_file priority must be media or batch")
+        payload = await self._json(
+            "/v1/audio-sessions",
+            method="POST",
+            payload={
+                "source": "media_file",
+                "priority": priority or "media",
+                "timebase": "media_relative",
+                "language": self.config.language,
+                "sample_rate": 16000,
+                "channels": 1,
+                "content_type": "audio/wav",
+                "segmentation": {
+                    "type": "fixed",
+                    "max_chunk_seconds": self.config.chunk_seconds,
+                },
+                "retention": {"save_transcript": True, "save_audio": False},
+            },
         )
-    body = None
-    headers = {"Authorization": f"Bearer {config.token}"}
-    if payload is not None:
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    request = urllib.request.Request(
-        f"{config.api_url.rstrip('/')}{path}",
-        data=body,
-        headers=headers,
-        method=method,
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=config.timeout_seconds) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        raw = error.read().decode("utf-8", errors="replace")
         try:
-            response = json.loads(raw)
-        except json.JSONDecodeError:
-            response = {}
-        detail = response.get("error") if isinstance(response, dict) else None
-        if not isinstance(detail, dict):
-            detail = {}
-        raise AsrServiceError(
-            str(detail.get("code") or "ASR_REQUEST_FAILED"),
-            str(detail.get("message") or raw or f"HTTP {error.code}"),
-            error.code,
-        ) from error
-    except (urllib.error.URLError, TimeoutError) as error:
-        raise AsrServiceError("ASR_WORKER_UNAVAILABLE", str(error), 503) from error
-
-
-async def _request_json_async(
-    config: AsrConfig,
-    path: str,
-    *,
-    method: str,
-    payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    return await asyncio.to_thread(
-        _request_json,
-        config,
-        path,
-        method=method,
-        payload=payload,
-    )
-
-
-def _segment_subtitles(segments: list[dict[str, Any]]) -> list[srt.Subtitle]:
-    parsed: list[tuple[float, float, str]] = []
-    previous_start = -math.inf
-    for segment in segments:
-        if not isinstance(segment, dict):
-            raise AsrServiceError("ASR_INVALID_SEGMENT", "ASR segmentがobjectではありません。", 502)
-        try:
-            start = float(segment["start"])
-            end = float(segment["end"])
-        except (KeyError, TypeError, ValueError) as error:
-            raise AsrServiceError("ASR_INVALID_SEGMENT", "ASR segmentの時刻が不正です。", 502) from error
-        text = str(segment.get("text") or "").strip()
-        if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end <= start:
-            raise AsrServiceError("ASR_INVALID_SEGMENT", "ASR segmentの時刻範囲が不正です。", 502)
-        if start < previous_start - 1.0:
-            raise AsrServiceError("ASR_INVALID_SEGMENT", "ASR segmentの時刻が大きく逆転しています。", 502)
-        previous_start = start
-        if text:
-            parsed.append((start, end, text))
-
-    parsed.sort(key=lambda item: (item[0], item[1], item[2]))
-    subtitles: list[srt.Subtitle] = []
-    previous_end = -math.inf
-    seen: set[tuple[float, float, str]] = set()
-    for index, (start, end, text) in enumerate(parsed, start=1):
-        item = (start, end, text)
-        if item in seen or start < previous_end - 0.01:
-            raise AsrServiceError("ASR_INVALID_SEGMENT", "ASR segmentが重複しています。", 502)
-        seen.add(item)
-        subtitles.append(
-            srt.Subtitle(
-                index=index,
-                start=timedelta(seconds=start),
-                end=timedelta(seconds=end),
-                content=text,
+            return AsrSession(
+                session_id=str(payload["session_id"]),
+                status=str(payload.get("status", "created")),
+                priority=str(payload["priority"]),
+                timebase=str(payload["timebase"]),
             )
+        except (KeyError, TypeError, ValueError) as error:
+            raise AsrServiceError("ASR_INVALID_RESPONSE", "ASR session response is invalid.", 502) from error
+
+    async def send_chunk(
+        self,
+        session_id: str,
+        chunk_index: int,
+        chunk: bytes | Path,
+        media_offset: float,
+        *,
+        client_chunk_id: str | None = None,
+        content_type: str = "audio/wav",
+    ) -> dict[str, Any]:
+        if media_offset < 0 or not math.isfinite(media_offset):
+            raise ValueError("media_offset must be a finite non-negative number")
+        body = await asyncio.to_thread(chunk.read_bytes) if isinstance(chunk, Path) else chunk
+        headers = {
+            "Content-Type": content_type,
+            "X-Chunk-Index": str(chunk_index),
+            "X-Media-Offset": f"{media_offset:.6f}",
+            "X-Client-Chunk-Id": client_chunk_id or f"youtube-{session_id}-{chunk_index}",
+        }
+        return await self._json(f"/v1/audio-sessions/{session_id}/chunks", method="POST", body=body, headers=headers)
+
+    async def get_results(self, session_id: str, *, after: int = 0, limit: int = 50) -> AsrResults:
+        if after < 0 or limit < 1:
+            raise ValueError("after must be >= 0 and limit must be > 0")
+        query = urllib.parse.urlencode({"after": after, "limit": min(limit, 100)})
+        payload = await self._json(f"/v1/audio-sessions/{session_id}/results?{query}", method="GET")
+        try:
+            items = tuple(self._result(item) for item in payload.get("items", []))
+            return AsrResults(
+                session_id=str(payload["session_id"]),
+                items=items,
+                next_cursor=str(payload.get("next_cursor", after)),
+                session_status=str(payload["session_status"]),
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise AsrServiceError("ASR_INVALID_RESPONSE", "ASR results response is invalid.", 502) from error
+
+    async def stop_session(self, session_id: str, *, reason: str = "client") -> dict[str, Any]:
+        return await self._json(
+            f"/v1/audio-sessions/{session_id}/stop",
+            method="POST",
+            payload={"reason": reason},
         )
-        previous_end = end
-    if not subtitles:
-        raise AsrServiceError("ASR_NO_SEGMENTS", "ASR結果に有効なsegmentがありません。", 422)
-    return subtitles
+
+    async def transcribe_chunks(
+        self,
+        chunks: Iterable[tuple[bytes | Path, float]],
+        *,
+        priority: str | None = None,
+    ) -> AsrTranscript:
+        session = await self.create_media_session(priority=priority)
+        stopped = False
+        try:
+            for index, (chunk, offset) in enumerate(chunks):
+                await self.send_chunk(session.session_id, index, chunk, offset)
+            await self.stop_session(session.session_id, reason="client")
+            stopped = True
+            results: list[AsrResult] = []
+            after = 0
+            while True:
+                page = await self.get_results(session.session_id, after=after)
+                results.extend(page.items)
+                next_cursor = int(page.next_cursor)
+                if len(page.items) < 50 or not page.items or next_cursor <= after:
+                    return AsrTranscript(session.session_id, tuple(results), page.session_status)
+                after = next_cursor
+        finally:
+            if not stopped:
+                try:
+                    await self.stop_session(session.session_id, reason="client_cleanup")
+                except AsrServiceError:
+                    pass
+
+    async def health(self) -> dict[str, Any]:
+        status, headers, body = await self._raw("/", method="GET")
+        if status >= 400:
+            raise AsrServiceError("ASR_HEALTH_FAILED", f"HTTP {status}", status)
+        return {
+            "ok": True,
+            "status_code": status,
+            "content_type": headers.get_content_type(),
+            "body": body.decode("utf-8", errors="replace"),
+        }
+
+    async def status(self) -> dict[str, Any]:
+        if not self.config.status_url:
+            raise AsrServiceError("ASR_STATUS_NOT_CONFIGURED", "LOCAL_ASR_STATUS_URL is not configured.", 503)
+        return await self._json_url(self.config.status_url, method="GET")
+
+    async def _json(
+        self,
+        path: str,
+        *,
+        method: str,
+        payload: dict[str, Any] | None = None,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        return await self._json_url(
+            f"{self.config.api_url.rstrip('/')}{path}",
+            method=method,
+            payload=payload,
+            body=body,
+            headers=headers,
+        )
+
+    async def _json_url(
+        self,
+        url: str,
+        *,
+        method: str,
+        payload: dict[str, Any] | None = None,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        _status, _headers, raw = await self._raw(url, method=method, payload=payload, body=body, headers=headers)
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise AsrServiceError("ASR_INVALID_RESPONSE", "ASR response is not valid JSON.", 502) from error
+        if not isinstance(value, dict):
+            raise AsrServiceError("ASR_INVALID_RESPONSE", "ASR response must be a JSON object.", 502)
+        return value
+
+    async def _raw(
+        self,
+        url_or_path: str,
+        *,
+        method: str,
+        payload: dict[str, Any] | None = None,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[int, Any, bytes]:
+        if not self.config.api_url or not self.config.token:
+            raise AsrServiceError("ASR_NOT_CONFIGURED", "LOCAL_ASR_BASE_URL and LOCAL_ASR_TOKEN are required.", 503)
+        url = url_or_path if "://" in url_or_path else f"{self.config.api_url.rstrip('/')}{url_or_path}"
+        request_headers = {"Authorization": f"Bearer {self.config.token}", **(headers or {})}
+        request_body = body
+        if payload is not None:
+            request_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            request_headers.setdefault("Content-Type", "application/json")
+        request = urllib.request.Request(url, data=request_body, headers=request_headers, method=method)
+        try:
+            response = await asyncio.to_thread(urllib.request.urlopen, request, timeout=self.config.timeout_seconds)
+            with response:
+                return response.status, response.headers, response.read()
+        except urllib.error.HTTPError as error:
+            raw = error.read().decode("utf-8", errors="replace")
+            try:
+                detail = json.loads(raw).get("error", {})
+            except (json.JSONDecodeError, AttributeError):
+                detail = {}
+            if not isinstance(detail, dict):
+                detail = {}
+            raise AsrServiceError(
+                str(detail.get("code") or "ASR_REQUEST_FAILED"),
+                str(detail.get("message") or raw or f"HTTP {error.code}"),
+                error.code,
+            ) from error
+        except (socket.timeout, TimeoutError) as error:
+            raise AsrServiceError("ASR_TIMEOUT", str(error) or "ASR request timed out.", 504) from error
+        except urllib.error.URLError as error:
+            if isinstance(error.reason, (socket.timeout, TimeoutError)):
+                raise AsrServiceError("ASR_TIMEOUT", str(error.reason), 504) from error
+            raise AsrServiceError("ASR_WORKER_UNAVAILABLE", str(error.reason), 503) from error
+
+    @staticmethod
+    def _result(value: Any) -> AsrResult:
+        if not isinstance(value, dict):
+            raise ValueError("result is not an object")
+        segments: list[AsrSegment] = []
+        for raw in value.get("segments", []):
+            if not isinstance(raw, dict):
+                raise ValueError("segment is not an object")
+            start = float(raw["start"])
+            end = float(raw["end"])
+            text = str(raw["text"])
+            if not math.isfinite(start) or not math.isfinite(end) or start < 0 or end <= start:
+                raise ValueError("segment range is invalid")
+            segments.append(AsrSegment(start, end, text))
+        probability = value.get("language_probability")
+        return AsrResult(
+            result_id=str(value["result_id"]),
+            cursor=str(value["cursor"]),
+            chunk_index=int(value["chunk_index"]),
+            text=str(value.get("text", "")),
+            started_at=value.get("started_at"),
+            ended_at=value.get("ended_at"),
+            language=str(value["language"]) if value.get("language") is not None else None,
+            language_probability=float(probability) if probability is not None else None,
+            status=str(value.get("status", "final")),
+            timebase=str(value["timebase"]),
+            segments=tuple(segments),
+        )
 
 
 async def _split_audio(media_path: Path, output_dir: Path, config: AsrConfig) -> list[tuple[Path, float]]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_pattern = output_dir / "chunk-%06d.wav"
+    pattern = output_dir / "chunk-%06d.wav"
     await run_command(
         [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            str(media_path),
-            "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-c:a",
-            "pcm_s16le",
-            "-f",
-            "segment",
-            "-segment_time",
-            str(config.chunk_seconds),
-            "-reset_timestamps",
-            "1",
-            str(output_pattern),
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(media_path), "-vn",
+            "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-f", "segment",
+            "-segment_time", str(config.chunk_seconds), "-reset_timestamps", "1", str(pattern),
         ],
         timeout_seconds=config.timeout_seconds,
         raise_http=False,
@@ -196,151 +347,21 @@ async def _split_audio(media_path: Path, output_dir: Path, config: AsrConfig) ->
     chunks: list[tuple[Path, float]] = []
     offset = 0.0
     for chunk in sorted(output_dir.glob("chunk-*.wav")):
-        duration_text = await run_command(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                str(chunk),
-            ],
+        duration = float((await run_command(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(chunk)],
             timeout_seconds=config.timeout_seconds,
             raise_http=False,
-        )
-        try:
-            duration = float(duration_text.strip())
-        except ValueError as error:
-            raise AsrServiceError("ASR_AUDIO_INVALID", "音声チャンクの長さを取得できません。", 502) from error
+        )).strip())
         if not math.isfinite(duration) or duration <= 0:
-            raise AsrServiceError("ASR_AUDIO_INVALID", "音声チャンクの長さが不正です。", 502)
+            raise AsrServiceError("ASR_AUDIO_INVALID", "Audio chunk duration is invalid.", 502)
         chunks.append((chunk, offset))
         offset += duration
     if not chunks:
-        raise AsrServiceError("ASR_AUDIO_EMPTY", "音声チャンクを生成できませんでした。", 422)
+        raise AsrServiceError("ASR_AUDIO_EMPTY", "No audio chunks were generated.", 422)
     return chunks
 
 
-async def transcribe_media(
-    media_path: Path,
-    work_dir: Path,
-    config: AsrConfig,
-    *,
-    priority: str,
-) -> AsrTranscript:
-    session = await _request_json_async(
-        config,
-        "/v1/audio-sessions",
-        method="POST",
-        payload={
-            "source": "media_file",
-            "priority": priority,
-            "timebase": "media_relative",
-            "language": config.language,
-            "sample_rate": 16000,
-            "channels": 1,
-            "content_type": "audio/wav",
-            "segmentation": {"type": "fixed", "max_chunk_seconds": config.chunk_seconds},
-            "retention": {"save_transcript": True, "save_audio": False},
-        },
-    )
-    session_id = str(session.get("session_id") or "")
-    if not session_id:
-        raise AsrServiceError("ASR_INVALID_RESPONSE", "ASR session_idがありません。", 502)
-
-    results: list[dict[str, Any]] = []
-    try:
-        for chunk_index, (chunk, offset) in enumerate(
-            await _split_audio(media_path, work_dir / "asr-chunks", config)
-        ):
-            response = await asyncio.to_thread(
-                _upload_chunk,
-                config,
-                session_id,
-                chunk_index,
-                offset,
-                chunk,
-            )
-            result = response.get("result")
-            if isinstance(result, dict):
-                results.append(result)
-    finally:
-        try:
-            await _request_json_async(
-                config,
-                f"/v1/audio-sessions/{session_id}/stop",
-                method="POST",
-                payload={"reason": "youtube_prepare"},
-            )
-        except AsrServiceError:
-            pass
-
-    segments = [
-        segment
-        for result in results
-        for segment in (result.get("segments") or [])
-        if isinstance(segment, dict)
-    ]
-    subtitles = _segment_subtitles(segments)
-    detected = max(
-        (result for result in results if result.get("language")),
-        key=lambda result: float(result.get("language_probability") or 0),
-        default={},
-    )
-    detected_language = str(detected.get("language") or "") or None
-    return AsrTranscript(
-        subtitles=subtitles,
-        detected_language=detected_language,
-        metadata={
-            "subtitle_source": "local_asr",
-            "asr_model": config.model,
-            "requested_language": config.language,
-            "detected_language": detected_language,
-            "asr_settings_version": config.settings_version,
-            "asr_settings_hash": config.settings_hash,
-            "asr_priority": priority,
-            "asr_segment_count": len(subtitles),
-        },
-    )
-
-
-def _upload_chunk(
-    config: AsrConfig,
-    session_id: str,
-    chunk_index: int,
-    offset: float,
-    chunk: Path,
-) -> dict[str, Any]:
-    request = urllib.request.Request(
-        f"{config.api_url.rstrip('/')}/v1/audio-sessions/{session_id}/chunks",
-        data=chunk.read_bytes(),
-        headers={
-            "Authorization": f"Bearer {config.token}",
-            "Content-Type": "audio/wav",
-            "X-Chunk-Index": str(chunk_index),
-            "X-Media-Offset": f"{offset:.6f}",
-            "X-Client-Chunk-Id": f"youtube-{session_id}-{chunk_index}",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=config.timeout_seconds) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        raw = error.read().decode("utf-8", errors="replace")
-        try:
-            response = json.loads(raw)
-        except json.JSONDecodeError:
-            response = {}
-        detail = response.get("error") if isinstance(response, dict) else None
-        if not isinstance(detail, dict):
-            detail = {}
-        raise AsrServiceError(
-            str(detail.get("code") or "ASR_REQUEST_FAILED"),
-            str(detail.get("message") or raw or f"HTTP {error.code}"),
-            error.code,
-        ) from error
-    except (urllib.error.URLError, TimeoutError) as error:
-        raise AsrServiceError("ASR_WORKER_UNAVAILABLE", str(error), 503) from error
+async def transcribe_media(media_path: Path, work_dir: Path, config: AsrConfig, *, priority: str) -> AsrTranscript:
+    client = LocalAsrClient(config)
+    chunks = await _split_audio(media_path, work_dir / "asr-chunks", config)
+    return await client.transcribe_chunks(chunks, priority=priority)

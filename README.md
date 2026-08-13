@@ -313,19 +313,6 @@ Google の API キーが必要なのは、YouTube Data API v3 を使う `/prepar
 
 `TRANSLATION_ENABLED=1` の場合、要求言語が `ja` で日本語の手動字幕がない動画は、Discord bot の単体 `/prepare` では翻訳元字幕をユーザーが選び、日本語へ翻訳してから焼き込みます。API から `subtitleSourceLang` を指定しない場合や一括準備では、動画の原言語、英語、韓国語、中国語、`TRANSLATION_SOURCE_LANGS` の順で自動選択します。
 
-YouTubeに手動字幕・利用可能な自動字幕がない場合は、共有 `discord-transcriber` のASR APIへ音声を送ってsource.srtを生成します。`DISCORD_TRANSCRIBER_ASR_URL` と `DISCORD_TRANSCRIBER_ASR_TOKEN` を設定してください（既存の `VOICE_INPUT_API_URL` / `VOICE_INPUT_TOKEN` も利用できます）。単発動画は `priority=media`、playlist/channel/batchは `priority=batch` で送信し、ASR workerはこのサービス側の単一workerだけを使用します。429 queue fullは準備ジョブの既存backoffで再試行し、503 worker failureは自動fallbackせず失敗理由を保存します。
-
-```bash
-export DISCORD_TRANSCRIBER_ASR_URL=https://transcriber.example.invalid
-export DISCORD_TRANSCRIBER_ASR_TOKEN='change-this-token'
-export YOUTUBE_ASR_MODEL=medium
-export YOUTUBE_ASR_LANGUAGE=auto
-export YOUTUBE_ASR_CHUNK_SECONDS=30
-export YOUTUBE_ASR_SETTINGS_VERSION=v1
-```
-
-ASR結果は `subtitle_source=local_asr`、ASR model、requested/detected language、設定hashをsource metadataへ保存します。同じ動画とASR設定では `local_asr_<設定hash>` のcacheを再利用します。英語など要求言語と異なる検出結果は、既存の翻訳pipelineへsource.srtを渡します。
-
 LLM 翻訳は GTX 1050 Ti サーバー上では実行せず、RTX 3060 を搭載した別PCの OpenAI 互換 API に送ります。翻訳エンジン選択では `Qwen 3 4B Instruct`、`Qwen 3 8B`、`Qwen 3 14B`、`Aya Expanse 8B`、`Gemma 3 12B`、`TranslateGemma 12B`、`Gemini Flash` を切り替えられます。`TranslateGemma 12B` は `translategemma:12b` を使い、専用プロンプトを `TRANSLATEGEMMA_PROMPT_TEMPLATE_FILE` から読めます。準備前に `REMOTE_LLM_HEALTH_URL` を確認し、応答がない、または余裕なしとして失敗する場合は、Discord bot がユーザーに Google 翻訳で進めてよいか確認します。LLM 失敗時に Google Cloud Translation API へ自動フォールバックする動作は行いません。
 
 ```bash
