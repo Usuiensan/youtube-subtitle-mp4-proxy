@@ -57,6 +57,13 @@ class Settings:
     discord_prepare_token = os.getenv("DISCORD_PREPARE_TOKEN")
     webui_temp_key_secret = os.getenv("WEBUI_TEMP_KEY_SECRET", os.getenv("DISCORD_PREPARE_TOKEN", ""))
     youtube_proxy_base_url = os.getenv("YOUTUBE_PROXY_BASE_URL", "").rstrip("/")
+    asr_api_url = os.getenv("DISCORD_TRANSCRIBER_ASR_URL", os.getenv("VOICE_INPUT_API_URL", "")).rstrip("/")
+    asr_token = os.getenv("DISCORD_TRANSCRIBER_ASR_TOKEN", os.getenv("VOICE_INPUT_TOKEN", ""))
+    asr_model = os.getenv("YOUTUBE_ASR_MODEL", os.getenv("ASR_MODEL", "shared-worker"))
+    asr_language = os.getenv("YOUTUBE_ASR_LANGUAGE", "auto")
+    asr_chunk_seconds = max(1, int(os.getenv("YOUTUBE_ASR_CHUNK_SECONDS", "30")))
+    asr_timeout_seconds = max(30, int(os.getenv("YOUTUBE_ASR_TIMEOUT_SECONDS", "3600")))
+    asr_settings_version = os.getenv("YOUTUBE_ASR_SETTINGS_VERSION", "v1")
     translation_enabled = os.getenv("TRANSLATION_ENABLED", "1") != "0"
     translation_source_langs = os.getenv("TRANSLATION_SOURCE_LANGS", "en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW")
     local_llm_engine = os.getenv("LOCAL_LLM_ENGINE", "openai_compatible")

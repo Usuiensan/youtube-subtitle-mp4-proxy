@@ -40,6 +40,7 @@ from app.translation import (
     save_srt,
     translate_srt_with_local_worker,
 )
+from app.asr_client import AsrConfig, AsrServiceError, cache_variant as asr_cache_variant, transcribe_media
 from app.metrics import MetricsManager
 from app.google_translation_usage import record as record_google_translation_usage, summary as google_translation_usage_summary
 from app.cache_layout import CacheLayout
@@ -97,6 +98,18 @@ load_env_file(ENV_FILE)
 
 
 settings = EnvironmentSettings()
+
+
+def current_asr_config() -> AsrConfig:
+    return AsrConfig(
+        api_url=settings.asr_api_url,
+        token=settings.asr_token,
+        model=settings.asr_model,
+        language=settings.asr_language,
+        chunk_seconds=settings.asr_chunk_seconds,
+        timeout_seconds=settings.asr_timeout_seconds,
+        settings_version=settings.asr_settings_version,
+    )
 _system_metrics: deque[dict] = deque(maxlen=max(1, int(settings.system_metrics_history_seconds / max(settings.system_metrics_interval_seconds, 1)) + 60))
 _last_cpu_times: tuple[int, int] | None = None
 _metrics_task: asyncio.Task | None = None
@@ -653,6 +666,8 @@ def variant_id(
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
 ) -> str:
+    if subtitle_source_lang == "local_asr":
+        return asr_cache_variant(current_asr_config())
     if not subtitle_source_lang and not translation_engine:
         return ""
     source = (subtitle_source_lang or "auto").lower()
@@ -671,6 +686,22 @@ def cache_key(
     if variant:
         return f"{video_id}_{lang}_{variant}_{render_profile_id(subtitle_font_size)}"
     return f"{video_id}_{lang}_{render_profile_id(subtitle_font_size)}"
+
+
+def resolved_cache_key(
+    video_id: str,
+    lang: str,
+    info: dict,
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
+    subtitle_font_size: int | None = None,
+) -> str:
+    if subtitle_source_lang or translation_engine:
+        return cache_key(video_id, lang, subtitle_source_lang, translation_engine, subtitle_font_size)
+    selection = select_subtitle_language(info, lang)
+    if selection.get("source_kind") == "local_asr":
+        return cache_key(video_id, lang, "local_asr", None, subtitle_font_size)
+    return cache_key(video_id, lang, None, None, subtitle_font_size)
 
 
 def render_profile_id(subtitle_font_size: int | None = None) -> str:
@@ -1214,6 +1245,8 @@ def candidate_cache_keys(video_id: str, lang: str) -> list[str]:
 
 
 def default_variant_priority(key: str) -> tuple[int, str]:
+    if "_local_asr_" in key:
+        return (0, key)
     for profile_id in settings.local_llm_profile_models:
         if f"_{profile_id}_" in key:
             return (1, key)
@@ -1234,6 +1267,8 @@ def default_serving_key(video_id: str, lang: str, mode: str) -> str:
 
     for key in sorted(candidate_cache_keys(video_id, lang), key=default_variant_priority):
         if key == exact:
+            continue
+        if "_local_asr_" in key and key != cache_key(video_id, lang, "local_asr"):
             continue
         if mode == "hls":
             if hot_hls_playlist_path(key):
@@ -2012,12 +2047,17 @@ def subtitle_choice_body(info: dict, requested_lang: str) -> dict:
             "requires_choice": settings.translation_enabled and bool(candidates),
             "candidates": candidates,
             "translation_engines": translation_profile_options(),
+            "local_asr_available": bool(settings.asr_api_url and settings.asr_token),
         }
     )
-    if requested_lang != "ja" or not settings.translation_enabled:
+    if (requested_lang != "ja" or not settings.translation_enabled) and not (
+        not candidates and body["local_asr_available"]
+    ):
         body["error"] = f"No subtitle found for language: {requested_lang}"
-    elif not candidates:
+    elif not candidates and not body["local_asr_available"]:
         body["error"] = "No subtitle found in any language"
+    elif not candidates:
+        body["fallback"] = {"subtitle_source": "local_asr"}
     return body
 
 
@@ -2152,6 +2192,15 @@ def select_subtitle_language(
                 ),
             }
 
+    if settings.asr_api_url and settings.asr_token:
+        return {
+            "requested_language": requested_lang,
+            "source_language": requested_lang,
+            "translated": False,
+            "source_kind": "local_asr",
+            "translation_engine_requested": normalize_translation_engine(translation_engine),
+            "asr_language": settings.asr_language,
+        }
     raise HTTPException(status_code=422, detail="No subtitle found in any language")
 
 
@@ -2529,6 +2578,11 @@ def enrich_existing_subtitle_usage_metadata(metadata: dict, subtitle: Path) -> d
     usage_usd, usage_jpy = google_translate_usage_estimate(characters)
     return {
         **metadata,
+        "subtitle_source": (
+            "local_asr" if metadata.get("source_kind") == "local_asr"
+            else "youtube_auto" if metadata.get("source_kind") == "automatic"
+            else "youtube_manual"
+        ),
         "translation_skipped": True,
         "translation_skipped_reason": "source_subtitle_available",
         "translation_provider_label": "Google Cloud Translation",
@@ -2896,6 +2950,15 @@ async def translate_subtitle_if_needed(
     work_dir: Path,
     job_id: str | None = None,
 ) -> tuple[Path, dict]:
+    source_kind = selection.get("source_kind")
+    selection = {
+        **selection,
+        "subtitle_source": (
+            "local_asr" if source_kind == "local_asr"
+            else "youtube_auto" if source_kind == "automatic"
+            else "youtube_manual"
+        ),
+    }
     if not selection["translated"]:
         return subtitle, enrich_existing_subtitle_usage_metadata(selection, subtitle)
 
@@ -3075,6 +3138,58 @@ async def translate_subtitle_if_needed(
     return result.subtitle_path, metadata
 
 
+async def transcribe_local_asr_subtitle(
+    *,
+    video: Path,
+    lang: str,
+    selection: dict,
+    work_dir: Path,
+    key: str,
+    priority: str,
+    info: dict,
+    job_id: str | None = None,
+) -> tuple[Path, Path, dict]:
+    config = current_asr_config()
+    if job_id:
+        update_job_progress(job_id, "download", 0.0, details=f"共有ASR待ち ({priority})...")
+    transcript = await transcribe_media(video, work_dir, config, priority=priority)
+    source_path = work_dir / f"{video.stem}.source.srt"
+    save_srt(source_path, transcript.subtitles)
+    detected_language = transcript.detected_language or lang
+    should_translate = (
+        settings.translation_enabled
+        and bool(transcript.detected_language)
+        and normalize_lang(detected_language) != normalize_lang(lang)
+    )
+    effective_selection = {
+        **selection,
+        "source_language": detected_language,
+        "translated": should_translate,
+        "source_kind": "local_asr",
+        "translation_engine_requested": normalize_translation_engine(selection.get("translation_engine_requested")),
+        "asr_requested_language": config.language,
+        "detected_language": transcript.detected_language,
+    }
+    if job_id:
+        update_job_progress(job_id, "download", 100.0, details=f"共有ASR完了 ({len(transcript.subtitles)} segments)")
+    if not should_translate:
+        return source_path, source_path, {**transcript.metadata, **effective_selection, "requested_language": lang}
+    translated_path, translated_meta = await translate_subtitle_if_needed(
+        key=key,
+        subtitle=source_path,
+        info=info,
+        selection=effective_selection,
+        work_dir=work_dir,
+        job_id=job_id,
+    )
+    return source_path, translated_path, {
+        **transcript.metadata,
+        **effective_selection,
+        **translated_meta,
+        "requested_language": lang,
+    }
+
+
 async def download_sources(
     video_id: str,
     lang: str,
@@ -3083,6 +3198,7 @@ async def download_sources(
     job_id: str | None = None,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
+    asr_priority: str = "media",
 ) -> tuple[Path, Path, Path, dict]:
     url = f"https://www.youtube.com/watch?v={video_id}"
     subtitle_selection = select_subtitle_language(
@@ -3095,21 +3211,17 @@ async def download_sources(
     use_automatic_translation = bool(subtitle_selection.get("use_automatic_translation"))
     if normalize_translation_engine(translation_engine) == "youtube_auto" and not use_automatic_translation:
         raise HTTPException(status_code=422, detail="YouTube自動翻訳字幕が利用できません")
-    subtitle_flags = ["--write-auto-subs", "--write-subs"] if use_automatic_translation else [
+    local_asr = subtitle_selection.get("source_kind") == "local_asr"
+    subtitle_flags = [] if local_asr else (["--write-auto-subs", "--write-subs"] if use_automatic_translation else [
         "--write-auto-subs" if subtitle_selection.get("source_kind") == "automatic" else "--write-subs"
-    ]
-    subtitle_languages = f"{source_lang},{lang}" if use_automatic_translation else source_lang
+    ])
+    subtitle_languages = None if local_asr else (f"{source_lang},{lang}" if use_automatic_translation else source_lang)
     format_selector = yt_dlp_download_format_selector()
     fallback_format_selector = yt_dlp_fallback_format_selector()
     
     start_t = time.time()
     dl_args = yt_dlp_base_args() + [
         "--no-playlist",
-        *subtitle_flags,
-        "--sub-langs",
-        subtitle_languages,
-        "--convert-subs",
-        "srt",
         "--paths",
         str(work_dir),
         "-f",
@@ -3120,6 +3232,9 @@ async def download_sources(
         "%(id)s.%(ext)s",
         url,
     ]
+    if subtitle_flags and subtitle_languages:
+        insert_at = dl_args.index("--paths")
+        dl_args[insert_at:insert_at] = [*subtitle_flags, "--sub-langs", subtitle_languages, "--convert-subs", "srt"]
     try:
         if job_id:
             await run_yt_dlp_with_progress(dl_args, job_id=job_id, cwd=work_dir)
@@ -3159,6 +3274,20 @@ async def download_sources(
     end_t = time.time()
     
     video = find_downloaded_video(work_dir)
+    if local_asr:
+        original_subtitle, subtitle, subtitle_meta = await transcribe_local_asr_subtitle(
+            video=video,
+            lang=lang,
+            selection=subtitle_selection,
+            work_dir=work_dir,
+            key=cache_key(video_id, lang, "local_asr"),
+            priority=asr_priority,
+            info=info,
+            job_id=job_id,
+        )
+        metrics_manager.record_download(video.stat().st_size, end_t - start_t)
+        return video, original_subtitle, subtitle, subtitle_meta
+
     original_subtitle = find_subtitle(work_dir, source_lang)
     automatic_translation = find_subtitle(work_dir, lang) if use_automatic_translation else None
     
@@ -3189,6 +3318,8 @@ async def download_subtitle_only(
     job_id: str | None = None,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
+    asr_priority: str = "media",
+    source_video: Path | None = None,
 ) -> tuple[Path, Path, Path, dict]:
     url = f"https://www.youtube.com/watch?v={video_id}"
     subtitle_selection = select_subtitle_language(
@@ -3201,6 +3332,20 @@ async def download_subtitle_only(
     use_automatic_translation = bool(subtitle_selection.get("use_automatic_translation"))
     if normalize_translation_engine(translation_engine) == "youtube_auto" and not use_automatic_translation:
         raise HTTPException(status_code=422, detail="YouTube自動翻訳字幕が利用できません")
+    local_asr = subtitle_selection.get("source_kind") == "local_asr"
+    if local_asr:
+        if source_video is None:
+            raise HTTPException(status_code=422, detail="local ASR requires a reusable source video")
+        return await transcribe_local_asr_subtitle(
+            video=source_video,
+            lang=lang,
+            selection=subtitle_selection,
+            work_dir=work_dir,
+            key=cache_key(video_id, lang, "local_asr"),
+            priority=asr_priority,
+            info=info,
+            job_id=job_id,
+        )
     subtitle_flags = ["--write-auto-subs", "--write-subs"] if use_automatic_translation else [
         "--write-auto-subs" if subtitle_selection.get("source_kind") == "automatic" else "--write-subs"
     ]
@@ -3762,6 +3907,7 @@ async def prepare_sources(
     subtitle_font_size: int | None = None,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
+    asr_priority: str = "media",
 ) -> tuple[Path, Path, Path, dict]:
     existing = check_existing_sources(key)
     if existing and subtitle_source_lang:
@@ -3832,6 +3978,8 @@ async def prepare_sources(
                 job_id=job_id,
                 subtitle_source_lang=subtitle_source_lang,
                 translation_engine=translation_engine,
+                asr_priority=asr_priority,
+                source_video=saved_video,
             )
             source_dir(key).mkdir(parents=True, exist_ok=True)
             source_lang = subtitle_meta.get("source_language", lang)
@@ -3864,6 +4012,7 @@ async def prepare_sources(
         job_id=job_id,
         subtitle_source_lang=subtitle_source_lang,
         translation_engine=translation_engine,
+        asr_priority=asr_priority,
     )
     source_dir(key).mkdir(parents=True, exist_ok=True)
     saved_video = source_dir(key) / f"input{video.suffix.lower()}"
@@ -3901,18 +4050,24 @@ async def create_mp4(
     subtitle_font_size: int | None = None,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
+    asr_priority: str = "media",
 ) -> Path:
-    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine, subtitle_font_size)
-    final_output = output_path(key)
-    prepared = prepared_output_path(key)
+    base_key = cache_key(video_id, lang, subtitle_source_lang, translation_engine, subtitle_font_size)
+    prepared = prepared_output_path(base_key)
     if prepared:
         return prepared
 
-    work_dir = settings.cache_hot_dir / f".work-{key}-{uuid.uuid4().hex}"
-    final_output.parent.mkdir(parents=True, exist_ok=True)
+    work_dir = settings.cache_hot_dir / f".work-{base_key}-{uuid.uuid4().hex}"
     try:
         info = await fetch_video_info(video_id)
         assert_duration_allowed(info)
+        key = resolved_cache_key(video_id, lang, info, subtitle_source_lang, translation_engine, subtitle_font_size)
+        final_output = output_path(key)
+        prepared = prepared_output_path(key)
+        if prepared:
+            return prepared
+        work_dir = settings.cache_hot_dir / f".work-{key}-{uuid.uuid4().hex}"
+        final_output.parent.mkdir(parents=True, exist_ok=True)
         duration = float(info.get("duration") or 0.0)
         await ensure_prepare_workspace_capacity(estimate_workspace_bytes(duration))
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -3929,6 +4084,7 @@ async def create_mp4(
             subtitle_font_size=subtitle_font_size,
             reuse_cached_subtitle=reuse_cached_subtitle,
             reuse_source_video=reuse_source_video,
+            asr_priority=asr_priority,
         )
         async with _global_encode_lock:
             prepared = prepared_output_path(key)
@@ -3959,18 +4115,24 @@ async def create_hls_job(
     subtitle_font_size: int | None = None,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
+    asr_priority: str = "media",
 ) -> Path:
-    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine, subtitle_font_size)
-    playlist = hls_playlist_path(key)
-    prepared = prepared_hls_playlist_path(key)
+    base_key = cache_key(video_id, lang, subtitle_source_lang, translation_engine, subtitle_font_size)
+    prepared = prepared_hls_playlist_path(base_key)
     if prepared:
         return prepared
 
-    work_dir = settings.cache_hot_dir / f".work-{key}-{uuid.uuid4().hex}"
-    playlist.parent.mkdir(parents=True, exist_ok=True)
+    work_dir = settings.cache_hot_dir / f".work-{base_key}-{uuid.uuid4().hex}"
     try:
         info = await fetch_video_info(video_id)
         assert_duration_allowed(info)
+        key = resolved_cache_key(video_id, lang, info, subtitle_source_lang, translation_engine, subtitle_font_size)
+        playlist = hls_playlist_path(key)
+        prepared = prepared_hls_playlist_path(key)
+        if prepared:
+            return prepared
+        work_dir = settings.cache_hot_dir / f".work-{key}-{uuid.uuid4().hex}"
+        playlist.parent.mkdir(parents=True, exist_ok=True)
         duration = float(info.get("duration") or 0.0)
         await ensure_prepare_workspace_capacity(estimate_workspace_bytes(duration))
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -3987,6 +4149,7 @@ async def create_hls_job(
             subtitle_font_size=subtitle_font_size,
             reuse_cached_subtitle=reuse_cached_subtitle,
             reuse_source_video=reuse_source_video,
+            asr_priority=asr_priority,
         )
         async with _global_encode_lock:
             prepared = prepared_hls_playlist_path(key)
@@ -4017,6 +4180,7 @@ async def get_or_create_mp4(
     subtitle_font_size: int | None = None,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
+    asr_priority: str = "media",
 ) -> Path:
     key = cache_key(video_id, lang, subtitle_source_lang, translation_engine, subtitle_font_size)
     cached = prepared_output_path(key)
@@ -4036,6 +4200,7 @@ async def get_or_create_mp4(
                     subtitle_font_size=subtitle_font_size,
                     reuse_cached_subtitle=reuse_cached_subtitle,
                     reuse_source_video=reuse_source_video,
+                    asr_priority=asr_priority,
                 )
             )
             _inflight[key] = task
@@ -4070,6 +4235,7 @@ async def get_or_start_hls(
     subtitle_font_size: int | None = None,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
+    asr_priority: str = "media",
 ) -> Path:
     key = cache_key(video_id, lang, subtitle_source_lang, translation_engine, subtitle_font_size)
     cached = prepared_hls_playlist_path(key)
@@ -4088,6 +4254,7 @@ async def get_or_start_hls(
                     translation_engine=translation_engine,
                     reuse_cached_subtitle=reuse_cached_subtitle,
                     reuse_source_video=reuse_source_video,
+                    asr_priority=asr_priority,
                 )
             )
             _hls_inflight[key] = task
@@ -4110,6 +4277,7 @@ async def get_or_create_hls(
     subtitle_font_size: int | None = None,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
+    asr_priority: str = "media",
 ) -> Path:
     key = cache_key(video_id, lang, subtitle_source_lang, translation_engine, subtitle_font_size)
     cached = prepared_hls_playlist_path(key)
@@ -4128,6 +4296,7 @@ async def get_or_create_hls(
                     translation_engine=translation_engine,
                     reuse_cached_subtitle=reuse_cached_subtitle,
                     reuse_source_video=reuse_source_video,
+                    asr_priority=asr_priority,
                 )
             )
             _hls_inflight[key] = task
@@ -4257,7 +4426,11 @@ def prepare_ready_path(
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
 ) -> Path | None:
-    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
+    key = (
+        cache_key(video_id, lang, subtitle_source_lang, translation_engine)
+        if subtitle_source_lang or translation_engine
+        else default_serving_key(video_id, lang, mode)
+    )
     if mode == "hls":
         return hot_hls_playlist_path(key)
     return hot_output_path(key)
@@ -4530,6 +4703,8 @@ def prepare_error_text(error: Exception) -> str:
 
 
 def is_retryable_prepare_error(error: Exception) -> bool:
+    if isinstance(error, AsrServiceError):
+        return error.status_code == 429
     if isinstance(error, HTTPException):
         return int(error.status_code) in {429, 500, 502, 503, 504}
     return isinstance(error, (asyncio.TimeoutError, TimeoutError, OSError, ConnectionError, json.JSONDecodeError))
@@ -4546,6 +4721,7 @@ async def run_prepare_job_once(
     archive_immediately: bool = False,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
+    asr_priority: str = "media",
 ) -> None:
     cache_id = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
     if archived_ready_entry_exists(cache_id, mode):
@@ -4588,6 +4764,7 @@ async def run_prepare_job_once(
             translation_engine=translation_engine,
             reuse_cached_subtitle=reuse_cached_subtitle,
             reuse_source_video=reuse_source_video,
+            asr_priority=asr_priority,
         )
     else:
         await get_or_create_mp4(
@@ -4598,7 +4775,10 @@ async def run_prepare_job_once(
             translation_engine=translation_engine,
             reuse_cached_subtitle=reuse_cached_subtitle,
             reuse_source_video=reuse_source_video,
+            asr_priority=asr_priority,
         )
+    if not subtitle_source_lang and not translation_engine:
+        cache_id = default_serving_key(video_id, lang, mode)
     archived = False
     if archive_immediately:
         archived = archive_cache_entry(cache_id)
@@ -4630,6 +4810,7 @@ async def run_prepare_job(
     archive_immediately: bool = False,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
+    asr_priority: str = "media",
 ) -> None:
     try:
         async with _prepare_job_semaphore:
@@ -4655,6 +4836,7 @@ async def run_prepare_job(
                         archive_immediately=archive_immediately,
                         reuse_cached_subtitle=reuse_cached_subtitle,
                         reuse_source_video=reuse_source_video,
+                        asr_priority=asr_priority,
                     )
                     return
                 except Exception as error:
@@ -4702,6 +4884,7 @@ async def enqueue_prepare_job(
     archive_immediately: bool = False,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
+    asr_priority: str = "media",
 ) -> tuple[int, dict]:
     if subtitle_source_lang:
         subtitle_source_lang = subtitle_source_lang.strip()
@@ -4711,7 +4894,11 @@ async def enqueue_prepare_job(
     ready = prepare_ready_path(video_id, lang, mode, subtitle_source_lang, normalized_engine)
     url = prepared_media_url(request, video_id, lang, mode, subtitle_source_lang, normalized_engine)
     if ready:
-        cache_id = cache_key(video_id, lang, subtitle_source_lang, normalized_engine)
+        cache_id = (
+            cache_key(video_id, lang, subtitle_source_lang, normalized_engine)
+            if subtitle_source_lang or normalized_engine
+            else default_serving_key(video_id, lang, mode)
+        )
         job = {
             "status": "ready",
             "video_id": video_id,
@@ -4772,6 +4959,7 @@ async def enqueue_prepare_job(
             "reuse_cached_subtitle": reuse_cached_subtitle,
             "reuse_source_video": reuse_source_video,
             "subtitle_font_size": subtitle_font_size,
+            "asr_priority": asr_priority,
         }
         if cached_info:
             if cached_info.get("title"):
@@ -4796,6 +4984,7 @@ async def enqueue_prepare_job(
                 archive_immediately=archive_immediately,
                 reuse_cached_subtitle=reuse_cached_subtitle,
                 reuse_source_video=reuse_source_video,
+                asr_priority=asr_priority,
             )
         )
         return 202, job_response_body(job_id, _prepare_jobs[job_id], request)
@@ -5081,6 +5270,7 @@ async def enqueue_prepare_batch(
             discord_user_id,
             archive_immediately=archive_immediately,
             subtitle_font_size=subtitle_font_size,
+            asr_priority="batch",
         )
         if body.get("status") in {"queued", "running"}:
             any_pending = True
@@ -5170,6 +5360,7 @@ async def enqueue_reburn_batch(
             archive_immediately=archive_immediately,
             reuse_cached_subtitle=True,
             reuse_source_video=True,
+            asr_priority="batch",
         )
         if body.get("status") in {"queued", "running"}:
             any_pending = True
