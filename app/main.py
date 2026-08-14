@@ -2892,7 +2892,12 @@ async def translate_subtitle_if_needed(
 
     attempt_plan = [(selected_settings, "")]
     if selected_settings.provider_name == "gemini_api" and selected_settings.model_name.startswith("gemini-3"):
-        attempt_plan.append((selected_settings, "high"))
+        default_thinking_level = os.getenv("GEMINI_THINKING_LEVEL", "medium").strip().lower()
+        if default_thinking_level not in {"minimal", "low", "medium", "high"}:
+            default_thinking_level = "medium"
+        attempt_plan = [(selected_settings, default_thinking_level)]
+        if default_thinking_level != "high":
+            attempt_plan.append((selected_settings, "high"))
         full_flash_settings = translation_settings("gemini_2_5_flash")
         if full_flash_settings.model_name != selected_settings.model_name:
             attempt_plan.append((full_flash_settings, ""))
