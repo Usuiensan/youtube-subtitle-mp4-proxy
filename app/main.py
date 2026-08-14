@@ -3322,6 +3322,8 @@ def build_ass_from_srt(
     font_size: int,
     keep_source_line_breaks: bool = True,
     subtitles_override: list[srt.Subtitle] | None = None,
+    border_style: int = 3,
+    event_margin_v: dict[int, int] | None = None,
 ) -> None:
     def ass_time(value: Any) -> str:
         total = int(round(value.total_seconds() * 100))
@@ -3343,7 +3345,7 @@ def build_ass_from_srt(
         "",
         "[V4+ Styles]",
         "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding",
-        f"Style: Default,{settings.subtitle_font},{font_size},{primary_colour},&H000000FF,{back_colour},{back_colour},0,0,0,0,100,100,0,0,3,0,0,{align},{margin_l},{margin_r},{margin_v},1",
+        f"Style: Default,{settings.subtitle_font},{font_size},{primary_colour},&H000000FF,{back_colour},{back_colour},0,0,0,0,100,100,0,0,{border_style},0,0,{align},{margin_l},{margin_r},{margin_v},1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -3364,7 +3366,7 @@ def build_ass_from_srt(
             "Dialogue: 0,"
             f"{ass_time(sub.start)},"
             f"{ass_time(sub.end)},"
-            f"Default,,0,0,0,,{text}"
+            f"Default,,0,0,{(event_margin_v or {}).get(sub.index, 0)},,{text}"
         )
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -3478,8 +3480,11 @@ def ffmpeg_dual_subtitle_args(
     source_subtitles = load_srt(original_subtitle)
     translated_subtitles = load_srt(translated_subtitle)
     width_chars = max(38.0, 70.0 - dual_font_size * 0.55)
+    base_margin_v = max(settings.subtitle_margin_v, 52)
+    line_height = max(1, round(dual_font_size * 1.25))
+    line_gap = max(4, round(dual_font_size * 0.45))
 
-    def stack_lines(source: str, translated: str) -> str:
+    def split_translation(source: str, translated: str) -> tuple[str, str]:
         normalized = translated.replace("\r\n", "\n").replace("\r", "\n")
         if "\n　\n" in normalized:
             source, translated = normalized.split("\n　\n", 1)
@@ -3487,20 +3492,39 @@ def ffmpeg_dual_subtitle_args(
             normalized_source = source.replace("\r\n", "\n").replace("\r", "\n")
             if normalized.startswith(f"{normalized_source}\n"):
                 translated = normalized[len(normalized_source) + 1 :]
-        source_lines = wrap_text_to_width(source, width_chars)
-        translated_lines = wrap_text_to_width(translated, width_chars)
-        return "\n".join([*source_lines, "　", *translated_lines])
+        return source, translated
 
     combined_subtitles = []
+    event_margin_v: dict[int, int] = {}
     for source_sub, translated_sub in zip(source_subtitles, translated_subtitles):
-        combined_subtitles.append(
-            srt.Subtitle(
-                index=source_sub.index,
-                start=source_sub.start,
-                end=source_sub.end,
-                content=stack_lines(source_sub.content, translated_sub.content),
-                proprietary=translated_sub.proprietary,
-            )
+        source_text, translated_text = split_translation(source_sub.content, translated_sub.content)
+        source_lines = wrap_text_to_width(source_text, width_chars)
+        translated_lines = wrap_text_to_width(translated_text, width_chars)
+        source_index = source_sub.index * 2
+        translated_index = source_index + 1
+        combined_subtitles.extend(
+            [
+                srt.Subtitle(
+                    index=source_index,
+                    start=source_sub.start,
+                    end=source_sub.end,
+                    content="\n".join(source_lines),
+                    proprietary=source_sub.proprietary,
+                ),
+                srt.Subtitle(
+                    index=translated_index,
+                    start=translated_sub.start,
+                    end=translated_sub.end,
+                    content="\n".join(translated_lines),
+                    proprietary=translated_sub.proprietary,
+                ),
+            ]
+        )
+        event_margin_v.update(
+            {
+                source_index: base_margin_v + len(translated_lines) * line_height + line_gap,
+                translated_index: base_margin_v,
+            }
         )
     build_ass_from_srt(
         original_subtitle,
@@ -3508,10 +3532,12 @@ def ffmpeg_dual_subtitle_args(
         align=2,
         margin_l=settings.subtitle_margin_l,
         margin_r=settings.subtitle_margin_r,
-        margin_v=max(settings.subtitle_margin_v, 52),
+        margin_v=base_margin_v,
         font_size=dual_font_size,
         keep_source_line_breaks=True,
         subtitles_override=combined_subtitles,
+        border_style=4,
+        event_margin_v=event_margin_v,
     )
     font_file, font_name = find_japanese_font_spec()
     subtitle_font_name = font_name or settings.subtitle_font

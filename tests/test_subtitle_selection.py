@@ -131,10 +131,13 @@ def test_dual_subtitle_ass_is_centered_and_does_not_duplicate_source(tmp_path) -
     ass = source.with_suffix(".dual.ass").read_text(encoding="utf-8")
 
     assert args[1].count("ass=") == 1
-    assert ",3," in next(line for line in ass.splitlines() if line.startswith("Style: Default,"))
-    dialogue = next(line for line in ass.splitlines() if line.startswith("Dialogue:"))
-    assert dialogue.count("English line") == 1
-    assert r"English line\N　\N日本語の行" in dialogue
+    assert ",4," in next(line for line in ass.splitlines() if line.startswith("Style: Default,"))
+    dialogues = [line for line in ass.splitlines() if line.startswith("Dialogue:")]
+    assert len(dialogues) == 2
+    assert dialogues[0].count("English line") == 1
+    assert dialogues[1].endswith(",,日本語の行")
+    assert r"\N　\N" not in ass
+    assert int(dialogues[0].split(",")[7]) > int(dialogues[1].split(",")[7])
 
 
 def test_translation_overlay_uses_model_only() -> None:
