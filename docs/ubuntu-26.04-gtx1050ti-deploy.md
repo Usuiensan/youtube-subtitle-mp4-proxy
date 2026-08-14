@@ -96,7 +96,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-翻訳エンジンを複数選べるようにする場合は、`TRANSLATION_DEFAULT_PROFILE` と `LOCAL_LLM_MODEL_*` を `.env.local` に入れて、RTX 3060 側で公開しているモデル名に合わせてください。
+翻訳エンジンを複数選べるようにする場合は、`TRANSLATION_DEFAULT_PROFILE` と `LOCAL_LLM_MODEL_*` を環境ファイルに入れて、OpenAI互換の翻訳サーバーで公開しているモデル名に合わせてください。
 
 確認:
 
@@ -168,8 +168,9 @@ TRANSLATION_DEFAULT_PROFILE=gemini_2_5_flash_lite
 TRANSLATION_PROVIDER=gemini_2_5_flash_lite
 TRANSLATION_FALLBACK_ENGINE=
 LOCAL_LLM_ENGINE=openai_compatible
-LOCAL_LLM_ENDPOINT=http://192.168.68.115:11434/v1/chat/completions
-LOCAL_LLM_MODEL=qwen3:4b-instruct
+REMOTE_LLM_ENDPOINT=http://192.168.68.115:11434/v1/chat/completions
+REMOTE_LLM_HEALTH_URL=http://192.168.68.115:11434/v1/models
+REMOTE_LLM_MODEL=qwen3:4b-instruct
 LOCAL_LLM_TIMEOUT_SECONDS=900
 LOCAL_LLM_TEMPERATURE=0
 GEMINI_MODEL=gemini-2.5-flash-lite
@@ -353,12 +354,7 @@ MP4を準備しています。予想8分 / 終了予想 <t:1783619520:t>
 
 GTX 1050 Ti 4GBでは、小型の量子化モデルをOpenAI互換HTTP APIやOllama互換エンドポイントで動かす想定です。Gemini Flash-Lite、GPT-5 nano、Groq GPT-OSS 20B、Ollama互換モデルを同じ翻訳インターフェースで切り替えられます。長すぎる動画は初期版では自動分割せず失敗にします。
 
-Google fallbackを使う場合は、認証JSONをリポジトリ外へ置きます。
-
-```bash
-sudo install -o app -g app -m 600 google-credentials.json /etc/youtube-mp4-google-credentials.json
-sudo systemctl restart youtube-mp4-proxy
-```
+Google Cloud Translationは現在の実装では使用しません。Google翻訳用の認証JSONやAPIキーを設定しないでください。
 
 ## 10. 動作確認
 
