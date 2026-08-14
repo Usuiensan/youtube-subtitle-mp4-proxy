@@ -19,13 +19,13 @@ def test_explicit_translation_source_wins_over_target_auto_caption() -> None:
         info,
         "ja",
         source_lang="en",
-        translation_engine="google_cloud",
+        translation_engine="gemini_2_5_flash_lite",
     )
 
     assert selection["source_language"] == "en"
     assert selection["source_kind"] == "manual"
     assert selection["translated"] is True
-    assert selection["translation_engine_requested"] == "google_cloud"
+    assert selection["translation_engine_requested"] == "gemini_2_5_flash_lite"
 
 
 def test_automatic_captions_are_always_excluded() -> None:
@@ -35,7 +35,7 @@ def test_automatic_captions_are_always_excluded() -> None:
         "automatic_captions": {"en": [{"ext": "vtt"}], "ja": [{"ext": "vtt"}]},
     }
 
-    selection = main.select_subtitle_language(info, "ja", translation_engine="google_cloud")
+    selection = main.select_subtitle_language(info, "ja", translation_engine="gemini_2_5_flash_lite")
 
     assert selection["source_language"] == "en"
     assert selection["source_kind"] == "manual"
@@ -43,6 +43,19 @@ def test_automatic_captions_are_always_excluded() -> None:
     with pytest.raises(main.HTTPException) as error:
         main.select_subtitle_language({"automatic_captions": {"en": [{}]}}, "ja")
     assert error.value.status_code == 422
+
+
+def test_google_cloud_translation_is_disabled() -> None:
+    with pytest.raises(main.HTTPException) as error:
+        main.select_subtitle_language(
+            {"subtitles": {"en": [{"ext": "vtt"}]}},
+            "ja",
+            source_lang="en",
+            translation_engine="google_cloud",
+        )
+
+    assert error.value.status_code == 422
+    assert "disabled" in error.value.detail
 
 
 def test_subtitle_candidates_ignore_automatic_captions() -> None:

@@ -733,9 +733,9 @@ def translation_usage_text(meta: Any) -> str:
         return ""
     engine = str(meta.get("translation_engine") or "")
     translation_skipped = bool(meta.get("translation_skipped"))
-    if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gpt_5_nano", "groq_gpt_oss_20b", "google_cloud"} and not translation_skipped:
+    if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gpt_5_nano", "groq_gpt_oss_20b"} and not translation_skipped:
         return ""
-    provider_label = str(meta.get("translation_provider_label") or ("Google Cloud Translation" if translation_skipped else "Gemini Flash"))
+    provider_label = str(meta.get("translation_provider_label") or ("出元字幕（翻訳なし）" if translation_skipped else "Gemini Flash"))
     billing_class = str(meta.get("translation_billing_class") or "Gemini API Free Tier")
     characters = int(meta.get("translation_characters") or 0)
     input_tokens = int(meta.get("translation_input_tokens") or 0)
@@ -755,7 +755,7 @@ def translation_usage_text(meta: Any) -> str:
         if str(meta.get("translation_skipped_reason") or "") == "youtube_automatic_translation":
             lines.append("API料金: 追加費用なし（YouTube自動翻訳字幕を使用）")
         else:
-            lines.append("API料金: 追加費用なし（出元の翻訳済み字幕を使用）")
+            lines.append("API料金: 追加費用なし（出元の字幕を使用）")
     elif api_cost_usd:
         lines.append(f"API料金: ${api_cost_usd:,.4f} / ¥{api_cost_jpy:,.2f}")
     else:
@@ -766,7 +766,7 @@ def translation_usage_text(meta: Any) -> str:
     ])
     if free_chars:
         lines.append(f"月間無料枠: {free_chars:,}文字")
-    if (engine == "google_cloud" or translation_skipped) and (usage_usd or usage_jpy):
+    if translation_skipped and (usage_usd or usage_jpy):
         unit_usd = (usage_usd / characters * 1_000_000) if characters else 0.0
         lines.append(f"通常単価換算: ${usage_usd:,.4f} / ¥{usage_jpy:,.2f}")
         if unit_usd:
@@ -792,8 +792,6 @@ def translation_usage_text(meta: Any) -> str:
         lines.append(f"単価: 入力 ${input_price:.2f} / 出力 ${output_price:.2f}（各100万tokens）")
         lines.append(f"今回の通常料金換算: ${overage_usd:,.6f} / ¥{overage_jpy:,.2f}")
         lines.append(f"今回の課金見込み: ${api_cost_usd:,.6f} / ¥{api_cost_jpy:,.2f}")
-    else:
-        lines.append(f"今回の無料枠適用後見込み: ${overage_usd:,.4f} / ¥{overage_jpy:,.2f}")
     return "\n".join(lines)
 
 
@@ -855,7 +853,7 @@ class SubtitleChoiceView(discord.ui.View):
         self.archive_immediately = archive_immediately
         self.source_lang: str | None = None
         self.target_lang: str = "same"
-        self.translation_engine = "google_cloud"
+        self.translation_engine = None
         candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
         visible_candidates = candidates[:25]
         selected_source_lang = None
@@ -886,7 +884,7 @@ class SubtitleChoiceView(discord.ui.View):
                 if not isinstance(engine, dict) or not engine.get("value"):
                     continue
                 value = str(engine["value"])
-                if value == "gemini_2_5_flash":
+                if value == "google_cloud":
                     continue
                 engine_options.append(
                     discord.SelectOption(
@@ -898,14 +896,6 @@ class SubtitleChoiceView(discord.ui.View):
                 )
             default_option = next((option for option in engine_options if option.default), None)
             self.translation_engine = default_option.value if default_option else None
-        if not engine_options:
-            engine_options = [
-                discord.SelectOption(label="Google翻訳", value="google_cloud", default=True),
-            ]
-        elif not any(option.value == "google_cloud" for option in engine_options):
-            engine_options.insert(0, discord.SelectOption(label="Google翻訳", value="google_cloud", default=False))
-            for option in engine_options[1:]:
-                option.default = False
         self.source_select = discord.ui.Select(
             placeholder="翻訳元字幕を選択",
             min_values=1,
@@ -1284,6 +1274,10 @@ async def handle_dm_prepare_like(
                     if not candidates:
                         await send_dm_text(user, str(options_body.get("error") or "翻訳可能な手動字幕がありません。"))
                         return
+                    engines = options_body.get("translation_engines")
+                    if not isinstance(engines, list) or not engines:
+                        await send_dm_text(user, "利用可能な翻訳エンジンがありません。サーバーのLLM設定を確認してください。")
+                        return
                     title = options_body.get("title") or video_id
                     view = SubtitleChoiceView(
                         requester_id=user.id,
@@ -1293,18 +1287,10 @@ async def handle_dm_prepare_like(
                         options_body=options_body,
                         archive_immediately=archive_immediately,
                     )
-                    if options_body.get("requires_google_confirmation"):
-                        reason = str(options_body.get("llm_unavailable_reason") or "LLMが利用できません。")
-                        prompt = (
-                            f"日本語字幕が見つかりませんでした。\n{title}\n"
-                            f"現在LLM翻訳が利用できません。\n理由: {reason}\n"
-                            "Google翻訳で準備してよろしいですか。"
-                        )
-                    else:
-                        prompt = (
-                            f"日本語字幕が見つかりませんでした。\n{title}\n"
-                            "翻訳元字幕と翻訳エンジンを選択してください。"
-                        )
+                    prompt = (
+                        f"日本語字幕が見つかりませんでした。\n{title}\n"
+                        "翻訳元字幕と翻訳エンジンを選択してください。"
+                    )
                     await send_dm_message(user, prompt, view=view)
                     return
                 if options_body.get("error"):
@@ -1600,6 +1586,13 @@ async def prepare_command(
                             view=None,
                         )
                         return
+                    engines = options_body.get("translation_engines")
+                    if not isinstance(engines, list) or not engines:
+                        await interaction.edit_original_response(
+                            content="利用可能な翻訳エンジンがありません。サーバーのLLM設定を確認してください。",
+                            view=None,
+                        )
+                        return
                     title = options_body.get("title") or video_id
                     view = SubtitleChoiceView(
                         requester_id=interaction.user.id,
@@ -1609,18 +1602,10 @@ async def prepare_command(
                         options_body=options_body,
                         archive_immediately=archive_immediately,
                     )
-                    if options_body.get("requires_google_confirmation"):
-                        reason = str(options_body.get("llm_unavailable_reason") or "RTX3060 LLMが利用できません。")
-                        prompt = (
-                            f"日本語字幕が見つかりませんでした。\n{title}\n"
-                            f"現在LLM翻訳が利用できません。\n理由: {reason}\n"
-                            "Google翻訳で準備してよろしいですか。"
-                        )
-                    else:
-                        prompt = (
-                            f"日本語字幕が見つかりませんでした。\n{title}\n"
-                            "翻訳元字幕と翻訳エンジンを選択してください。"
-                        )
+                    prompt = (
+                        f"日本語字幕が見つかりませんでした。\n{title}\n"
+                        "翻訳元字幕と翻訳エンジンを選択してください。"
+                    )
                     await interaction.edit_original_response(content=prompt, view=view)
                     return
                 if options_body.get("error"):

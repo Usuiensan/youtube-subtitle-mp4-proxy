@@ -174,8 +174,6 @@ LOCAL_LLM_TIMEOUT_SECONDS=900
 LOCAL_LLM_TEMPERATURE=0
 GEMINI_MODEL=gemini-2.5-flash-lite
 GEMINI_API_KEY=YOUR_GEMINI_API_KEY
-# GOOGLE_APPLICATION_CREDENTIALS=/etc/youtube-mp4-google-credentials.json
-# GOOGLE_CLOUD_PROJECT=your-google-cloud-project-id
 
 # Required for playlist/channel batch prepare and YamaPlayer JSON export
 # YOUTUBE_DATA_API_KEY=AIza...
@@ -333,9 +331,9 @@ botが起動すると `/prepare` スラッシュコマンドを同期します�
 
 `url` にプレイリスト URL、プレイリスト ID、`@handle`、`https://www.youtube.com/@handle`、`https://www.youtube.com/channel/...` を渡すと、YouTube Data API v3 で一覧を展開して一括準備します。この機能には `YOUTUBE_DATA_API_KEY` が必要です。
 
-単体動画で `lang:ja` を指定し、日本語字幕が存在しない場合は、準備開始前に Discord の選択 UI で翻訳元字幕と翻訳エンジンを選びます。既定は LLM 翻訳で、必要なら Google 翻訳を選べます。YouTube の自動生成字幕・自動翻訳字幕は使用しません。一括準備では動画ごとの UI は出さず、従来どおり自動選択します。
+単体動画で `lang:ja` を指定し、日本語字幕が存在しない場合は、準備開始前に Discord の選択 UI で翻訳元字幕と翻訳エンジンを選びます。既定は LLM 翻訳です。Google Cloud Translation と YouTube の自動生成字幕・自動翻訳字幕は使用しません。一括準備では動画ごとの UI は出さず、従来どおり自動選択します。
 
-翻訳元や翻訳方式を明示した版は query string ではなく path に含めます。例: `https://YOUR_DOMAIN/youtube/dQw4w9WgXcQ/ja/en/google_cloud`。従来の `/youtube/VIDEO_ID/ja` は細かい版を指定しない既定版です。
+翻訳元や翻訳方式を明示した版は query string ではなく path に含めます。例: `https://YOUR_DOMAIN/youtube/dQw4w9WgXcQ/ja/en/gemini_2_5_flash_lite`。従来の `/youtube/VIDEO_ID/ja` は細かい版を指定しない既定版です。
 
 準備開始時は次のような返信をします。
 

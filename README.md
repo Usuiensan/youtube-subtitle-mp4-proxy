@@ -215,7 +215,7 @@ curl -X POST \
 POST /prepare/youtube/:videoId/:targetLang/:sourceLang/:translationEngine
 ```
 
-例: `/youtube/dQw4w9WgXcQ/ja/en/google_cloud`。従来の `/youtube/:videoId/:lang` は「細かい版を指定しない既定版」を返します。複数版を並行保持したい場合は、Discord bot の字幕選択 UI から明示版を準備すると、その明示パスの URL が返ります。
+例: `/youtube/dQw4w9WgXcQ/ja/en/gemini_2_5_flash_lite`。従来の `/youtube/:videoId/:lang` は「細かい版を指定しない既定版」を返します。複数版を並行保持したい場合は、Discord bot の字幕選択 UI から明示版を準備すると、その明示パスの URL が返ります。
 
 `POST /prepare/youtube-batch/:lang?source=:playlistOrChannelUrl&sourceType=auto&mode=mp4|hls&maxItems=5000` は、YouTube Data API v3 でプレイリストまたはチャンネル投稿一覧を展開し、含まれる動画をすべて準備ジョブへ投入します。返却される `batch_id` / `status_url` は `GET /prepare/batches/:batchId` でポーリングできます。`source` はプレイリスト URL/ID、`@handle`、`https://www.youtube.com/@handle`、`https://www.youtube.com/channel/...` に対応します。
 
@@ -315,7 +315,7 @@ Google の API キーが必要なのは、YouTube Data API v3 を使う `/prepar
 
 LLM 翻訳は字幕IDと原文だけを動画1本分まとめて1回のAPIリクエストへ送り、動画全体の文脈で翻訳します。応答はStructured Output / JSON Schemaで `{"subtitles":[{"id":1,"text":"..."}]}` に固定し、プログラム側で件数・ID集合・重複・空文字を検証します。タイムコードは送信せず、検証済みIDを元SRTへ再結合します。長すぎてcontextまたは出力上限を超えた場合は自動分割せず失敗します。Gemini などのクラウドLLMは `REMOTE_LLM_ENDPOINT` なしでもAPIキー設定だけで候補に表示します。
 
-翻訳エンジンは `Gemini Flash-Lite`、`GPT-5 nano`、`Groq GPT-OSS 20B`、既存のOpenAI互換Ollamaモデルを切り替えられます。Google翻訳も残します。YouTube自動生成字幕・自動翻訳は使用しません。LLM経路では事前health check、再試行、字幕ごとのリクエスト、自動fallbackを行いません。
+翻訳エンジンは `Gemini Flash-Lite`、`GPT-5 nano`、`Groq GPT-OSS 20B`、既存のOpenAI互換Ollamaモデルを切り替えられます。Google Cloud Translation は使用しません。YouTube自動生成字幕・自動翻訳も使用しません。LLM経路では事前health check、再試行、字幕ごとのリクエスト、自動fallbackを行いません。
 
 ```bash
 export TRANSLATION_ENABLED=1
@@ -326,7 +326,6 @@ export REMOTE_LLM_ENDPOINT=http://192.168.68.115:11434/v1/chat/completions
 export REMOTE_LLM_HEALTH_URL=http://192.168.68.115:11434/v1/models
 export REMOTE_LLM_MODEL=qwen3:4b-instruct
 export TRANSLATION_AUDIT_DIR=/var/lib/youtube-proxy/translation-audit
-export GOOGLE_TRANSLATION_USAGE_FILE=/var/lib/youtube-proxy/google-translation-usage.json
 export LOCAL_LLM_MODEL_QWEN3_4B_INSTRUCT=qwen3:4b-instruct
 export LOCAL_LLM_MODEL_QWEN3_8B=qwen3:8b
 export LOCAL_LLM_MODEL_QWEN3_14B=qwen3:14b
@@ -344,8 +343,6 @@ export REMOTE_LLM_API_KEY=
 export LOCAL_LLM_TIMEOUT_SECONDS=900
 export LOCAL_LLM_TEMPERATURE=0
 export TRANSLATION_FALLBACK_ENGINE=
-export GOOGLE_APPLICATION_CREDENTIALS=/etc/youtube-mp4-google-credentials.json
-export GOOGLE_CLOUD_PROJECT=your-google-cloud-project-id
 ```
 
 翻訳済み字幕は `source/subtitle.ja.translated.srt`、元字幕は `source/subtitle.SOURCE.original.srt`、翻訳メタデータは `source/translation.json` に保存します。翻訳設定とモデル名はキャッシュキーへ含まれるため、モデルやwindow設定を変えた場合に古いMP4を誤再利用しません。
