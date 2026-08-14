@@ -45,7 +45,55 @@ class GeminiTranslationTests(unittest.TestCase):
         asyncio.run(view.on_target_selected(interaction))
 
         self.assertFalse(view.engine_select.disabled)
+        self.assertEqual(view.translation_engine, "gemini_2_5_flash_lite")
         self.assertIs(interaction.response.kwargs["view"], view)
+
+    def test_translation_select_callbacks_redraw_and_restore_engine(self) -> None:
+        view = bot_main.SubtitleChoiceView(
+            requester_id=1,
+            video_id="video",
+            lang="ja",
+            mode="mp4",
+            options_body={
+                "candidates": [{"language": "en", "name": "英語"}],
+                "translation_engines": [
+                    {"value": "gemini_2_5_flash_lite", "label": "Gemini Flash-Lite", "model": "gemini-2.5-flash-lite"}
+                ],
+            },
+        )
+
+        class Response:
+            def __init__(self) -> None:
+                self.kwargs = None
+
+            async def edit_message(self, **kwargs):
+                self.kwargs = kwargs
+
+        class Interaction:
+            def __init__(self) -> None:
+                self.response = Response()
+
+        interaction = Interaction()
+        view.source_select._values = ["en"]
+        asyncio.run(view.on_source_selected(interaction))
+        self.assertTrue(view.source_select.options[0].default)
+        self.assertIs(interaction.response.kwargs["view"], view)
+
+        view.target_select._values = ["ja"]
+        asyncio.run(view.on_target_selected(interaction))
+        view.engine_select._values = ["gemini_2_5_flash_lite"]
+        asyncio.run(view.on_engine_selected(interaction))
+        self.assertTrue(view.engine_select.options[0].default)
+
+        view.target_select._values = ["same"]
+        asyncio.run(view.on_target_selected(interaction))
+        self.assertIsNone(view.translation_engine)
+        self.assertTrue(view.engine_select.disabled)
+
+        view.target_select._values = ["ja"]
+        asyncio.run(view.on_target_selected(interaction))
+        self.assertEqual(view.translation_engine, "gemini_2_5_flash_lite")
+        self.assertFalse(view.engine_select.disabled)
 
     def test_translation_audit_record_decodes_provider_and_model_json(self) -> None:
         record = app_main._decode_translation_audit_record(

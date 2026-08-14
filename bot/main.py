@@ -926,6 +926,11 @@ class SubtitleChoiceView(discord.ui.View):
         self.add_item(self.target_select)
         self.add_item(self.engine_select)
 
+    @staticmethod
+    def _mark_selected(select: discord.ui.Select, value: str) -> None:
+        for option in select.options:
+            option.default = option.value == value
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.requester_id:
             return True
@@ -934,18 +939,24 @@ class SubtitleChoiceView(discord.ui.View):
 
     async def on_source_selected(self, interaction: discord.Interaction) -> None:
         self.source_lang = self.source_select.values[0]
-        await interaction.response.defer(ephemeral=False)
+        self._mark_selected(self.source_select, self.source_lang)
+        await interaction.response.edit_message(view=self)
 
     async def on_engine_selected(self, interaction: discord.Interaction) -> None:
         self.translation_engine = self.engine_select.values[0]
-        await interaction.response.defer(ephemeral=False)
+        self._mark_selected(self.engine_select, self.translation_engine)
+        await interaction.response.edit_message(view=self)
 
     async def on_target_selected(self, interaction: discord.Interaction) -> None:
         self.target_lang = self.target_select.values[0]
+        self._mark_selected(self.target_select, self.target_lang)
         translate = self.target_lang != "same"
         self.engine_select.disabled = not translate
         self.engine_select.placeholder = "翻訳エンジンを選択" if translate else "翻訳なし（そのまま）"
-        if not translate:
+        if translate and self.translation_engine is None:
+            default_engine = next((option.value for option in self.engine_select.options if option.default), None)
+            self.translation_engine = default_engine or (self.engine_select.options[0].value if self.engine_select.options else None)
+        elif not translate:
             self.translation_engine = None
         await interaction.response.edit_message(view=self)
 
