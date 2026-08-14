@@ -35,13 +35,12 @@ from fastapi.responses import (
 from app.translation import (
     TranslationError,
     TranslationSettings,
-    google_translate_events,
     load_srt,
     save_srt,
     translate_srt_with_local_worker,
 )
 from app.metrics import MetricsManager
-from app.google_translation_usage import record as record_google_translation_usage, summary as google_translation_usage_summary
+from app.google_translation_usage import summary as google_translation_usage_summary
 from app.llm_usage import record as record_llm_translation_usage, summary as llm_translation_usage_summary
 from app.cache_layout import CacheLayout
 from app.config_files import (
@@ -1248,6 +1247,8 @@ def default_serving_key(video_id: str, lang: str, mode: str) -> str:
 def validate_translation_variant(source_lang: str, translation_engine: str) -> str:
     validate_lang(source_lang)
     normalized = normalize_translation_engine(translation_engine)
+    if normalized == "google_cloud":
+        raise HTTPException(status_code=422, detail="Google Cloud Translation is disabled")
     if normalized == "youtube_auto":
         raise HTTPException(status_code=422, detail="YouTube自動翻訳字幕は利用しません")
     return normalized
@@ -1652,18 +1653,18 @@ def configured_translation_source_langs() -> list[str]:
 
 
 def normalize_translation_engine(value: str | None) -> str:
-    engine = (value or settings.local_llm_engine or "local_llm").strip().lower()
-    if engine in {"llm", "remote", "remote_llm"}:
-        return settings.translation_default_profile if settings.translation_default_profile in settings.local_llm_profile_models else "qwen3_4b_instruct"
-    if engine in {"local", "local_llm", "openai_compatible"}:
-        return "google_cloud"
+    engine = str(value if value is not None else settings.translation_default_profile or "").strip().lower()
     if engine in {"google", "google_cloud", "google_translate"}:
-        return "google_cloud"
+        return "google_cloud" if value is not None else "qwen3_4b_instruct"
+    if engine in {"llm", "remote", "remote_llm", "local", "local_llm", "openai_compatible"}:
+        engine = settings.translation_default_profile.strip().lower()
+        if engine in {"google", "google_cloud", "google_translate"}:
+            return "qwen3_4b_instruct"
     if engine in {"youtube_auto", "youtube_automatic", "youtube_auto_translate"}:
         return "youtube_auto"
     if engine in settings.local_llm_profile_models:
         return engine
-    return "google_cloud"
+    return "qwen3_4b_instruct"
 
 
 def translation_profile_options() -> list[dict]:
@@ -1679,15 +1680,7 @@ def translation_profile_options() -> list[dict]:
         "gpt_5_nano",
         "groq_gpt_oss_20b",
     ]
-    options = [
-        {
-            "value": "google_cloud",
-            "label": "Google翻訳",
-            "model": None,
-            "default": default_profile == "google_cloud",
-            "kind": "cloud",
-        },
-    ]
+    options = []
     for profile_id in profiles:
         model = str(settings.local_llm_profile_models.get(profile_id) or "").strip()
         if not model:
@@ -1901,8 +1894,10 @@ async def run_chat_completion(payload: dict[str, Any]) -> dict[str, Any]:
 
 def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
     normalized = normalize_translation_engine(profile_id)
+    if normalized == "google_cloud":
+        raise RuntimeError("Google Cloud Translation is disabled")
     model_name = settings.local_llm_profile_models.get(normalized, "")
-    provider_name = "google_cloud"
+    provider_name = "openai_compatible"
     provider_endpoint = ""
     provider_api_key = ""
     if normalized in settings.local_llm_profile_models and normalized not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gpt_5_nano", "groq_gpt_oss_20b"}:
@@ -2071,9 +2066,6 @@ def restrict_translation_engines(
         for engine in engines:
             if not isinstance(engine, dict):
                 continue
-            if engine.get("value") == "google_cloud":
-                filtered.append(engine)
-                continue
             model = str(engine.get("model") or "").strip()
             if model_available(model):
                 filtered.append(engine)
@@ -2081,13 +2073,9 @@ def restrict_translation_engines(
         body["llm_available"] = True
         body["llm_available_models"] = sorted(available_models or [])
         return body
-    body["translation_engines"] = [
-        engine for engine in engines
-        if isinstance(engine, dict) and engine.get("value") == "google_cloud"
-    ]
+    body["translation_engines"] = []
     body["llm_available"] = False
     body["llm_unavailable_reason"] = llm_error or "remote LLM is unavailable"
-    body["requires_google_confirmation"] = True
     return body
 
 
@@ -2097,6 +2085,8 @@ def select_subtitle_language(
     source_lang: str | None = None,
     translation_engine: str | None = None,
 ) -> dict:
+    if translation_engine and normalize_translation_engine(translation_engine) == "google_cloud":
+        raise HTTPException(status_code=422, detail="Google Cloud Translation is disabled")
     manual_subtitles = info.get("subtitles") or {}
     if not isinstance(manual_subtitles, dict):
         manual_subtitles = {}
@@ -2558,18 +2548,13 @@ def enrich_existing_subtitle_usage_metadata(metadata: dict, subtitle: Path) -> d
         characters = sum(len(sub.content) for sub in load_srt(subtitle))
     except Exception:
         characters = 0
-    usage_usd, usage_jpy = google_translate_usage_estimate(characters)
     return {
         **metadata,
         "translation_skipped": True,
         "translation_skipped_reason": "source_subtitle_available",
-        "translation_provider_label": "Google Cloud Translation",
-        "translation_billing_class": "Cloud Translation Basic NMT",
-        "translation_free_chars_per_month": settings.google_translate_free_chars_per_month,
-        "translation_price_usd_per_million_chars": settings.google_translate_price_usd_per_million_chars,
+        "translation_provider_label": "出元字幕（翻訳なし）",
+        "translation_billing_class": "API利用なし",
         "translation_characters": characters,
-        "translation_usage_estimate_usd": usage_usd,
-        "translation_usage_estimate_jpy": usage_jpy,
         "translation_api_cost_usd": 0.0,
         "translation_api_cost_jpy": 0.0,
     }
@@ -2933,57 +2918,9 @@ async def translate_subtitle_if_needed(
 
     translated_path = work_dir / f"{subtitle.stem}.ja.translated.srt"
     requested_engine = normalize_translation_engine(selection.get("translation_engine_requested"))
-    selected_settings = translation_settings(requested_engine)
-    subtitle_count = 0
-
     if requested_engine == "google_cloud":
-        start_t = time.time()
-        subtitles = load_srt(subtitle)
-        subtitle_count = len(subtitles)
-        translation_characters = sum(len(sub.content) for sub in subtitles)
-        if job_id:
-            update_job_progress(job_id, "translate", 0.0, details="Google翻訳中...")
-        translated_map = google_translate_events(
-            subtitles,
-            selection["requested_language"],
-            selected_settings,
-        )
-        translated_subtitles = []
-        recent_pairs: list[dict[str, str]] = []
-        for sub in subtitles:
-            translated_text = translated_map[str(sub.index)]
-            translated_subtitles.append(
-                srt.Subtitle(
-                    index=sub.index,
-                    start=sub.start,
-                    end=sub.end,
-                    content=f"{sub.content}\n　\n{translated_text}",
-                    proprietary=sub.proprietary,
-                )
-            )
-            recent_pairs.append({"source": sub.content, "translated": translated_text})
-            recent_pairs = recent_pairs[-5:]
-        save_srt(translated_path, translated_subtitles)
-        metrics_manager.record_translate(len(subtitles), time.time() - start_t)
-        if job_id:
-            sample_lines = ["Google翻訳完了", "直近の翻訳:"]
-            for sample in recent_pairs:
-                source = " ".join(sample["source"].replace("\r\n", "\n").replace("\r", "\n").split())
-                translated = " ".join(sample["translated"].replace("\r\n", "\n").replace("\r", "\n").split())
-                sample_lines.append(f"原: {source[:89] + '…' if len(source) > 90 else source}")
-                sample_lines.append(f"訳: {translated[:89] + '…' if len(translated) > 90 else translated}")
-            update_job_progress(job_id, "translate", 100.0, details="\n".join(sample_lines))
-        metadata = {
-            **selection,
-            "translation_engine": "google_cloud",
-            "translation_model": None,
-            "translation_fallback_used": False,
-            "translation_created_at": int(time.time()),
-            "translation_characters": translation_characters,
-            "translation_request_count": subtitle_count,
-        }
-        record_google_translation_usage(settings.google_translation_usage_file, translation_characters)
-        return translated_path, enrich_translation_metadata(metadata)
+        raise RuntimeError("Google Cloud Translation is disabled")
+    selected_settings = translation_settings(requested_engine)
 
     async def worker(payload: dict) -> dict:
         payload["_work_dir"] = str(work_dir)
@@ -4674,6 +4611,8 @@ async def enqueue_prepare_job(
         if not subtitle_source_lang:
             raise HTTPException(status_code=400, detail="Invalid subtitle source language")
     normalized_engine = normalize_translation_engine(translation_engine) if translation_engine else None
+    if normalized_engine == "google_cloud":
+        raise HTTPException(status_code=422, detail="Google Cloud Translation is disabled")
     ready = prepare_ready_path(video_id, lang, mode, subtitle_source_lang, normalized_engine)
     url = prepared_media_url(request, video_id, lang, mode, subtitle_source_lang, normalized_engine)
     if ready:
@@ -5721,7 +5660,6 @@ async def index() -> str:
         Translation
         <select id="translationEngine" name="translationEngine">
             <option value="" selected disabled>翻訳方式を選択</option>
-            <option value="google_cloud">Google</option>
         </select>
       </label>
       </div>
@@ -6143,16 +6081,14 @@ async def index() -> str:
         selectOption.textContent = option.label || option.value;
         if (option.default) selectOption.selected = true;
         translationEngine.appendChild(selectOption);
-        if (option.value !== "google_cloud") {{
-          const chatOption = document.createElement("option");
-          chatOption.value = option.value;
-          chatOption.textContent = `${{option.label || option.value}}${{option.model ? ` / ${{option.model}}` : ""}}`;
-          if (option.default) chatOption.selected = true;
-          chatModel.appendChild(chatOption);
-        }}
+        const chatOption = document.createElement("option");
+        chatOption.value = option.value;
+        chatOption.textContent = `${{option.label || option.value}}${{option.model ? ` / ${{option.model}}` : ""}}`;
+        if (option.default) chatOption.selected = true;
+        chatModel.appendChild(chatOption);
       }}
       if (!Array.from(translationEngine.selectedOptions).length) {{
-        const fallback = translationEngine.querySelector('option[value="google_cloud"]') || translationEngine.options[0];
+        const fallback = translationEngine.options[0];
         if (fallback) fallback.selected = true;
       }}
     }}
@@ -6566,7 +6502,7 @@ async def index() -> str:
         chatStatus.textContent = "メッセージを入力してください。";
         return;
       }}
-      const profile = chatModel.value || (translationOptions.find((item) => item.value !== "google_cloud" && item.default)?.value || translationOptions.find((item) => item.value !== "google_cloud")?.value || "");
+      const profile = chatModel.value || (translationOptions.find((item) => item.default)?.value || translationOptions[0]?.value || "");
       if (!profile) {{
         chatStatus.textContent = "利用可能なモデルがありません。";
         return;

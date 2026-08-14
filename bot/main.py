@@ -733,10 +733,10 @@ def translation_usage_text(meta: Any) -> str:
         return ""
     engine = str(meta.get("translation_engine") or "")
     translation_skipped = bool(meta.get("translation_skipped"))
-    if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gpt_5_nano", "groq_gpt_oss_20b", "google_cloud"} and not translation_skipped:
+    if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gpt_5_nano", "groq_gpt_oss_20b"} and not translation_skipped:
         return ""
-    provider_label = str(meta.get("translation_provider_label") or ("Google Cloud Translation" if translation_skipped else "Gemini Flash"))
-    billing_class = str(meta.get("translation_billing_class") or "Gemini API Free Tier")
+    provider_label = "出元字幕（翻訳なし）" if translation_skipped else str(meta.get("translation_provider_label") or "Gemini Flash")
+    billing_class = "API利用なし" if translation_skipped else str(meta.get("translation_billing_class") or "Gemini API Free Tier")
     characters = int(meta.get("translation_characters") or 0)
     input_tokens = int(meta.get("translation_input_tokens") or 0)
     output_tokens = int(meta.get("translation_output_tokens") or 0)
@@ -744,8 +744,6 @@ def translation_usage_text(meta: Any) -> str:
     api_cost_usd = float(meta.get("translation_api_cost_usd") or 0.0)
     overage_usd = float(meta.get("translation_overage_estimate_usd") or 0.0)
     overage_jpy = float(meta.get("translation_overage_estimate_jpy") or 0.0)
-    usage_usd = float(meta.get("translation_usage_estimate_usd") or 0.0)
-    usage_jpy = float(meta.get("translation_usage_estimate_jpy") or 0.0)
     free_chars = int(meta.get("translation_free_chars_per_month") or 0)
     overage_chars = int(meta.get("translation_billable_overage_characters") or 0)
     lines = [
@@ -755,7 +753,7 @@ def translation_usage_text(meta: Any) -> str:
         if str(meta.get("translation_skipped_reason") or "") == "youtube_automatic_translation":
             lines.append("API料金: 追加費用なし（YouTube自動翻訳字幕を使用）")
         else:
-            lines.append("API料金: 追加費用なし（出元の翻訳済み字幕を使用）")
+            lines.append("API料金: 追加費用なし（出元の字幕を使用）")
     elif api_cost_usd:
         lines.append(f"API料金: ${api_cost_usd:,.4f} / ¥{api_cost_jpy:,.2f}")
     else:
@@ -766,11 +764,6 @@ def translation_usage_text(meta: Any) -> str:
     ])
     if free_chars:
         lines.append(f"月間無料枠: {free_chars:,}文字")
-    if (engine == "google_cloud" or translation_skipped) and (usage_usd or usage_jpy):
-        unit_usd = (usage_usd / characters * 1_000_000) if characters else 0.0
-        lines.append(f"通常単価換算: ${usage_usd:,.4f} / ¥{usage_jpy:,.2f}")
-        if unit_usd:
-            lines.append(f"計算根拠: {characters:,}文字 × ${unit_usd:,.2f}/100万文字")
     if overage_chars:
         lines.append(f"無料枠超過文字数: {overage_chars:,}文字")
     if input_tokens or output_tokens:
@@ -792,8 +785,6 @@ def translation_usage_text(meta: Any) -> str:
         lines.append(f"単価: 入力 ${input_price:.2f} / 出力 ${output_price:.2f}（各100万tokens）")
         lines.append(f"今回の通常料金換算: ${overage_usd:,.6f} / ¥{overage_jpy:,.2f}")
         lines.append(f"今回の課金見込み: ${api_cost_usd:,.6f} / ¥{api_cost_jpy:,.2f}")
-    else:
-        lines.append(f"今回の無料枠適用後見込み: ${overage_usd:,.4f} / ¥{overage_jpy:,.2f}")
     return "\n".join(lines)
 
 
@@ -855,7 +846,7 @@ class SubtitleChoiceView(discord.ui.View):
         self.archive_immediately = archive_immediately
         self.source_lang: str | None = None
         self.target_lang: str = "same"
-        self.translation_engine = "google_cloud"
+        self.translation_engine = None
         candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
         visible_candidates = candidates[:25]
         selected_source_lang = None
@@ -886,7 +877,7 @@ class SubtitleChoiceView(discord.ui.View):
                 if not isinstance(engine, dict) or not engine.get("value"):
                     continue
                 value = str(engine["value"])
-                if value == "gemini_2_5_flash":
+                if value == "google_cloud":
                     continue
                 engine_options.append(
                     discord.SelectOption(
@@ -898,14 +889,6 @@ class SubtitleChoiceView(discord.ui.View):
                 )
             default_option = next((option for option in engine_options if option.default), None)
             self.translation_engine = default_option.value if default_option else None
-        if not engine_options:
-            engine_options = [
-                discord.SelectOption(label="Google翻訳", value="google_cloud", default=True),
-            ]
-        elif not any(option.value == "google_cloud" for option in engine_options):
-            engine_options.insert(0, discord.SelectOption(label="Google翻訳", value="google_cloud", default=False))
-            for option in engine_options[1:]:
-                option.default = False
         self.source_select = discord.ui.Select(
             placeholder="翻訳元字幕を選択",
             min_values=1,
@@ -946,7 +929,7 @@ class SubtitleChoiceView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.requester_id:
             return True
-        await interaction.response.send_message("この選択はコマンド実行者だけが操作できます。", ephemeral=True)
+        await interaction.response.send_message("この選択はコマンド実行者だけが操作できます。", ephemeral=True, silent=True)
         return False
 
     async def on_source_selected(self, interaction: discord.Interaction) -> None:
@@ -1018,6 +1001,7 @@ class SubtitleChoiceView(discord.ui.View):
                     content,
                     allowed_mentions=discord.AllowedMentions(users=True),
                     ephemeral=False,
+                    silent=True,
                     wait=True,
                 )
         status_url = body.get("status_url")
@@ -1077,6 +1061,7 @@ async def notify_when_done(
                 await interaction.user.send(
                     content,
                     allowed_mentions=discord.AllowedMentions(users=True),
+                    silent=True,
                 )
             except discord.HTTPException:
                 pass
@@ -1098,6 +1083,7 @@ async def notify_when_done(
                 await interaction.followup.send(
                     f"1件準備できました。\n{title}\n{url}",
                     ephemeral=True,
+                    silent=True,
                 )
             except discord.HTTPException:
                 return
@@ -1136,9 +1122,9 @@ async def notify_when_done(
                 try:
                     await progress_message.edit(content=content, view=None)
                 except discord.HTTPException:
-                    await send_notification(content, public=latest.get("status") == "ready")
+                    await send_notification(content, public=latest.get("status") in {"ready", "failed"})
             else:
-                await send_notification(content, public=latest.get("status") == "ready")
+                await send_notification(content, public=latest.get("status") in {"ready", "failed"})
             return
         if latest:
             content = status_message(latest, interaction.user.id)
@@ -1193,6 +1179,7 @@ async def send_dm_text(user: discord.User | discord.Member, content: str) -> Non
             content,
             allowed_mentions=discord.AllowedMentions(users=True),
             delete_after=delete_after,
+            silent=True,
         )
     except discord.HTTPException:
         pass
@@ -1205,7 +1192,7 @@ async def send_dm_message(
     view: discord.ui.View | None = None,
 ) -> None:
     try:
-        await user.send(content, view=view, allowed_mentions=discord.AllowedMentions(users=True))
+        await user.send(content, view=view, allowed_mentions=discord.AllowedMentions(users=True), silent=True)
     except discord.HTTPException:
         pass
 
@@ -1284,6 +1271,10 @@ async def handle_dm_prepare_like(
                     if not candidates:
                         await send_dm_text(user, str(options_body.get("error") or "翻訳可能な手動字幕がありません。"))
                         return
+                    engines = options_body.get("translation_engines")
+                    if not isinstance(engines, list) or not engines:
+                        await send_dm_text(user, "利用可能な翻訳エンジンがありません。サーバーのLLM設定を確認してください。")
+                        return
                     title = options_body.get("title") or video_id
                     view = SubtitleChoiceView(
                         requester_id=user.id,
@@ -1293,18 +1284,10 @@ async def handle_dm_prepare_like(
                         options_body=options_body,
                         archive_immediately=archive_immediately,
                     )
-                    if options_body.get("requires_google_confirmation"):
-                        reason = str(options_body.get("llm_unavailable_reason") or "LLMが利用できません。")
-                        prompt = (
-                            f"日本語字幕が見つかりませんでした。\n{title}\n"
-                            f"現在LLM翻訳が利用できません。\n理由: {reason}\n"
-                            "Google翻訳で準備してよろしいですか。"
-                        )
-                    else:
-                        prompt = (
-                            f"日本語字幕が見つかりませんでした。\n{title}\n"
-                            "翻訳元字幕と翻訳エンジンを選択してください。"
-                        )
+                    prompt = (
+                        f"日本語字幕が見つかりませんでした。\n{title}\n"
+                        "翻訳元字幕と翻訳エンジンを選択してください。"
+                    )
                     await send_dm_message(user, prompt, view=view)
                     return
                 if options_body.get("error"):
@@ -1519,6 +1502,7 @@ class YoutubeProxyBot(discord.Client):
             await message.channel.send(
                 f"字幕準備候補を確認しました。\n{title}\n字幕候補が見つかりませんでした。",
                 mention_author=False,
+                silent=True,
             )
             return
         view = SubtitleChoiceView(
@@ -1600,6 +1584,13 @@ async def prepare_command(
                             view=None,
                         )
                         return
+                    engines = options_body.get("translation_engines")
+                    if not isinstance(engines, list) or not engines:
+                        await interaction.edit_original_response(
+                            content="利用可能な翻訳エンジンがありません。サーバーのLLM設定を確認してください。",
+                            view=None,
+                        )
+                        return
                     title = options_body.get("title") or video_id
                     view = SubtitleChoiceView(
                         requester_id=interaction.user.id,
@@ -1609,18 +1600,10 @@ async def prepare_command(
                         options_body=options_body,
                         archive_immediately=archive_immediately,
                     )
-                    if options_body.get("requires_google_confirmation"):
-                        reason = str(options_body.get("llm_unavailable_reason") or "RTX3060 LLMが利用できません。")
-                        prompt = (
-                            f"日本語字幕が見つかりませんでした。\n{title}\n"
-                            f"現在LLM翻訳が利用できません。\n理由: {reason}\n"
-                            "Google翻訳で準備してよろしいですか。"
-                        )
-                    else:
-                        prompt = (
-                            f"日本語字幕が見つかりませんでした。\n{title}\n"
-                            "翻訳元字幕と翻訳エンジンを選択してください。"
-                        )
+                    prompt = (
+                        f"日本語字幕が見つかりませんでした。\n{title}\n"
+                        "翻訳元字幕と翻訳エンジンを選択してください。"
+                    )
                     await interaction.edit_original_response(content=prompt, view=view)
                     return
                 if options_body.get("error"):
@@ -1685,15 +1668,15 @@ async def reburn_command(
 ) -> None:
     await interaction.response.defer(thinking=True, ephemeral=True)
     if not settings.discord_prepare_token:
-        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=True)
+        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=True, silent=True)
         return
     selected_mode = mode.value if mode else "mp4"
     selected_max_items = max_items if max_items is not None else settings.prepare_batch_max_items
     if selected_max_items < 1 or selected_max_items > 5000:
-        await interaction.followup.send("max_items は 1 から 5000 の範囲で指定してください。", ephemeral=True)
+        await interaction.followup.send("max_items は 1 から 5000 の範囲で指定してください。", ephemeral=True, silent=True)
         return
     if archive_immediately and selected_mode != "mp4":
-        await interaction.followup.send("archive_immediately は MP4 のみ対応です。", ephemeral=True)
+        await interaction.followup.send("archive_immediately は MP4 のみ対応です。", ephemeral=True, silent=True)
         return
     source_type = "auto" if looks_like_playlist_or_channel(url) else "videos"
     try:
@@ -1768,6 +1751,7 @@ async def reburn_all_command(
     await interaction.followup.send(
         content,
         allowed_mentions=discord.AllowedMentions(users=True),
+        silent=True,
         ephemeral=False,
     )
     status_url = body.get("status_url")
@@ -1797,10 +1781,11 @@ async def clear_command(
     try:
         _status, body = await clear_video(video_id, lang)
     except PrepareApiError as error:
-        await interaction.followup.send(f"初期化APIエラー ({error.status_code}): {error.detail}")
+        await interaction.followup.send(f"初期化APIエラー ({error.status_code}): {error.detail}", silent=True)
         return
     await interaction.followup.send(
         body.get("message", "初期化しました。"),
+        silent=True,
     )
 
 
@@ -1835,9 +1820,9 @@ async def clear_all_command(interaction: discord.Interaction) -> None:
         await interaction.edit_original_response(content=message)
     except discord.NotFound:
         if isinstance(channel, discord.abc.Messageable):
-            await channel.send(message)
+            await channel.send(message, silent=True)
         else:
-            await interaction.followup.send(message, ephemeral=True)
+            await interaction.followup.send(message, ephemeral=True, silent=True)
 
 
 @client.tree.command(name="archive-all", description="SSD上の準備済み動画をすべてHDDアーカイブへ退避します")
@@ -1851,11 +1836,16 @@ async def archive_all_command(
     try:
         _status, body = await archive_all_videos()
     except PrepareApiError as error:
-        await interaction.followup.send(f"HDD退避APIエラー ({error.status_code}): {error.detail}", ephemeral=True)
+        await interaction.followup.send(
+            f"HDD退避APIエラー ({error.status_code}): {error.detail}",
+            ephemeral=True,
+            silent=True,
+        )
         return
     await interaction.followup.send(
         body.get("message", "SSD上の動画をHDDへ退避しました。"),
         ephemeral=False,
+        silent=True,
     )
 
 
@@ -1865,15 +1855,16 @@ async def reset_eta_command(
 ) -> None:
     await interaction.response.defer(thinking=True, ephemeral=True)
     if not settings.discord_prepare_token:
-        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=True)
+        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=True, silent=True)
         return
     try:
         _status, body = await reset_eta_metrics()
     except PrepareApiError as error:
-        await interaction.followup.send(f"予想時間リセットAPIエラー ({error.status_code}): {error.detail}")
+        await interaction.followup.send(f"予想時間リセットAPIエラー ({error.status_code}): {error.detail}", silent=True)
         return
     await interaction.followup.send(
         body.get("message", "予想時間の学習データをリセットしました。"),
+        silent=True,
     )
 
 
@@ -1889,7 +1880,7 @@ async def webui_key_command(
     try:
         body = make_webui_temp_key(days)
     except (RuntimeError, ValueError) as error:
-        await interaction.followup.send(str(error), ephemeral=True)
+        await interaction.followup.send(str(error), ephemeral=True, silent=True)
         return
     await interaction.followup.send(
         (
@@ -1900,6 +1891,7 @@ async def webui_key_command(
             "```"
         ),
         ephemeral=True,
+        silent=True,
     )
 
 

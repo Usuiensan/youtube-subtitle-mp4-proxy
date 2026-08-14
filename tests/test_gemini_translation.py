@@ -33,6 +33,7 @@ class GeminiTranslationTests(unittest.TestCase):
     def test_translation_profiles_expose_multiple_llms(self) -> None:
         options = app_main.translation_profile_options()
         values = {option["value"] for option in options}
+        self.assertNotIn("google_cloud", values)
         self.assertIn("qwen3_4b_instruct", values)
         self.assertIn("qwen3_8b", values)
         self.assertIn("aya_expanse_8b", values)
@@ -79,20 +80,10 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertIn("合計トークン: 30,939", text)
         self.assertIn("入力 $0.30 / 出力 $2.50", text)
 
-    def test_google_cloud_usage_text_shows_usage_estimate_inside_free_tier(self) -> None:
-        metadata = app_main.enrich_translation_metadata(
-            {
-                "translation_engine": "google_cloud",
-                "translation_characters": 29881,
-            }
-        )
-        text = bot_main.translation_usage_text(metadata)
-        self.assertEqual(metadata["translation_api_cost_jpy"], 0.0)
-        self.assertGreater(metadata["translation_usage_estimate_jpy"], 0.0)
-        self.assertIn("API料金: ¥0.00", text)
-        self.assertIn("通常単価換算: $0.5976 / ¥95.62", text)
-        self.assertIn("計算根拠: 29,881文字 × $20.00/100万文字", text)
-        self.assertIn("今回の無料枠適用後見込み: $0.0000 / ¥0.00", text)
+    def test_google_cloud_translation_is_disabled(self) -> None:
+        self.assertNotEqual(app_main.normalize_translation_engine(None), "google_cloud")
+        with self.assertRaisesRegex(RuntimeError, "Google Cloud Translation is disabled"):
+            app_main.translation_settings("google_cloud")
 
     def test_existing_translated_subtitle_usage_text_shows_no_extra_cost_and_estimate(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -114,8 +105,28 @@ class GeminiTranslationTests(unittest.TestCase):
 
         text = bot_main.translation_usage_text(metadata)
         self.assertEqual(metadata["translation_characters"], 7)
-        self.assertIn("API料金: 追加費用なし（出元の翻訳済み字幕を使用）", text)
-        self.assertIn("通常単価換算: $0.0001 / ¥0.02", text)
+        self.assertIn("翻訳エンジン: 出元字幕（翻訳なし）", text)
+        self.assertIn("API料金: 追加費用なし（出元の字幕を使用）", text)
+        self.assertIn("課金区分: API利用なし", text)
+        self.assertNotIn("Google Cloud", text)
+
+    def test_legacy_skipped_metadata_does_not_show_google_cloud(self) -> None:
+        text = bot_main.translation_usage_text(
+            {
+                "translation_engine": "google_cloud",
+                "translation_skipped": True,
+                "translation_provider_label": "Google Cloud Translation",
+                "translation_billing_class": "Cloud Translation Basic NMT",
+                "translation_characters": 7,
+                "translation_usage_estimate_usd": 0.0001,
+                "translation_usage_estimate_jpy": 0.02,
+            }
+        )
+
+        self.assertIn("翻訳エンジン: 出元字幕（翻訳なし）", text)
+        self.assertIn("課金区分: API利用なし", text)
+        self.assertNotIn("Google Cloud", text)
+        self.assertNotIn("通常単価換算", text)
 
     def test_ready_status_includes_clickable_and_code_block_urls(self) -> None:
         text = bot_main.status_message(

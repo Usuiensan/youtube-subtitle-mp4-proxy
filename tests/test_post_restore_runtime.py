@@ -133,7 +133,7 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         self.assertIn("enable='between(t,0,10)'", arg)
         self.assertNotIn(":box=1", arg)
 
-    def test_google_cloud_translation_srt_keeps_source_above_translation(self) -> None:
+    def test_google_cloud_translation_is_rejected(self) -> None:
         import asyncio
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -141,8 +141,8 @@ class PostRestoreRuntimeTests(unittest.TestCase):
             source = work / "source.srt"
             source.write_text("1\n00:00:00,000 --> 00:00:01,000\nhello\n", encoding="utf-8")
 
-            with patch.object(app_main, "google_translate_events", return_value={"1": "こんにちは"}):
-                translated, _metadata = asyncio.run(
+            with self.assertRaisesRegex(RuntimeError, "Google Cloud Translation is disabled"):
+                asyncio.run(
                     app_main.translate_subtitle_if_needed(
                         key="dQw4w9WgXcQ_ja_en_google_cloud_00000000",
                         subtitle=source,
@@ -156,9 +156,6 @@ class PostRestoreRuntimeTests(unittest.TestCase):
                         work_dir=work,
                     )
                 )
-
-            events = app_main.load_srt(translated)
-            self.assertEqual(events[0].content, "hello\n　\nこんにちは")
 
     def test_unavailable_video_info_maps_to_404(self) -> None:
         import asyncio
@@ -436,7 +433,7 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         ):
             asyncio.run(bot_main.clear_all_command.callback(interaction))
 
-        interaction.followup.send.assert_awaited_once_with("done", ephemeral=True)
+        interaction.followup.send.assert_awaited_once_with("done", ephemeral=True, silent=True)
         clear_all.assert_awaited_once()
 
     def test_notify_when_done_keeps_progress_message_and_updates_completion(self) -> None:
@@ -464,6 +461,32 @@ class PostRestoreRuntimeTests(unittest.TestCase):
 
         progress_message.edit.assert_awaited_once()
         interaction.channel.send.assert_not_awaited()
+
+    def test_notify_when_done_posts_failure_publicly_if_progress_edit_fails(self) -> None:
+        import asyncio
+
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=123),
+            channel=SimpleNamespace(send=AsyncMock()),
+            channel_id=None,
+            client=SimpleNamespace(fetch_channel=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+        progress_message = SimpleNamespace(edit=AsyncMock(side_effect=self.discord_not_found()))
+        latest = {
+            "status": "failed",
+            "video_id": "dQw4w9WgXcQ",
+            "error": "remote LLM translation failed: model not found",
+        }
+
+        with patch.object(bot_main, "fetch_job", new=AsyncMock(return_value=latest)), patch.object(
+            bot_main.asyncio, "sleep", new=AsyncMock()
+        ):
+            asyncio.run(bot_main.notify_when_done(interaction, "http://example.test/jobs/1", progress_message=progress_message))
+
+        interaction.channel.send.assert_awaited_once()
+        self.assertIn("model not found", interaction.channel.send.await_args.args[0])
+        interaction.followup.send.assert_not_awaited()
 
 
 if __name__ == "__main__":
