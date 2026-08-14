@@ -3484,6 +3484,10 @@ def ffmpeg_dual_subtitle_args(
         normalized = translated.replace("\r\n", "\n").replace("\r", "\n")
         if "\n　\n" in normalized:
             source, translated = normalized.split("\n　\n", 1)
+        else:
+            normalized_source = source.replace("\r\n", "\n").replace("\r", "\n")
+            if normalized.startswith(f"{normalized_source}\n"):
+                translated = normalized[len(normalized_source) + 1 :]
         source_lines = wrap_text_to_width(source, width_chars)
         translated_lines = wrap_text_to_width(translated, width_chars)
         return "\n".join([*source_lines, "　", *translated_lines])

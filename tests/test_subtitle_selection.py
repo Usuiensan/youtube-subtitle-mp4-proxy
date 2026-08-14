@@ -123,7 +123,7 @@ def test_dual_subtitle_ass_is_centered_and_does_not_duplicate_source(tmp_path) -
     ])
     source.write_text(subtitle, encoding="utf-8")
     translated.write_text(
-        subtitle.replace("English line", "English line\n　\n日本語の行"),
+        subtitle.replace("English line", "English line\n日本語の行"),
         encoding="utf-8",
     )
 
