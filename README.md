@@ -323,7 +323,6 @@ export TRANSLATION_SOURCE_LANGS=en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW
 export TRANSLATION_DEFAULT_PROFILE=gemini_2_5_flash_lite
 export TRANSLATION_API_RETRY_MAX_ATTEMPTS=3
 export TRANSLATION_API_RETRY_BASE_SECONDS=5
-export TRANSLATION_PROVIDER=gemini_2_5_flash_lite
 export REMOTE_LLM_ENDPOINT=http://192.168.68.115:11434/v1/chat/completions
 export REMOTE_LLM_HEALTH_URL=http://192.168.68.115:11434/v1/models
 export REMOTE_LLM_MODEL=qwen3:4b-instruct
