@@ -226,7 +226,6 @@ async def prepare_video(
     mode: str,
     discord_user_id: int,
     subtitle_source_lang: str | None = None,
-    translation_engine: str | None = None,
     archive_immediately: bool = False,
     _forced_scope: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
@@ -237,8 +236,8 @@ async def prepare_video(
     }
     query = urllib.parse.urlencode(params)
     variant_path = ""
-    if subtitle_source_lang and translation_engine:
-        variant_path = f"/{urllib.parse.quote(subtitle_source_lang, safe='')}/{urllib.parse.quote(translation_engine, safe='')}"
+    if subtitle_source_lang:
+        variant_path = f"/{urllib.parse.quote(subtitle_source_lang, safe='')}"
     url = f"{settings.youtube_proxy_internal_base_url}/prepare/youtube/{video_id}/{lang}{variant_path}?{query}"
     return await asyncio.to_thread(http_json, "POST", url)
 
@@ -846,7 +845,6 @@ class SubtitleChoiceView(discord.ui.View):
         self.archive_immediately = archive_immediately
         self.source_lang: str | None = None
         self.target_lang: str = "same"
-        self.translation_engine = None
         candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
         visible_candidates = candidates[:25]
         selected_source_lang = None
@@ -870,36 +868,11 @@ class SubtitleChoiceView(discord.ui.View):
                     default=language == selected_source_lang,
                 )
             )
-        engine_options = []
-        engines = options_body.get("translation_engines")
-        if isinstance(engines, list) and engines:
-            for engine in engines[:25]:
-                if not isinstance(engine, dict) or not engine.get("value"):
-                    continue
-                value = str(engine["value"])
-                if value == "google_cloud":
-                    continue
-                engine_options.append(
-                    discord.SelectOption(
-                        label=option_label(str(engine.get("label") or value), 100),
-                        value=value,
-                        description=option_label(str(engine.get("model") or engine.get("kind") or ""), 100) or None,
-                        default=bool(engine.get("default")),
-                    )
-                )
-            default_option = next((option for option in engine_options if option.default), None)
-            self.translation_engine = default_option.value if default_option else None
         self.source_select = discord.ui.Select(
             placeholder="翻訳元字幕を選択",
             min_values=1,
             max_values=1,
             options=source_options,
-        )
-        self.engine_select = discord.ui.Select(
-            placeholder="環境設定で固定",
-            min_values=1,
-            max_values=1,
-            options=engine_options,
         )
         target_options = [
             discord.SelectOption(label="そのまま", value="same", default=True),
@@ -918,13 +891,9 @@ class SubtitleChoiceView(discord.ui.View):
             options=target_options,
         )
         self.source_select.callback = self.on_source_selected
-        self.engine_select.callback = self.on_engine_selected
         self.target_select.callback = self.on_target_selected
-        self.engine_select.disabled = True
-        self.engine_select.placeholder = "翻訳なし（そのまま）"
         self.add_item(self.source_select)
         self.add_item(self.target_select)
-        self.add_item(self.engine_select)
 
     @staticmethod
     def _mark_selected(select: discord.ui.Select, value: str) -> None:
@@ -942,22 +911,9 @@ class SubtitleChoiceView(discord.ui.View):
         self._mark_selected(self.source_select, self.source_lang)
         await interaction.response.edit_message(view=self)
 
-    async def on_engine_selected(self, interaction: discord.Interaction) -> None:
-        self.translation_engine = self.engine_select.values[0]
-        self._mark_selected(self.engine_select, self.translation_engine)
-        await interaction.response.edit_message(view=self)
-
     async def on_target_selected(self, interaction: discord.Interaction) -> None:
         self.target_lang = self.target_select.values[0]
         self._mark_selected(self.target_select, self.target_lang)
-        translate = self.target_lang != "same"
-        self.engine_select.disabled = True
-        self.engine_select.placeholder = "環境設定で固定" if translate else "翻訳なし（そのまま）"
-        if translate and self.translation_engine is None:
-            default_engine = next((option.value for option in self.engine_select.options if option.default), None)
-            self.translation_engine = default_engine or (self.engine_select.options[0].value if self.engine_select.options else None)
-        elif not translate:
-            self.translation_engine = None
         await interaction.response.edit_message(view=self)
 
     @discord.ui.button(label="この設定で準備", style=discord.ButtonStyle.primary)
@@ -985,7 +941,6 @@ class SubtitleChoiceView(discord.ui.View):
                 self.mode,
                 interaction.user.id,
                 subtitle_source_lang=self.source_lang,
-                translation_engine=self.translation_engine,
                 archive_immediately=self.archive_immediately,
             )
         except PrepareApiError as error:
@@ -1282,10 +1237,6 @@ async def handle_dm_prepare_like(
                     if not candidates:
                         await send_dm_text(user, str(options_body.get("error") or "翻訳可能な手動字幕がありません。"))
                         return
-                    engines = options_body.get("translation_engines")
-                    if not isinstance(engines, list) or not engines:
-                        await send_dm_text(user, "利用可能な翻訳エンジンがありません。サーバーのLLM設定を確認してください。")
-                        return
                     title = options_body.get("title") or video_id
                     view = SubtitleChoiceView(
                         requester_id=user.id,
@@ -1297,7 +1248,7 @@ async def handle_dm_prepare_like(
                     )
                     prompt = (
                         f"日本語字幕が見つかりませんでした。\n{title}\n"
-                        "翻訳元字幕と翻訳エンジンを選択してください。"
+                        "翻訳元字幕と翻訳先を選択してください。"
                     )
                     await send_dm_message(user, prompt, view=view)
                     return
@@ -1502,7 +1453,7 @@ class YoutubeProxyBot(discord.Client):
                 archive_immediately=False,
             )
             await message.channel.send(
-                f"字幕準備候補を確認しました。\n{title}\n翻訳元字幕と翻訳方式を選んでください。",
+                f"字幕準備候補を確認しました。\n{title}\n翻訳元字幕と翻訳先を選んでください。",
                 view=view,
                 mention_author=False,
                 silent=True,
@@ -1525,7 +1476,7 @@ class YoutubeProxyBot(discord.Client):
             archive_immediately=False,
         )
         await message.channel.send(
-            f"字幕準備候補を確認しました。\n{title}\n翻訳元字幕と翻訳方式を選んでください。",
+            f"字幕準備候補を確認しました。\n{title}\n翻訳元字幕と翻訳先を選んでください。",
             view=view,
             mention_author=False,
             silent=True,
@@ -1595,13 +1546,6 @@ async def prepare_command(
                             view=None,
                         )
                         return
-                    engines = options_body.get("translation_engines")
-                    if not isinstance(engines, list) or not engines:
-                        await interaction.edit_original_response(
-                            content="利用可能な翻訳エンジンがありません。サーバーのLLM設定を確認してください。",
-                            view=None,
-                        )
-                        return
                     title = options_body.get("title") or video_id
                     view = SubtitleChoiceView(
                         requester_id=interaction.user.id,
@@ -1613,7 +1557,7 @@ async def prepare_command(
                     )
                     prompt = (
                         f"日本語字幕が見つかりませんでした。\n{title}\n"
-                        "翻訳元字幕と翻訳エンジンを選択してください。"
+                        "翻訳元字幕と翻訳先を選択してください。"
                     )
                     await interaction.edit_original_response(content=prompt, view=view)
                     return

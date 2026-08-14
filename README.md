@@ -5,10 +5,10 @@ YouTube の動画 ID を受け取り、字幕を焼き込んだ MP4 を返す自
 ```text
 GET /youtube/:videoId
 GET /youtube/:videoId/:lang
-GET /youtube/:videoId/:targetLang/:sourceLang/:translationEngine
+GET /youtube/:videoId/:targetLang/:sourceLang
 GET /youtube-hls/:videoId
 GET /youtube-hls/:videoId/:lang
-GET /youtube-hls/:videoId/:targetLang/:sourceLang/:translationEngine
+GET /youtube-hls/:videoId/:targetLang/:sourceLang
 POST /prepare/youtube-batch/:lang?source=:playlistOrChannelUrl
 GET /yamaplayer/playlist?list=:playlistIdOrUrl
 GET /yamaplayer/channel?channel=:channelIdOrHandleOrUrl
@@ -210,12 +210,12 @@ curl -X POST \
 翻訳元や翻訳方式を明示する版は、VRChat の動画プレーヤーで query string が落ちる可能性を避けるため path でも指定できます。
 
 ```text
-/youtube/:videoId/:targetLang/:sourceLang/:translationEngine
-/youtube-hls/:videoId/:targetLang/:sourceLang/:translationEngine
-POST /prepare/youtube/:videoId/:targetLang/:sourceLang/:translationEngine
+/youtube/:videoId/:targetLang/:sourceLang
+/youtube-hls/:videoId/:targetLang/:sourceLang
+POST /prepare/youtube/:videoId/:targetLang/:sourceLang
 ```
 
-例: `/youtube/dQw4w9WgXcQ/ja/en/gemini_2_5_flash_lite`。従来の `/youtube/:videoId/:lang` は「細かい版を指定しない既定版」を返します。複数版を並行保持したい場合は、Discord bot の字幕選択 UI から明示版を準備すると、その明示パスの URL が返ります。
+例: `/youtube/dQw4w9WgXcQ/ja/en`。翻訳プロファイルは `TRANSLATION_DEFAULT_PROFILE` で固定し、URLやDiscord UIからは指定しません。従来の `/youtube/:videoId/:lang` は「細かい版を指定しない既定版」を返します。
 
 `POST /prepare/youtube-batch/:lang?source=:playlistOrChannelUrl&sourceType=auto&mode=mp4|hls&maxItems=5000` は、YouTube Data API v3 でプレイリストまたはチャンネル投稿一覧を展開し、含まれる動画をすべて準備ジョブへ投入します。返却される `batch_id` / `status_url` は `GET /prepare/batches/:batchId` でポーリングできます。`source` はプレイリスト URL/ID、`@handle`、`https://www.youtube.com/@handle`、`https://www.youtube.com/channel/...` に対応します。
 

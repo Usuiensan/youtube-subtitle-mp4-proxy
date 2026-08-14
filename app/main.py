@@ -1249,6 +1249,15 @@ def validate_translation_variant(source_lang: str, translation_engine: str) -> s
     return enforce_configured_translation_engine(translation_engine)
 
 
+def resolve_translation_variant_engine(source_lang: str | None, translation_engine: str | None) -> str | None:
+    if source_lang is None:
+        if translation_engine is not None:
+            raise HTTPException(status_code=400, detail="translation engine requires a source language")
+        return None
+    validate_lang(source_lang)
+    return enforce_configured_translation_engine(translation_engine)
+
+
 def cleanup_ytdlp_cookie_copies(cookie_dir: Path) -> None:
     try:
         now = time.time()
@@ -2032,7 +2041,6 @@ def subtitle_choice_body(info: dict, requested_lang: str) -> dict:
         {
             "requires_choice": settings.translation_enabled and not requested and bool(candidates),
             "candidates": candidates,
-            "translation_engines": translation_profile_options(),
         }
     )
     if not requested and (requested_lang != "ja" or not settings.translation_enabled):
@@ -2042,30 +2050,11 @@ def subtitle_choice_body(info: dict, requested_lang: str) -> dict:
     return body
 
 
-def restrict_translation_engines(
-    body: dict,
-    *,
-    llm_available: bool,
-    llm_error: str | None,
-    available_models: set[str] | None = None,
-) -> dict:
-    engines = body.get("translation_engines")
-    if not isinstance(engines, list):
-        return body
-    body["llm_available"] = llm_available
-    body["llm_available_models"] = sorted(available_models or [])
-    if not llm_available:
-        body["llm_unavailable_reason"] = llm_error or "remote LLM is unavailable"
-    return body
-
-
 def select_subtitle_language(
     info: dict,
     requested_lang: str,
     source_lang: str | None = None,
-    translation_engine: str | None = None,
 ) -> dict:
-    fixed_engine = enforce_configured_translation_engine(translation_engine)
     manual_subtitles = info.get("subtitles") or {}
     if not isinstance(manual_subtitles, dict):
         manual_subtitles = {}
@@ -2084,7 +2073,7 @@ def select_subtitle_language(
             "source_language": selected,
             "translated": normalize_lang(selected) != normalize_lang(requested_lang),
             "source_kind": "manual",
-            "translation_engine_requested": fixed_engine,
+            "translation_engine": configured_translation_engine(),
         }
 
     requested = subtitle_lang_available(manual_subtitles, requested_lang)
@@ -2119,7 +2108,7 @@ def select_subtitle_language(
                 "source_language": selected,
                 "translated": True,
                 "source_kind": "manual",
-                "translation_engine_requested": fixed_engine,
+                "translation_engine": configured_translation_engine(),
             }
 
     raise HTTPException(status_code=422, detail="No subtitle found in any language")
@@ -2895,10 +2884,7 @@ async def translate_subtitle_if_needed(
         return subtitle, enrich_existing_subtitle_usage_metadata(selection, subtitle)
 
     translated_path = work_dir / f"{subtitle.stem}.ja.translated.srt"
-    requested_engine = normalize_translation_engine(selection.get("translation_engine_requested"))
-    if requested_engine == "google_cloud":
-        raise RuntimeError("Google Cloud Translation is disabled")
-    selected_settings = translation_settings(requested_engine)
+    selected_settings = translation_settings(configured_translation_engine())
 
     async def worker(payload: dict) -> dict:
         payload["_work_dir"] = str(work_dir)
@@ -3007,7 +2993,6 @@ async def download_sources(
         info,
         lang,
         source_lang=subtitle_source_lang,
-        translation_engine=translation_engine,
     )
     source_lang = subtitle_selection["source_language"]
     subtitle_flags = ["--write-subs"]
@@ -3102,7 +3087,6 @@ async def download_subtitle_only(
         info,
         lang,
         source_lang=subtitle_source_lang,
-        translation_engine=translation_engine,
     )
     source_lang = subtitle_selection["source_language"]
     subtitle_flags = ["--write-subs"]
@@ -3701,11 +3685,6 @@ async def prepare_sources(
     if existing:
         saved_video, original_subtitle, subtitle_meta = existing
         source_meta = get_cached_video_info(key) or {}
-        if translation_engine and subtitle_meta.get("translated"):
-            subtitle_meta = {
-                **subtitle_meta,
-                "translation_engine_requested": normalize_translation_engine(translation_engine),
-            }
 
         hot_dir = entry_dir(key)
         archive_dir = archive_entry_dir(key)
@@ -4162,8 +4141,10 @@ def prepared_media_url(
 ) -> str:
     base_url = settings.youtube_proxy_base_url or str(request.base_url).rstrip("/")
     suffix = ""
-    if subtitle_source_lang or translation_engine:
-        suffix = f"/{subtitle_source_lang or 'auto'}/{normalize_translation_engine(translation_engine)}"
+    if subtitle_source_lang:
+        suffix = f"/{urllib.parse.quote(subtitle_source_lang, safe='')}"
+    elif translation_engine:
+        suffix = f"/auto/{urllib.parse.quote(normalize_translation_engine(translation_engine), safe='')}"
     if mode == "hls":
         return f"{base_url}/youtube-hls/{video_id}/{lang}{suffix}"
     return f"{base_url}/youtube/{video_id}/{lang}{suffix}"
@@ -4636,7 +4617,9 @@ async def enqueue_prepare_job(
         subtitle_source_lang = subtitle_source_lang.strip()
         if not subtitle_source_lang:
             raise HTTPException(status_code=400, detail="Invalid subtitle source language")
-    normalized_engine = enforce_configured_translation_engine(translation_engine) if translation_engine else None
+    normalized_engine = enforce_configured_translation_engine(translation_engine) if translation_engine else (
+        configured_translation_engine() if subtitle_source_lang else None
+    )
     ready = prepare_ready_path(video_id, lang, mode, subtitle_source_lang, normalized_engine)
     url = prepared_media_url(request, video_id, lang, mode, subtitle_source_lang, normalized_engine)
     if ready:
@@ -5680,11 +5663,6 @@ async def index() -> str:
             <option value="" selected disabled>翻訳元字幕を選択</option>
           </select>
         </label>
-      <label>
-        Translation（環境設定で固定）
-        <output id="translationEngineFixed"></output>
-        <select id="translationEngine" name="translationEngine" hidden aria-hidden="true"></select>
-      </label>
       </div>
       <div class="actions">
         <button type="button" id="prepareButton">Prepare</button>
@@ -5902,8 +5880,6 @@ async def index() -> str:
     const prepareStatus = document.getElementById("prepareStatus");
     const prepareOptions = document.getElementById("prepareOptions");
     const subtitleSource = document.getElementById("subtitleSource");
-    const translationEngine = document.getElementById("translationEngine");
-    const translationEngineFixed = document.getElementById("translationEngineFixed");
     const sourceUrl = document.getElementById("sourceUrl");
     const sourceType = document.getElementById("sourceType");
     const playerMode = document.getElementById("playerMode");
@@ -6099,27 +6075,14 @@ async def index() -> str:
     }}
 
     function renderTranslationOptions() {{
-      translationEngine.innerHTML = "";
       chatModel.innerHTML = "";
       for (const option of translationOptions) {{
-        const selectOption = document.createElement("option");
-        selectOption.value = option.value;
-        selectOption.textContent = option.label || option.value;
-        selectOption.dataset.model = option.model || "";
-        if (option.default) selectOption.selected = true;
-        translationEngine.appendChild(selectOption);
         const chatOption = document.createElement("option");
         chatOption.value = option.value;
         chatOption.textContent = `${{option.label || option.value}}${{option.model ? ` / ${{option.model}}` : ""}}`;
         if (option.default) chatOption.selected = true;
         chatModel.appendChild(chatOption);
       }}
-      if (!Array.from(translationEngine.selectedOptions).length) {{
-        const fallback = translationEngine.options[0];
-        if (fallback) fallback.selected = true;
-      }}
-      const fixed = translationEngine.selectedOptions[0];
-      translationEngineFixed.textContent = fixed?.dataset.model || fixed?.textContent || "";
       chatModelFixed.textContent = translationOptions[0]?.model || translationOptions[0]?.label || "";
     }}
 
@@ -6755,8 +6718,8 @@ async def index() -> str:
             sourceEvents: bundleBody.source_events || [],
             translatedEvents: bundleBody.translated_events || [],
           }});
-          if (engine) {{
-            const body = await apiFetch(`/prepare/youtube/${{videoId}}/${{target}}/${{encodeURIComponent(sourceLang)}}/${{encodeURIComponent(engine)}}?mode=mp4`, {{ method: "POST" }});
+          if (sourceLang) {{
+            const body = await apiFetch(`/prepare/youtube/${{videoId}}/${{target}}/${{encodeURIComponent(sourceLang)}}?mode=mp4`, {{ method: "POST" }});
             if (!comparePlaybackSource.value && body.url) comparePlaybackSource.value = publicUrl(body.url);
           }}
         }}
@@ -6812,21 +6775,8 @@ async def index() -> str:
         option.textContent = `${{candidate.language}} / ${{candidate.name || candidate.name_en || candidate.language}} / ${{kindLabel}}`;
         subtitleSource.appendChild(option);
       }}
-      if (Array.isArray(body.translation_engines)) {{
-        translationEngine.innerHTML = "";
-        for (const engine of body.translation_engines) {{
-          const option = document.createElement("option");
-          option.value = engine.value;
-          option.textContent = engine.label || engine.value;
-          option.dataset.model = engine.model || "";
-          option.selected = true;
-          translationEngine.appendChild(option);
-        }}
-        const fixed = translationEngine.selectedOptions[0];
-        translationEngineFixed.textContent = fixed?.dataset.model || fixed?.textContent || "";
-      }}
       prepareOptions.hidden = false;
-      prepareStatus.textContent = "日本語字幕が見つかりませんでした。翻訳元字幕と翻訳方式を選んで、もう一度 Prepare を押してください。";
+      prepareStatus.textContent = "日本語字幕が見つかりませんでした。翻訳元字幕を選んで、もう一度 Prepare を押してください。";
       return true;
     }}
 
@@ -6865,12 +6815,11 @@ async def index() -> str:
           const needsChoice = await loadSubtitleChoices(videoId, language, selectedMode);
           if (needsChoice) return;
         }}
-        if (!prepareOptions.hidden && subtitleSource.value && translationEngine.value) {{
+        if (!prepareOptions.hidden && subtitleSource.value) {{
           const sourceLang = subtitleSource.value;
-          const engine = translationEngine.value;
-          const variantPath = `${{path}}/${{encodeURIComponent(sourceLang)}}/${{encodeURIComponent(engine)}}`;
+          const variantPath = `${{path}}/${{encodeURIComponent(sourceLang)}}`;
           const params = new URLSearchParams({{ mode: selectedMode }});
-          prepareStatus.textContent = `準備中: ${{sourceLang}} → ${{engine}}`;
+          prepareStatus.textContent = `準備中: ${{sourceLang}} → ${{language}}`;
           const body = await apiFetch(`${{variantPath}}?${{params.toString()}}`, {{ method: "POST" }});
           setPrepareStatus(body);
           if (body.status === "ready") {{
@@ -6976,8 +6925,6 @@ async def index() -> str:
     function resetPrepareChoices() {{
       prepareOptions.hidden = true;
       subtitleSource.innerHTML = "";
-      translationEngine.innerHTML = "";
-      translationEngineFixed.textContent = "";
     }}
     input.addEventListener("input", () => {{ resetPrepareChoices(); update(); }});
     lang.addEventListener("input", () => {{ resetPrepareChoices(); update(); }});
@@ -7353,6 +7300,7 @@ async def yamaplayer_batch(
 
 @app.get("/youtube/{video_id}")
 @app.get("/youtube/{video_id}/{lang}")
+@app.get("/youtube/{video_id}/{lang}/{source_lang}")
 @app.get("/youtube/{video_id}/{lang}/{source_lang}/{translation_engine}")
 async def youtube(
     video_id: str,
@@ -7363,11 +7311,7 @@ async def youtube(
 ) -> Response:
     lang = lang or settings.default_lang
     validate_input(video_id, lang)
-    normalized_engine = None
-    if source_lang is not None or translation_engine is not None:
-        if source_lang is None or translation_engine is None:
-            raise HTTPException(status_code=400, detail="source language and translation engine must both be specified")
-        normalized_engine = validate_translation_variant(source_lang, translation_engine)
+    normalized_engine = resolve_translation_variant_engine(source_lang, translation_engine)
     if source_lang is None and normalized_engine is None:
         key = default_serving_key(video_id, lang, "mp4")
     else:
@@ -7384,6 +7328,7 @@ async def youtube(
 
 @app.get("/youtube-hls/{video_id}")
 @app.get("/youtube-hls/{video_id}/{lang}")
+@app.get("/youtube-hls/{video_id}/{lang}/{source_lang}")
 @app.get("/youtube-hls/{video_id}/{lang}/{source_lang}/{translation_engine}")
 async def youtube_hls(
     video_id: str,
@@ -7394,11 +7339,7 @@ async def youtube_hls(
 ) -> Response:
     lang = lang or settings.default_lang
     validate_input(video_id, lang)
-    normalized_engine = None
-    if source_lang is not None or translation_engine is not None:
-        if source_lang is None or translation_engine is None:
-            raise HTTPException(status_code=400, detail="source language and translation engine must both be specified")
-        normalized_engine = validate_translation_variant(source_lang, translation_engine)
+    normalized_engine = resolve_translation_variant_engine(source_lang, translation_engine)
     if source_lang is None and normalized_engine is None:
         key = default_serving_key(video_id, lang, "hls")
     else:
@@ -7411,6 +7352,7 @@ async def youtube_hls(
 
 
 @app.post("/prepare/youtube/{video_id}/{lang}")
+@app.post("/prepare/youtube/{video_id}/{lang}/{path_source_lang}")
 @app.post("/prepare/youtube/{video_id}/{lang}/{path_source_lang}/{path_translation_engine}")
 async def prepare_youtube(
     video_id: str,
@@ -7427,13 +7369,13 @@ async def prepare_youtube(
 ) -> JSONResponse:
     require_prepare_auth(request)
     validate_input(video_id, lang)
-    if path_source_lang or path_translation_engine:
+    if path_source_lang is not None:
         if subtitle_source_lang or translation_engine:
             raise HTTPException(status_code=400, detail="Specify translation variant in path or query, not both")
-        if path_source_lang is None or path_translation_engine is None:
-            raise HTTPException(status_code=400, detail="source language and translation engine must both be specified")
         subtitle_source_lang = path_source_lang
         translation_engine = path_translation_engine
+    elif path_translation_engine is not None:
+        raise HTTPException(status_code=400, detail="translation engine requires a source language")
     discord_user_id = validate_discord_user_id(discord_user_id)
     if mode not in {"mp4", "hls"}:
         raise HTTPException(status_code=400, detail="mode must be mp4 or hls")
@@ -7477,28 +7419,21 @@ async def prepare_youtube_subtitles(
     info = await fetch_video_info(video_id)
     assert_duration_allowed(info)
     body = subtitle_choice_body(info, lang)
-    if body.get("requires_choice"):
-        llm_available, llm_error, available_models = await remote_llm_status()
-        body = restrict_translation_engines(
-            body,
-            llm_available=llm_available,
-            llm_error=llm_error,
-            available_models=available_models,
-        )
     return JSONResponse(body)
 
 
+@app.get("/prepare/youtube/{video_id}/{lang}/{source_lang}/subtitle-events")
 @app.get("/prepare/youtube/{video_id}/{lang}/{source_lang}/{translation_engine}/subtitle-events")
 async def prepared_subtitle_events(
     video_id: str,
     lang: str,
     source_lang: str,
-    translation_engine: str,
     request: Request,
+    translation_engine: str | None = None,
 ) -> JSONResponse:
     require_prepare_auth(request)
     validate_input(video_id, lang)
-    normalized_engine = validate_translation_variant(source_lang, translation_engine)
+    normalized_engine = enforce_configured_translation_engine(translation_engine)
     key = cache_key(video_id, lang, source_lang, normalized_engine)
     return JSONResponse(
         {
@@ -7781,6 +7716,7 @@ async def clear_all_youtube(
 
 
 @app.post("/prepare/youtube/{video_id}/{lang}/clear")
+@app.post("/prepare/youtube/{video_id}/{lang}/{path_source_lang}/clear")
 @app.post("/prepare/youtube/{video_id}/{lang}/{path_source_lang}/{path_translation_engine}/clear")
 async def clear_youtube(
     video_id: str,
@@ -7791,11 +7727,7 @@ async def clear_youtube(
 ) -> JSONResponse:
     require_prepare_auth(request, allow_temp_key=False)
     validate_input(video_id, lang)
-    normalized_engine = None
-    if path_source_lang or path_translation_engine:
-        if path_source_lang is None or path_translation_engine is None:
-            raise HTTPException(status_code=400, detail="source language and translation engine must both be specified")
-        normalized_engine = validate_translation_variant(path_source_lang, path_translation_engine)
+    normalized_engine = resolve_translation_variant_engine(path_source_lang, path_translation_engine)
 
     key = cache_key(video_id, lang, path_source_lang, normalized_engine)
 

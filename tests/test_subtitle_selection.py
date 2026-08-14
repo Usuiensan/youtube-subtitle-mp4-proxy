@@ -19,13 +19,12 @@ def test_explicit_translation_source_wins_over_target_auto_caption() -> None:
         info,
         "ja",
         source_lang="en",
-        translation_engine="gemini_2_5_flash_lite",
     )
 
     assert selection["source_language"] == "en"
     assert selection["source_kind"] == "manual"
     assert selection["translated"] is True
-    assert selection["translation_engine_requested"] == "gemini_2_5_flash_lite"
+    assert selection["translation_engine"] == main.configured_translation_engine()
 
 
 def test_automatic_captions_are_always_excluded() -> None:
@@ -35,7 +34,7 @@ def test_automatic_captions_are_always_excluded() -> None:
         "automatic_captions": {"en": [{"ext": "vtt"}], "ja": [{"ext": "vtt"}]},
     }
 
-    selection = main.select_subtitle_language(info, "ja", translation_engine="gemini_2_5_flash_lite")
+    selection = main.select_subtitle_language(info, "ja")
 
     assert selection["source_language"] == "en"
     assert selection["source_kind"] == "manual"
@@ -45,43 +44,9 @@ def test_automatic_captions_are_always_excluded() -> None:
     assert error.value.status_code == 422
 
 
-def test_google_cloud_translation_is_disabled() -> None:
-    with pytest.raises(main.HTTPException) as error:
-        main.select_subtitle_language(
-            {"subtitles": {"en": [{"ext": "vtt"}]}},
-            "ja",
-            source_lang="en",
-            translation_engine="google_cloud",
-        )
-
-    assert error.value.status_code == 422
-    assert "disabled" in error.value.detail
-
-
-def test_translation_engine_is_fixed_by_environment() -> None:
-    configured = main.configured_translation_engine()
-    assert main.enforce_configured_translation_engine(configured) == configured
-    with pytest.raises(main.HTTPException) as error:
-        main.enforce_configured_translation_engine("qwen3_8b" if configured != "qwen3_8b" else "gemma3_12b")
-    assert error.value.status_code == 422
-    assert "TRANSLATION_DEFAULT_PROFILE" in error.value.detail
-
-
 def test_translation_api_503_is_retryable_but_other_errors_are_not() -> None:
     assert main.is_retryable_translation_api_503(RuntimeError("translation api http error 503: unavailable"))
     assert not main.is_retryable_translation_api_503(RuntimeError("translation api http error 429: quota"))
-
-
-def test_fixed_translation_engine_is_not_removed_by_health_check() -> None:
-    body = {"translation_engines": [{"value": "gemini_2_5_flash_lite", "model": "gemini-3.1-flash-lite"}]}
-    result = main.restrict_translation_engines(
-        body,
-        llm_available=False,
-        llm_error="GEMINI_API_KEY is not configured",
-        available_models=set(),
-    )
-    assert result["translation_engines"]
-    assert result["llm_unavailable_reason"] == "GEMINI_API_KEY is not configured"
 
 
 def test_subtitle_candidates_ignore_automatic_captions() -> None:
