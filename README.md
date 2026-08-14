@@ -198,7 +198,7 @@ curl -X POST \
 
 `POST /prepare/youtube/:videoId/:lang?mode=mp4|hls` は、準備済みなら `200 {"status":"ready","url":"..."}` を返します。準備が必要なら `202` と `job_id` / `status_url` を返すので、Discord bot 側で `GET /prepare/jobs/:jobId` をポーリングし、`ready` になってから `url` を投稿します。
 
-`GET /prepare/youtube/:videoId/:lang/subtitles?mode=mp4|hls` は、準備前に字幕候補を確認するための API です。`lang=ja` で日本語字幕がなく、翻訳可能な手動字幕がある場合は `requires_choice: true` と `candidates` を返します。翻訳エンジンは一時的に `google_cloud` のみ受け付けます。
+`GET /prepare/youtube/:videoId/:lang/subtitles?mode=mp4|hls` は、準備前に字幕候補を確認するための API です。`lang=ja` で日本語字幕がなく、翻訳可能な提供元字幕がある場合は `requires_choice: true` と `candidates` を返します。YouTube の自動生成字幕・自動翻訳字幕は候補に含めません。
 
 準備済みの原語 SRT と翻訳 SRT はそれぞれ以下からダウンロードできます。
 
@@ -270,7 +270,7 @@ Discord bot の完了待ちは単体ジョブでは `DISCORD_PREPARE_POLL_TIMEOU
 再利用可能な準備済み動画をまとめて作り直す場合は `/reburn-all` を使います。`lang:all` で全言語、`lang:ja` などで対象言語を絞れます。対象はSSD/HDDに残っていて、かつ `source/` 配下の動画・字幕が残っているものです。
 SSD容量を空けたい場合は `/archive-all` を使います。SSD上の完了済み動画・字幕・メタデータをHDDアーカイブへ退避し、実行中の準備ジョブに関係するものはスキップします。通常のMP4配信URLはHDDからも直接返せますが、複数人に共有する前は再度 `/prepare` でSSDへ準備する運用を推奨します。
 
-単体動画で `lang:ja` を指定し、日本語字幕が存在しない場合は、準備を始める前に翻訳元字幕と言語エンジンを選ぶ UI を表示します。翻訳エンジンは一時的に Google 翻訳のみ使用できます。翻訳元字幕は `TRANSLATION_SOURCE_LANGS` の優先順で初期選択され、未設定時は英語系字幕を優先します。
+単体動画で `lang:ja` を指定し、日本語字幕が存在しない場合は、準備を始める前に翻訳元字幕と言語エンジンを選ぶ UI を表示します。翻訳元字幕は `TRANSLATION_SOURCE_LANGS` の優先順で初期選択され、未設定時は英語系字幕を優先します。YouTube の自動生成字幕・自動翻訳字幕は使用しません。
 
 準備開始時は `予想N分N秒 / 終了予想 <t:1783619520:t>` の形式で返信します。ジョブが完了または失敗すると、コマンドを実行したユーザーにメンションして結果を投稿します。一括準備では完了時に先頭 10 件の配信 URL と残り件数を投稿します。予想時間の学習データは `/reset-eta` でリセットできます。
 
@@ -313,9 +313,9 @@ Google の API キーが必要なのは、YouTube Data API v3 を使う `/prepar
 
 `TRANSLATION_ENABLED=1` の場合、要求言語が `ja` で日本語の手動字幕がない動画は、Discord bot の単体 `/prepare` では翻訳元字幕をユーザーが選び、日本語へ翻訳してから焼き込みます。API から `subtitleSourceLang` を指定しない場合や一括準備では、動画の原言語、英語、韓国語、中国語、`TRANSLATION_SOURCE_LANGS` の順で自動選択します。
 
-LLM 翻訳は字幕IDと原文だけを動画1本分まとめて1回のAPIリクエストへ送り、動画全体の文脈で翻訳します。応答はStructured Output / JSON Schemaで `{"subtitles":[{"id":1,"text":"..."}]}` に固定し、プログラム側で件数・ID集合・重複・空文字を検証します。タイムコードは送信せず、検証済みIDを元SRTへ再結合します。長すぎてcontextまたは出力上限を超えた場合は自動分割せず失敗します。
+LLM 翻訳は字幕IDと原文だけを動画1本分まとめて1回のAPIリクエストへ送り、動画全体の文脈で翻訳します。応答はStructured Output / JSON Schemaで `{"subtitles":[{"id":1,"text":"..."}]}` に固定し、プログラム側で件数・ID集合・重複・空文字を検証します。タイムコードは送信せず、検証済みIDを元SRTへ再結合します。長すぎてcontextまたは出力上限を超えた場合は自動分割せず失敗します。Gemini などのクラウドLLMは `REMOTE_LLM_ENDPOINT` なしでもAPIキー設定だけで候補に表示します。
 
-翻訳エンジンは `Gemini Flash-Lite`、`GPT-5 nano`、`Groq GPT-OSS 20B`、既存のOpenAI互換Ollamaモデルを切り替えられます。Google翻訳とYouTube自動翻訳も残します。LLM経路では事前health check、再試行、字幕ごとのリクエスト、自動fallbackを行いません。
+翻訳エンジンは `Gemini Flash-Lite`、`GPT-5 nano`、`Groq GPT-OSS 20B`、既存のOpenAI互換Ollamaモデルを切り替えられます。Google翻訳も残します。YouTube自動生成字幕・自動翻訳は使用しません。LLM経路では事前health check、再試行、字幕ごとのリクエスト、自動fallbackを行いません。
 
 ```bash
 export TRANSLATION_ENABLED=1

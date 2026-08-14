@@ -637,12 +637,12 @@ def queue_counts_for_job(job_id: str) -> dict[str, int]:
     return counts
 
 
-def yt_dlp_download_format_selector() -> str:
-    return download_format_selector(settings.max_height)
+def yt_dlp_download_format_selector(original_language: str | None = None) -> str:
+    return download_format_selector(settings.max_height, original_language)
 
 
-def yt_dlp_fallback_format_selector() -> str:
-    return fallback_format_selector()
+def yt_dlp_fallback_format_selector(original_language: str | None = None) -> str:
+    return fallback_format_selector(original_language)
 
 
 def yt_dlp_args_without_cookies(args: list[str]) -> list[str]:
@@ -675,7 +675,7 @@ def cache_key(
 
 def render_profile_id(subtitle_font_size: int | None = None) -> str:
     return hashlib.sha1(
-        "\n".join(["dual-subtitle-layout-v12-centered-single-ass", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
+        "\n".join(["dual-subtitle-layout-v12-centered-single-ass", "media-stream-selection-v2", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
     ).hexdigest()[:8]
 
 
@@ -1246,7 +1246,10 @@ def default_serving_key(video_id: str, lang: str, mode: str) -> str:
 
 def validate_translation_variant(source_lang: str, translation_engine: str) -> str:
     validate_lang(source_lang)
-    return normalize_translation_engine(translation_engine)
+    normalized = normalize_translation_engine(translation_engine)
+    if normalized == "youtube_auto":
+        raise HTTPException(status_code=422, detail="YouTube自動翻訳字幕は利用しません")
+    return normalized
 
 
 def cleanup_ytdlp_cookie_copies(cookie_dir: Path) -> None:
@@ -1683,13 +1686,6 @@ def translation_profile_options() -> list[dict]:
             "default": default_profile == "google_cloud",
             "kind": "cloud",
         },
-        {
-            "value": "youtube_auto",
-            "label": "YouTube自動翻訳（無料・品質低下の可能性）",
-            "model": None,
-            "default": default_profile == "youtube_auto",
-            "kind": "youtube",
-        },
     ]
     for profile_id in profiles:
         model = str(settings.local_llm_profile_models.get(profile_id) or "").strip()
@@ -1721,8 +1717,25 @@ def remote_llm_health_url() -> str:
     return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, health_path, "", "", ""))
 
 
+def configured_cloud_models() -> set[str]:
+    models: set[str] = set()
+    if settings.gemini_api_key:
+        for profile in ("gemini_2_5_flash", "gemini_2_5_flash_lite"):
+            model = settings.local_llm_profile_models.get(profile)
+            if model:
+                models.add(model)
+    if settings.openai_api_key and settings.local_llm_profile_models.get("gpt_5_nano"):
+        models.add(settings.local_llm_profile_models["gpt_5_nano"])
+    if settings.groq_api_key and settings.local_llm_profile_models.get("groq_gpt_oss_20b"):
+        models.add(settings.local_llm_profile_models["groq_gpt_oss_20b"])
+    return models
+
+
 async def remote_llm_status() -> tuple[bool, str | None, set[str]]:
+    cloud_models = configured_cloud_models()
     if not settings.remote_llm_endpoint:
+        if cloud_models:
+            return True, None, cloud_models
         return False, "REMOTE_LLM_ENDPOINT is not configured", set()
     health_url = remote_llm_health_url()
 
@@ -1741,9 +1754,13 @@ async def remote_llm_status() -> tuple[bool, str | None, set[str]]:
                         for item in items:
                             if isinstance(item, dict) and item.get("id"):
                                 models.add(str(item["id"]))
-                    return True, None, models
+                    return True, None, models | cloud_models
+                if cloud_models:
+                    return True, None, cloud_models
                 return False, f"remote LLM health returned HTTP {response.status}", set()
         except Exception as error:
+            if cloud_models:
+                return True, None, cloud_models
             return False, str(error), set()
 
     return await asyncio.to_thread(check)
@@ -1979,18 +1996,11 @@ def manual_subtitle_candidates(info: dict, requested_lang: str) -> list[dict]:
 def subtitle_tracks(info: dict) -> dict[str, str]:
     """Return available subtitle languages and their yt-dlp source kind."""
     tracks: dict[str, str] = {}
-    original_language = str(info.get("language") or "").strip().lower()
-    for key, source_kind in (("subtitles", "manual"), ("automatic_captions", "automatic")):
-        values = info.get(key) or {}
-        if not isinstance(values, dict):
-            continue
-        for lang in values:
-            language = str(lang)
-            if source_kind == "automatic" and original_language:
-                normalized = language.lower()
-                if normalized != original_language and not normalized.startswith(f"{original_language}-"):
-                    continue
-            tracks.setdefault(language, source_kind)
+    values = info.get("subtitles") or {}
+    if not isinstance(values, dict):
+        return tracks
+    for lang in values:
+        tracks.setdefault(str(lang), "manual")
     return tracks
 
 
@@ -2013,10 +2023,7 @@ def subtitle_choice_body(info: dict, requested_lang: str) -> dict:
     manual_subtitles = info.get("subtitles") or {}
     if not isinstance(manual_subtitles, dict):
         manual_subtitles = {}
-    automatic_subtitles = info.get("automatic_captions") or {}
-    if not isinstance(automatic_subtitles, dict):
-        automatic_subtitles = {}
-    available_subtitles = {**automatic_subtitles, **manual_subtitles}
+    available_subtitles = manual_subtitles
 
     requested = subtitle_lang_available(available_subtitles, requested_lang)
     body = {
@@ -2066,9 +2073,6 @@ def restrict_translation_engines(
             if engine.get("value") == "google_cloud":
                 filtered.append(engine)
                 continue
-            if engine.get("value") == "youtube_auto":
-                filtered.append(engine)
-                continue
             model = str(engine.get("model") or "").strip()
             if model_available(model):
                 filtered.append(engine)
@@ -2078,7 +2082,7 @@ def restrict_translation_engines(
         return body
     body["translation_engines"] = [
         engine for engine in engines
-        if isinstance(engine, dict) and engine.get("value") in {"google_cloud", "youtube_auto"}
+        if isinstance(engine, dict) and engine.get("value") == "google_cloud"
     ]
     body["llm_available"] = False
     body["llm_unavailable_reason"] = llm_error or "remote LLM is unavailable"
@@ -2096,10 +2100,7 @@ def select_subtitle_language(
     if not isinstance(manual_subtitles, dict):
         manual_subtitles = {}
 
-    automatic_subtitles = info.get("automatic_captions") or {}
-    if not isinstance(automatic_subtitles, dict):
-        automatic_subtitles = {}
-    available_subtitles = {**automatic_subtitles, **manual_subtitles}
+    available_subtitles = manual_subtitles
 
     # An explicit translation variant (for example /ja/en/google_cloud) must
     # use the requested source language even when YouTube also exposes an
@@ -2108,36 +2109,21 @@ def select_subtitle_language(
         selected = subtitle_lang_available(available_subtitles, source_lang)
         if not selected:
             raise HTTPException(status_code=422, detail=f"No subtitle found for source language: {source_lang}")
-        automatic_target = subtitle_lang_available(automatic_subtitles, requested_lang)
-        use_automatic_translation = bool(
-            normalize_lang(selected) != normalize_lang(requested_lang)
-            and automatic_target
-            and requested_lang not in manual_subtitles
-            and normalize_translation_engine(translation_engine) == "youtube_auto"
-        )
         return {
             "requested_language": requested_lang,
             "source_language": selected,
             "translated": normalize_lang(selected) != normalize_lang(requested_lang),
-            "source_kind": "automatic" if selected not in manual_subtitles else "manual",
+            "source_kind": "manual",
             "translation_engine_requested": normalize_translation_engine(translation_engine),
-            "use_automatic_translation": use_automatic_translation,
         }
 
-    # yt-dlp may expose YouTube's machine-translated caption tracks (for
-    # example `ja` on an English video) under automatic_captions. They are
-    # not original subtitles and must not suppress the requested translation.
-    original_language = str(info.get("language") or "").strip().lower()
-    requested_available = dict(manual_subtitles)
-    if original_language and normalize_lang(requested_lang) == normalize_lang(original_language):
-        requested_available.update(automatic_subtitles)
-    requested = subtitle_lang_available(requested_available, requested_lang)
+    requested = subtitle_lang_available(manual_subtitles, requested_lang)
     if requested:
         return {
             "requested_language": requested_lang,
             "source_language": requested,
             "translated": False,
-            "source_kind": "automatic" if requested not in manual_subtitles else "manual",
+            "source_kind": "manual",
         }
 
     if requested_lang != "ja" or not settings.translation_enabled:
@@ -2162,14 +2148,8 @@ def select_subtitle_language(
                 "requested_language": requested_lang,
                 "source_language": selected,
                 "translated": True,
-                "source_kind": "automatic" if selected not in manual_subtitles else "manual",
+                "source_kind": "manual",
                 "translation_engine_requested": normalize_translation_engine(translation_engine),
-                "use_automatic_translation": bool(
-                    normalize_lang(selected) != normalize_lang(requested_lang)
-                    and subtitle_lang_available(automatic_subtitles, requested_lang)
-                        and requested_lang not in manual_subtitles
-                        and normalize_translation_engine(translation_engine) == "youtube_auto"
-                ),
             }
 
     raise HTTPException(status_code=422, detail="No subtitle found in any language")
@@ -3081,15 +3061,11 @@ async def download_sources(
         translation_engine=translation_engine,
     )
     source_lang = subtitle_selection["source_language"]
-    use_automatic_translation = bool(subtitle_selection.get("use_automatic_translation"))
-    if normalize_translation_engine(translation_engine) == "youtube_auto" and not use_automatic_translation:
-        raise HTTPException(status_code=422, detail="YouTube自動翻訳字幕が利用できません")
-    subtitle_flags = ["--write-auto-subs", "--write-subs"] if use_automatic_translation else [
-        "--write-auto-subs" if subtitle_selection.get("source_kind") == "automatic" else "--write-subs"
-    ]
-    subtitle_languages = f"{source_lang},{lang}" if use_automatic_translation else source_lang
-    format_selector = yt_dlp_download_format_selector()
-    fallback_format_selector = yt_dlp_fallback_format_selector()
+    subtitle_flags = ["--write-subs"]
+    subtitle_languages = source_lang
+    original_language = str(info.get("language") or "").strip()
+    format_selector = yt_dlp_download_format_selector(original_language)
+    fallback_format_selector = yt_dlp_fallback_format_selector(original_language)
     
     start_t = time.time()
     dl_args = yt_dlp_base_args() + [
@@ -3109,6 +3085,8 @@ async def download_sources(
         "%(id)s.%(ext)s",
         url,
     ]
+    if original_language:
+        dl_args.insert(dl_args.index("--merge-output-format"), "--audio-multistreams")
     try:
         if job_id:
             await run_yt_dlp_with_progress(dl_args, job_id=job_id, cwd=work_dir)
@@ -3149,24 +3127,15 @@ async def download_sources(
     
     video = find_downloaded_video(work_dir)
     original_subtitle = find_subtitle(work_dir, source_lang)
-    automatic_translation = find_subtitle(work_dir, lang) if use_automatic_translation else None
-    
     metrics_manager.record_download(video.stat().st_size, end_t - start_t)
-    
-    if automatic_translation and automatic_translation != original_subtitle:
-        subtitle = automatic_translation
-        subtitle_meta = enrich_existing_subtitle_usage_metadata(subtitle_selection, subtitle)
-        subtitle_meta["translation_engine"] = "youtube_auto"
-        subtitle_meta["translation_skipped_reason"] = "youtube_automatic_translation"
-    else:
-        subtitle, subtitle_meta = await translate_subtitle_if_needed(
-            key=cache_key(video_id, lang, subtitle_source_lang, translation_engine),
-            subtitle=original_subtitle,
-            info=info,
-            selection=subtitle_selection,
-            work_dir=work_dir,
-            job_id=job_id,
-        )
+    subtitle, subtitle_meta = await translate_subtitle_if_needed(
+        key=cache_key(video_id, lang, subtitle_source_lang, translation_engine),
+        subtitle=original_subtitle,
+        info=info,
+        selection=subtitle_selection,
+        work_dir=work_dir,
+        job_id=job_id,
+    )
     return video, original_subtitle, subtitle, subtitle_meta
 
 
@@ -3187,13 +3156,8 @@ async def download_subtitle_only(
         translation_engine=translation_engine,
     )
     source_lang = subtitle_selection["source_language"]
-    use_automatic_translation = bool(subtitle_selection.get("use_automatic_translation"))
-    if normalize_translation_engine(translation_engine) == "youtube_auto" and not use_automatic_translation:
-        raise HTTPException(status_code=422, detail="YouTube自動翻訳字幕が利用できません")
-    subtitle_flags = ["--write-auto-subs", "--write-subs"] if use_automatic_translation else [
-        "--write-auto-subs" if subtitle_selection.get("source_kind") == "automatic" else "--write-subs"
-    ]
-    subtitle_languages = f"{source_lang},{lang}" if use_automatic_translation else source_lang
+    subtitle_flags = ["--write-subs"]
+    subtitle_languages = source_lang
     start_t = time.time()
     dl_args = yt_dlp_base_args() + [
         "--no-playlist",
@@ -3214,22 +3178,15 @@ async def download_subtitle_only(
     else:
         await run_command(dl_args, cwd=work_dir)
     original_subtitle = find_subtitle(work_dir, source_lang)
-    automatic_translation = find_subtitle(work_dir, lang) if use_automatic_translation else None
     metrics_manager.record_download(original_subtitle.stat().st_size, time.time() - start_t)
-    if automatic_translation and automatic_translation != original_subtitle:
-        subtitle = automatic_translation
-        subtitle_meta = enrich_existing_subtitle_usage_metadata(subtitle_selection, subtitle)
-        subtitle_meta["translation_engine"] = "youtube_auto"
-        subtitle_meta["translation_skipped_reason"] = "youtube_automatic_translation"
-    else:
-        subtitle, subtitle_meta = await translate_subtitle_if_needed(
-            key=cache_key(video_id, lang, subtitle_source_lang, translation_engine),
-            subtitle=original_subtitle,
-            info=info,
-            selection=subtitle_selection,
-            work_dir=work_dir,
-            job_id=job_id,
-        )
+    subtitle, subtitle_meta = await translate_subtitle_if_needed(
+        key=cache_key(video_id, lang, subtitle_source_lang, translation_engine),
+        subtitle=original_subtitle,
+        info=info,
+        selection=subtitle_selection,
+        work_dir=work_dir,
+        job_id=job_id,
+    )
     return original_subtitle, subtitle, subtitle_meta
 
 
@@ -3260,6 +3217,10 @@ async def burn_subtitles(
             "-y",
             "-i",
             str(video),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
             *vf_args,
             *ffmpeg_video_args(),
             "-c:a",

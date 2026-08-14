@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -7,6 +8,7 @@ from tempfile import TemporaryDirectory
 from app import main as app_main
 from app import translation_worker
 from bot import main as bot_main
+from unittest.mock import patch
 
 
 class GeminiTranslationTests(unittest.TestCase):
@@ -14,6 +16,16 @@ class GeminiTranslationTests(unittest.TestCase):
         settings = app_main.translation_settings("gemini_2_5_flash")
         self.assertEqual(settings.model_name, app_main.settings.local_llm_profile_models["gemini_2_5_flash"])
         self.assertEqual(settings.provider_name, "gemini_api")
+
+    def test_gemini_availability_does_not_require_remote_llm_endpoint(self) -> None:
+        with patch.object(app_main.settings, "remote_llm_endpoint", ""), patch.object(
+            app_main.settings, "gemini_api_key", "test-key"
+        ):
+            available, error, models = asyncio.run(app_main.remote_llm_status())
+
+        self.assertTrue(available)
+        self.assertIsNone(error)
+        self.assertIn(app_main.settings.local_llm_profile_models["gemini_2_5_flash_lite"], models)
 
     def test_translation_profiles_expose_multiple_llms(self) -> None:
         options = app_main.translation_profile_options()

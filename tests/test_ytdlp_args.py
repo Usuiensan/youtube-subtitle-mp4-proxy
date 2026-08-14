@@ -6,6 +6,12 @@ def test_download_format_selectors_preserve_quality_fallbacks() -> None:
     assert fallback_format_selector() == "bestvideo*+bestaudio/best"
 
 
+def test_original_language_selector_keeps_all_same_language_audio_tracks() -> None:
+    selector = download_format_selector(720, "de-DE")
+    assert "mergeall[vcodec=none][language^=de]" in selector
+    assert fallback_format_selector("de-DE").startswith("bestvideo*+mergeall[vcodec=none][language^=de]")
+
+
 def test_args_without_cookies_removes_flag_and_its_value() -> None:
     args = ["yt-dlp", "--cookies", "cookies.txt", "--format", "best", "--cookies-from-browser"]
     assert args_without_cookies(args) == ["yt-dlp", "--format", "best", "--cookies-from-browser"]

@@ -1,5 +1,6 @@
 from app import main
 import srt
+import pytest
 from datetime import timedelta
 
 
@@ -27,21 +28,30 @@ def test_explicit_translation_source_wins_over_target_auto_caption() -> None:
     assert selection["translation_engine_requested"] == "google_cloud"
 
 
-def test_machine_translated_target_caption_is_not_treated_as_original() -> None:
+def test_automatic_captions_are_always_excluded() -> None:
     info = {
         "language": "en",
         "subtitles": {"en": [{"ext": "vtt"}]},
         "automatic_captions": {"en": [{"ext": "vtt"}], "ja": [{"ext": "vtt"}]},
     }
 
-    selection = main.select_subtitle_language(
-        info,
-        "ja",
-        translation_engine="google_cloud",
-    )
+    selection = main.select_subtitle_language(info, "ja", translation_engine="google_cloud")
 
     assert selection["source_language"] == "en"
-    assert selection["translated"] is True
+    assert selection["source_kind"] == "manual"
+
+    with pytest.raises(main.HTTPException) as error:
+        main.select_subtitle_language({"automatic_captions": {"en": [{}]}}, "ja")
+    assert error.value.status_code == 422
+
+
+def test_subtitle_candidates_ignore_automatic_captions() -> None:
+    info = {
+        "subtitles": {"en": [{"ext": "vtt"}]},
+        "automatic_captions": {"ja": [{"ext": "vtt"}]},
+    }
+
+    assert [item["language"] for item in main.subtitle_candidates(info, "ja")] == ["en"]
 
 
 def test_ass_builder_preserves_srt_line_breaks(tmp_path) -> None:
