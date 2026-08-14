@@ -54,6 +54,20 @@ def test_subtitle_candidates_ignore_automatic_captions() -> None:
     assert [item["language"] for item in main.subtitle_candidates(info, "ja")] == ["en"]
 
 
+def test_variant_japanese_track_is_recognized_as_requested_language(monkeypatch) -> None:
+    monkeypatch.setattr(main.settings, "translation_enabled", True)
+    body = main.subtitle_choice_body(
+        {
+            "id": "video",
+            "subtitles": {"ja-p4xb9ptA1GQ": [{"ext": "vtt"}]},
+        },
+        "ja",
+    )
+
+    assert body["requires_choice"] is False
+    assert "error" not in body
+
+
 def test_ass_builder_preserves_srt_line_breaks(tmp_path) -> None:
     source = tmp_path / "subtitle.srt"
     output = tmp_path / "subtitle.ass"

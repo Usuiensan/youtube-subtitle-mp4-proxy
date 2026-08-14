@@ -2037,14 +2037,14 @@ def subtitle_choice_body(info: dict, requested_lang: str) -> dict:
     candidates = subtitle_candidates(info, requested_lang)
     body.update(
         {
-            "requires_choice": settings.translation_enabled and bool(candidates),
+            "requires_choice": settings.translation_enabled and not requested and bool(candidates),
             "candidates": candidates,
             "translation_engines": translation_profile_options(),
         }
     )
-    if requested_lang != "ja" or not settings.translation_enabled:
+    if not requested and (requested_lang != "ja" or not settings.translation_enabled):
         body["error"] = f"No subtitle found for language: {requested_lang}"
-    elif not candidates:
+    elif not requested and not candidates:
         body["error"] = "No subtitle found in any language"
     return body
 
