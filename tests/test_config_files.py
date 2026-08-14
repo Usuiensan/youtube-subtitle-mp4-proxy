@@ -1,6 +1,19 @@
 import os
+import importlib
 
 from app.config_files import load_env_file, read_text_file
+
+
+def test_translation_profile_uses_provider_compatibility_fallback(monkeypatch) -> None:
+    import app.settings as settings_module
+
+    monkeypatch.delenv("TRANSLATION_DEFAULT_PROFILE", raising=False)
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "gemini_2_5_flash_lite")
+    importlib.reload(settings_module)
+    try:
+        assert settings_module.Settings.translation_default_profile == "gemini_2_5_flash_lite"
+    finally:
+        importlib.reload(settings_module)
 
 
 def test_load_env_file_does_not_override_existing_environment(tmp_path, monkeypatch) -> None:
