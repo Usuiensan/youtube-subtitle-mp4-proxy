@@ -929,7 +929,7 @@ class SubtitleChoiceView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.requester_id:
             return True
-        await interaction.response.send_message("この選択はコマンド実行者だけが操作できます。", ephemeral=True)
+        await interaction.response.send_message("この選択はコマンド実行者だけが操作できます。", ephemeral=True, silent=True)
         return False
 
     async def on_source_selected(self, interaction: discord.Interaction) -> None:
@@ -1001,6 +1001,7 @@ class SubtitleChoiceView(discord.ui.View):
                     content,
                     allowed_mentions=discord.AllowedMentions(users=True),
                     ephemeral=False,
+                    silent=True,
                     wait=True,
                 )
         status_url = body.get("status_url")
@@ -1060,6 +1061,7 @@ async def notify_when_done(
                 await interaction.user.send(
                     content,
                     allowed_mentions=discord.AllowedMentions(users=True),
+                    silent=True,
                 )
             except discord.HTTPException:
                 pass
@@ -1081,6 +1083,7 @@ async def notify_when_done(
                 await interaction.followup.send(
                     f"1件準備できました。\n{title}\n{url}",
                     ephemeral=True,
+                    silent=True,
                 )
             except discord.HTTPException:
                 return
@@ -1176,6 +1179,7 @@ async def send_dm_text(user: discord.User | discord.Member, content: str) -> Non
             content,
             allowed_mentions=discord.AllowedMentions(users=True),
             delete_after=delete_after,
+            silent=True,
         )
     except discord.HTTPException:
         pass
@@ -1188,7 +1192,7 @@ async def send_dm_message(
     view: discord.ui.View | None = None,
 ) -> None:
     try:
-        await user.send(content, view=view, allowed_mentions=discord.AllowedMentions(users=True))
+        await user.send(content, view=view, allowed_mentions=discord.AllowedMentions(users=True), silent=True)
     except discord.HTTPException:
         pass
 
@@ -1498,6 +1502,7 @@ class YoutubeProxyBot(discord.Client):
             await message.channel.send(
                 f"字幕準備候補を確認しました。\n{title}\n字幕候補が見つかりませんでした。",
                 mention_author=False,
+                silent=True,
             )
             return
         view = SubtitleChoiceView(
@@ -1663,15 +1668,15 @@ async def reburn_command(
 ) -> None:
     await interaction.response.defer(thinking=True, ephemeral=True)
     if not settings.discord_prepare_token:
-        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=True)
+        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=True, silent=True)
         return
     selected_mode = mode.value if mode else "mp4"
     selected_max_items = max_items if max_items is not None else settings.prepare_batch_max_items
     if selected_max_items < 1 or selected_max_items > 5000:
-        await interaction.followup.send("max_items は 1 から 5000 の範囲で指定してください。", ephemeral=True)
+        await interaction.followup.send("max_items は 1 から 5000 の範囲で指定してください。", ephemeral=True, silent=True)
         return
     if archive_immediately and selected_mode != "mp4":
-        await interaction.followup.send("archive_immediately は MP4 のみ対応です。", ephemeral=True)
+        await interaction.followup.send("archive_immediately は MP4 のみ対応です。", ephemeral=True, silent=True)
         return
     source_type = "auto" if looks_like_playlist_or_channel(url) else "videos"
     try:
@@ -1746,6 +1751,7 @@ async def reburn_all_command(
     await interaction.followup.send(
         content,
         allowed_mentions=discord.AllowedMentions(users=True),
+        silent=True,
         ephemeral=False,
     )
     status_url = body.get("status_url")
@@ -1775,10 +1781,11 @@ async def clear_command(
     try:
         _status, body = await clear_video(video_id, lang)
     except PrepareApiError as error:
-        await interaction.followup.send(f"初期化APIエラー ({error.status_code}): {error.detail}")
+        await interaction.followup.send(f"初期化APIエラー ({error.status_code}): {error.detail}", silent=True)
         return
     await interaction.followup.send(
         body.get("message", "初期化しました。"),
+        silent=True,
     )
 
 
@@ -1813,9 +1820,9 @@ async def clear_all_command(interaction: discord.Interaction) -> None:
         await interaction.edit_original_response(content=message)
     except discord.NotFound:
         if isinstance(channel, discord.abc.Messageable):
-            await channel.send(message)
+            await channel.send(message, silent=True)
         else:
-            await interaction.followup.send(message, ephemeral=True)
+            await interaction.followup.send(message, ephemeral=True, silent=True)
 
 
 @client.tree.command(name="archive-all", description="SSD上の準備済み動画をすべてHDDアーカイブへ退避します")
@@ -1829,11 +1836,16 @@ async def archive_all_command(
     try:
         _status, body = await archive_all_videos()
     except PrepareApiError as error:
-        await interaction.followup.send(f"HDD退避APIエラー ({error.status_code}): {error.detail}", ephemeral=True)
+        await interaction.followup.send(
+            f"HDD退避APIエラー ({error.status_code}): {error.detail}",
+            ephemeral=True,
+            silent=True,
+        )
         return
     await interaction.followup.send(
         body.get("message", "SSD上の動画をHDDへ退避しました。"),
         ephemeral=False,
+        silent=True,
     )
 
 
@@ -1843,15 +1855,16 @@ async def reset_eta_command(
 ) -> None:
     await interaction.response.defer(thinking=True, ephemeral=True)
     if not settings.discord_prepare_token:
-        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=True)
+        await interaction.followup.send("DISCORD_PREPARE_TOKEN が設定されていません。", ephemeral=True, silent=True)
         return
     try:
         _status, body = await reset_eta_metrics()
     except PrepareApiError as error:
-        await interaction.followup.send(f"予想時間リセットAPIエラー ({error.status_code}): {error.detail}")
+        await interaction.followup.send(f"予想時間リセットAPIエラー ({error.status_code}): {error.detail}", silent=True)
         return
     await interaction.followup.send(
         body.get("message", "予想時間の学習データをリセットしました。"),
+        silent=True,
     )
 
 
@@ -1867,7 +1880,7 @@ async def webui_key_command(
     try:
         body = make_webui_temp_key(days)
     except (RuntimeError, ValueError) as error:
-        await interaction.followup.send(str(error), ephemeral=True)
+        await interaction.followup.send(str(error), ephemeral=True, silent=True)
         return
     await interaction.followup.send(
         (
@@ -1878,6 +1891,7 @@ async def webui_key_command(
             "```"
         ),
         ephemeral=True,
+        silent=True,
     )
 
 

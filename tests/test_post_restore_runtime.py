@@ -433,7 +433,7 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         ):
             asyncio.run(bot_main.clear_all_command.callback(interaction))
 
-        interaction.followup.send.assert_awaited_once_with("done", ephemeral=True)
+        interaction.followup.send.assert_awaited_once_with("done", ephemeral=True, silent=True)
         clear_all.assert_awaited_once()
 
     def test_notify_when_done_keeps_progress_message_and_updates_completion(self) -> None:
