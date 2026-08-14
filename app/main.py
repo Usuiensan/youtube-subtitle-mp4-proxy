@@ -2049,31 +2049,13 @@ def restrict_translation_engines(
     llm_error: str | None,
     available_models: set[str] | None = None,
 ) -> dict:
-    def model_available(model: str) -> bool:
-        if not available_models:
-            return True
-        if model in available_models:
-            return True
-        return any(item.startswith(f"{model}-") or item.startswith(f"{model}:") for item in available_models)
-
     engines = body.get("translation_engines")
     if not isinstance(engines, list):
         return body
-    if llm_available:
-        filtered = []
-        for engine in engines:
-            if not isinstance(engine, dict):
-                continue
-            model = str(engine.get("model") or "").strip()
-            if model_available(model):
-                filtered.append(engine)
-        body["translation_engines"] = filtered
-        body["llm_available"] = True
-        body["llm_available_models"] = sorted(available_models or [])
-        return body
-    body["translation_engines"] = []
-    body["llm_available"] = False
-    body["llm_unavailable_reason"] = llm_error or "remote LLM is unavailable"
+    body["llm_available"] = llm_available
+    body["llm_available_models"] = sorted(available_models or [])
+    if not llm_available:
+        body["llm_unavailable_reason"] = llm_error or "remote LLM is unavailable"
     return body
 
 

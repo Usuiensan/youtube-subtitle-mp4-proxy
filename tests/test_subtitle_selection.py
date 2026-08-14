@@ -72,6 +72,18 @@ def test_translation_api_503_is_retryable_but_other_errors_are_not() -> None:
     assert not main.is_retryable_translation_api_503(RuntimeError("translation api http error 429: quota"))
 
 
+def test_fixed_translation_engine_is_not_removed_by_health_check() -> None:
+    body = {"translation_engines": [{"value": "gemini_2_5_flash_lite", "model": "gemini-3.1-flash-lite"}]}
+    result = main.restrict_translation_engines(
+        body,
+        llm_available=False,
+        llm_error="GEMINI_API_KEY is not configured",
+        available_models=set(),
+    )
+    assert result["translation_engines"]
+    assert result["llm_unavailable_reason"] == "GEMINI_API_KEY is not configured"
+
+
 def test_subtitle_candidates_ignore_automatic_captions() -> None:
     info = {
         "subtitles": {"en": [{"ext": "vtt"}]},
