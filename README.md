@@ -553,6 +553,20 @@ WantedBy=multi-user.target
 - [Ubuntu 26.04 LTS + GTX 1050 Ti 運用手順](docs/ubuntu-26.04-gtx1050ti-deploy.md)
 - [字幕デザイン変更手順](docs/subtitle-style-guide.md)
 
+### Windowsからの本番更新
+
+`youtube-subtitles-update.ps1` は SSH 先で sudo を対話実行しません。初回だけ本番サーバーで、`furukawa` に更新スクリプトだけをパスワードなしで許可してください。
+
+```bash
+sudo visudo -f /etc/sudoers.d/youtube-proxy-deploy
+```
+
+```text
+furukawa ALL=(root) NOPASSWD: /usr/local/sbin/youtube-proxy-update
+```
+
+設定後は `youtube-subtitles-update.ps1` を実行します。未設定の場合はパスワード待ちにならず、`sudo: a password is required` で終了します。
+
 ## 字幕デザイン
 
 初期値は白文字、約25%透明の黒背景、下寄せ中央です。720pで自動改行が入りにくいよう、文字サイズは控えめにしています。

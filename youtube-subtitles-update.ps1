@@ -7,6 +7,6 @@ $archive = Join-Path $env:TEMP "youtube-proxy-$sha.tar.gz"
 
 git -C $repo archive --format=tar.gz --output=$archive HEAD
 scp $archive furukawa@192.168.68.119:/tmp/
-ssh furukawa@192.168.68.119     "sudo /usr/local/sbin/youtube-proxy-update --archive /tmp/youtube-proxy-$sha.tar.gz"
+ssh furukawa@192.168.68.119     "sudo -n /usr/local/sbin/youtube-proxy-update --archive /tmp/youtube-proxy-$sha.tar.gz"
 
 Start-Sleep -Seconds 10
