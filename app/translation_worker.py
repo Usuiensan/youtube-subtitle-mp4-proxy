@@ -97,7 +97,18 @@ def _usage_gemini(data: dict[str, Any]) -> dict[str, int]:
     }
 
 
-def _request_json(url: str, body: dict[str, Any], headers: dict[str, str], timeout: int) -> dict[str, Any]:
+def _request_json(
+    url: str,
+    body: dict[str, Any],
+    headers: dict[str, str],
+    timeout: int,
+    *,
+    audit_payload: dict[str, Any] | None = None,
+    audit_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    context = dict(audit_context or {})
+    if audit_payload is not None:
+        append_audit_event(audit_payload, {"event": "provider_request", **context, "request_body": body})
     request = urllib.request.Request(
         url,
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
@@ -106,10 +117,18 @@ def _request_json(url: str, body: dict[str, Any], headers: dict[str, str], timeo
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
+            raw_response = response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as error:
         message = error.read().decode("utf-8", errors="replace")
+        if audit_payload is not None:
+            append_audit_event(
+                audit_payload,
+                {"event": "provider_error", **context, "http_status": error.code, "response_body": message},
+            )
         raise RuntimeError(f"translation api http error {error.code}: {message}") from error
+    if audit_payload is not None:
+        append_audit_event(audit_payload, {"event": "provider_response", **context, "response_body": raw_response})
+    data = json.loads(raw_response)
     if not isinstance(data, dict):
         raise RuntimeError("translation api returned a non-object response")
     return data
@@ -205,6 +224,8 @@ def translate_batch_gemini(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
         body,
         {"Content-Type": "application/json", "Accept": "application/json", "x-goog-api-key": api_key},
         timeout,
+        audit_payload=payload,
+        audit_context={"provider": "gemini_api", "model_name": model, "endpoint": url},
     )
     candidates = data.get("candidates")
     content = candidates[0].get("content") if isinstance(candidates, list) and candidates and isinstance(candidates[0], dict) else None

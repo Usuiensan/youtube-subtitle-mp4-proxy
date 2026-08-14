@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import json
+import urllib.error
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -157,6 +160,66 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertIn("First line", prompt)
         self.assertIn("Translate me", prompt)
         self.assertIn("Last line", prompt)
+
+    def test_gemini_request_and_raw_response_are_saved_without_api_key(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            audit_path = Path(temp_dir) / "translation.jsonl"
+            raw_response = '{"candidates": [{"content": {"parts": [{"text": "{\\"subtitles\\":[{\\"id\\":1,\\"text\\":\\"Hi\\"}]}"}]}}]}'
+
+            class Response:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return False
+
+                def read(self):
+                    return raw_response.encode("utf-8")
+
+            with patch.object(translation_worker.urllib.request, "urlopen", lambda *_args, **_kwargs: Response()):
+                translation_worker.translate_batch_gemini(
+                    {
+                        "llm_api_key": "secret-key",
+                        "model_name": "gemini-2.5-flash-lite",
+                        "source_language": "en",
+                        "target_language": "ja",
+                        "subtitles": [{"id": 1, "text": "Hi"}],
+                        "_translation_audit_path": str(audit_path),
+                    }
+                )
+
+            events = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+            request_event = next(event for event in events if event["event"] == "provider_request")
+            response_event = next(event for event in events if event["event"] == "provider_response")
+            self.assertEqual(request_event["request_body"]["contents"][0]["role"], "user")
+            self.assertEqual(response_event["response_body"], raw_response)
+            self.assertNotIn("secret-key", audit_path.read_text(encoding="utf-8"))
+
+    def test_gemini_http_error_response_is_saved(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            audit_path = Path(temp_dir) / "translation.jsonl"
+            error_body = b'{"error":{"message":"quota exceeded"}}'
+
+            def urlopen(*_args, **_kwargs):
+                raise urllib.error.HTTPError(
+                    "https://example.invalid", 429, "Too Many Requests", {}, io.BytesIO(error_body)
+                )
+
+            with patch.object(translation_worker.urllib.request, "urlopen", urlopen):
+                with self.assertRaises(RuntimeError):
+                    translation_worker.translate_batch_gemini(
+                        {
+                            "llm_api_key": "secret-key",
+                            "model_name": "gemini-2.5-flash-lite",
+                            "subtitles": [{"id": 1, "text": "Hi"}],
+                            "_translation_audit_path": str(audit_path),
+                        }
+                    )
+
+            events = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+            error_event = next(event for event in events if event["event"] == "provider_error")
+            self.assertEqual(error_event["http_status"], 429)
+            self.assertEqual(error_event["response_body"], error_body.decode("utf-8"))
 
     def test_dm_command_parser_strips_slash_prefix(self) -> None:
         command, args = bot_main.parse_dm_command("/prepare https://youtu.be/dQw4w9WgXcQ lang=ja")
