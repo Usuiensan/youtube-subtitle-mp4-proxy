@@ -131,7 +131,16 @@ def test_dual_subtitle_ass_is_centered_and_does_not_duplicate_source(tmp_path) -
     ass = source.with_suffix(".dual.ass").read_text(encoding="utf-8")
 
     assert args[1].count("ass=") == 1
-    assert ",2," in next(line for line in ass.splitlines() if line.startswith("Style: Default,"))
+    assert ",3," in next(line for line in ass.splitlines() if line.startswith("Style: Default,"))
     dialogue = next(line for line in ass.splitlines() if line.startswith("Dialogue:"))
     assert dialogue.count("English line") == 1
     assert r"English line\N　\N日本語の行" in dialogue
+
+
+def test_translation_overlay_uses_model_only() -> None:
+    assert main.subtitle_translation_service_label(
+        {
+            "translation_engine": "gemini_2_5_flash_lite",
+            "translation_model": "gemini-3.1-flash-lite",
+        }
+    ) == "[翻訳]gemini-3.1-flash-lite"

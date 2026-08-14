@@ -2159,7 +2159,7 @@ def subtitle_force_style(font_name: str | None = None, font_size: int | None = N
             f"FontSize={resolved_font_size}",
             f"PrimaryColour={settings.subtitle_primary_colour}",
             f"BackColour={settings.subtitle_back_colour}",
-            "BorderStyle=4",
+            "BorderStyle=3",
             "Outline=1",
             "Shadow=0",
             f"MarginV={max(settings.subtitle_margin_v, 28)}",
@@ -2441,17 +2441,16 @@ def subtitle_translation_service_label(subtitle_meta: dict) -> str:
     model = str(subtitle_meta.get("translation_model") or "").strip()
     fallback = bool(subtitle_meta.get("translation_fallback_used"))
     if fallback:
-        return "[translation] Google Cloud fallback"
+        return "[翻訳]Google Cloud fallback"
     if engine == "google_cloud":
-        return "[translation] Google Cloud"
+        return "[翻訳]Google Cloud"
     if model:
-        label = settings.local_llm_profile_labels.get(engine) or settings.local_llm_profile_labels.get(requested) or "LLM"
-        return f"[translation] {label} {model}"
+        return f"[翻訳]{model}"
     if requested in settings.local_llm_profile_models or engine in settings.local_llm_profile_models:
         profile_id = requested if requested in settings.local_llm_profile_models else engine
-        return f"[translation] {settings.local_llm_profile_labels.get(profile_id, profile_id)}"
+        return f"[翻訳]{settings.local_llm_profile_models.get(profile_id) or profile_id}"
     if engine:
-        return f"[translation] {engine}"
+        return f"[翻訳]{engine}"
     return ""
 
 
@@ -3344,7 +3343,7 @@ def build_ass_from_srt(
         "",
         "[V4+ Styles]",
         "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding",
-        f"Style: Default,{settings.subtitle_font},{font_size},{primary_colour},&H000000FF,{back_colour},{back_colour},0,0,0,0,100,100,0,0,4,0,0,{align},{margin_l},{margin_r},{margin_v},1",
+        f"Style: Default,{settings.subtitle_font},{font_size},{primary_colour},&H000000FF,{back_colour},{back_colour},0,0,0,0,100,100,0,0,3,0,0,{align},{margin_l},{margin_r},{margin_v},1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
