@@ -2891,7 +2891,7 @@ async def translate_subtitle_if_needed(
     selected_settings = translation_settings(configured_translation_engine())
 
     attempt_plan = [(selected_settings, "")]
-    if selected_settings.provider_name == "gemini_api":
+    if selected_settings.provider_name == "gemini_api" and selected_settings.model_name.startswith("gemini-3"):
         attempt_plan.append((selected_settings, "high"))
         full_flash_settings = translation_settings("gemini_2_5_flash")
         if full_flash_settings.model_name != selected_settings.model_name:
