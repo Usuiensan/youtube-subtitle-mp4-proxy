@@ -42,6 +42,7 @@ from app.translation import (
 )
 from app.metrics import MetricsManager
 from app.google_translation_usage import record as record_google_translation_usage, summary as google_translation_usage_summary
+from app.llm_usage import record as record_llm_translation_usage, summary as llm_translation_usage_summary
 from app.cache_layout import CacheLayout
 from app.config_files import (
     load_env_file,
@@ -2474,15 +2475,18 @@ def gemini_overage_estimate(input_tokens: int, output_tokens: int) -> tuple[floa
 
 
 def llm_overage_estimate(engine: str, input_tokens: int, output_tokens: int) -> tuple[float, float]:
-    prices = {
+    input_price, output_price = llm_token_prices(engine)
+    usd = (input_tokens / 1_000_000.0) * input_price + (output_tokens / 1_000_000.0) * output_price
+    return usd, usd * settings.usd_to_jpy_rate
+
+
+def llm_token_prices(engine: str) -> tuple[float, float]:
+    return {
         "gemini_2_5_flash": (0.30, 2.50),
         "gemini_2_5_flash_lite": (0.10, 0.40),
         "gpt_5_nano": (0.05, 0.40),
         "groq_gpt_oss_20b": (0.075, 0.30),
-    }
-    input_price, output_price = prices.get(engine, (0.0, 0.0))
-    usd = (input_tokens / 1_000_000.0) * input_price + (output_tokens / 1_000_000.0) * output_price
-    return usd, usd * settings.usd_to_jpy_rate
+    }.get(engine, (0.0, 0.0))
 
 
 def google_translate_overage_estimate(characters: int) -> tuple[int, float, float]:
@@ -2523,6 +2527,7 @@ def enrich_translation_metadata(metadata: dict) -> dict:
     input_tokens = int(metadata.get("translation_input_tokens") or 0)
     output_tokens = int(metadata.get("translation_output_tokens") or 0)
     usd, jpy = llm_overage_estimate(engine, input_tokens, output_tokens)
+    input_price, output_price = llm_token_prices(engine)
     labels = {
         "gemini_2_5_flash": "Gemini Flash",
         "gemini_2_5_flash_lite": "Gemini Flash-Lite",
@@ -2543,6 +2548,8 @@ def enrich_translation_metadata(metadata: dict) -> dict:
         "translation_api_cost_usd": 0.0 if engine.startswith("gemini_") and settings.gemini_billing_mode == "free_tier" else usd,
         "translation_overage_estimate_usd": usd,
         "translation_overage_estimate_jpy": jpy,
+        "translation_input_price_usd_per_million": input_price,
+        "translation_output_price_usd_per_million": output_price,
     }
 
 
@@ -3041,6 +3048,15 @@ async def translate_subtitle_if_needed(
         pass
         
     metadata = enrich_translation_metadata({**selection, **result.metadata})
+    record_llm_translation_usage(
+        settings.llm_translation_usage_file,
+        requested_engine,
+        metadata.get("translation_input_tokens", 0),
+        metadata.get("translation_output_tokens", 0),
+        metadata.get("translation_total_tokens", 0),
+        metadata.get("translation_overage_estimate_usd", 0.0),
+        metadata.get("translation_api_cost_usd", 0.0),
+    )
     return result.subtitle_path, metadata
 
 
@@ -7196,6 +7212,14 @@ async def translation_audit_index() -> JSONResponse:
 @app.get("/translation-usage/google-cloud")
 async def google_cloud_translation_usage() -> JSONResponse:
     return JSONResponse(google_translation_usage_summary(settings.google_translation_usage_file))
+
+
+@app.get("/translation-usage/llm")
+async def llm_translation_usage(engine: str | None = Query(None)) -> JSONResponse:
+    usage = llm_translation_usage_summary(settings.llm_translation_usage_file, engine=engine)
+    usage["estimated_jpy"] = float(usage["estimated_usd"]) * settings.usd_to_jpy_rate
+    usage["charged_jpy"] = float(usage["charged_usd"]) * settings.usd_to_jpy_rate
+    return JSONResponse(usage)
 
 
 @app.get("/translation-audit/{name}")

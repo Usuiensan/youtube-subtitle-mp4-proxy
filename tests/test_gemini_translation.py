@@ -71,6 +71,10 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertIn("Gemini Flash", text)
         self.assertIn("課金区分: Gemini API Free Tier", text)
         self.assertIn("翻訳文字数: 18,420文字", text)
+        self.assertIn("入力トークン: 14,208", text)
+        self.assertIn("出力トークン: 16,731", text)
+        self.assertIn("合計トークン: 30,939", text)
+        self.assertIn("入力 $0.30 / 出力 $2.50", text)
 
     def test_google_cloud_usage_text_shows_usage_estimate_inside_free_tier(self) -> None:
         metadata = app_main.enrich_translation_metadata(

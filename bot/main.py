@@ -468,6 +468,7 @@ def status_message(body: dict[str, Any], fallback_user_id: int | None = None) ->
         prefix = f"{mention} " if mention else ""
         usage_part = translation_usage_text(body.get("subtitle"))
         monthly_usage_part = google_monthly_usage_text(body.get("subtitle"))
+        monthly_llm_usage_part = llm_monthly_usage_text(body.get("subtitle"))
         google_details = google_completion_details(body.get("subtitle"))
         archive_part = "\n保存先: HDDアーカイブ" if body.get("archived_immediately") else ""
         source_url = youtube_watch_url(body.get("video_id"))
@@ -501,7 +502,7 @@ def status_message(body: dict[str, Any], fallback_user_id: int | None = None) ->
             if source_url:
                 lines.extend(["", "🔗 **元動画**", source_url, f"```\n{source_url}\n```"])
             return "\n".join(lines)
-        return f"{prefix}準備できました。{title_part}{subtitle_part}{usage_part}{monthly_usage_part}{archive_part}" + (f"\n{blocks}" if blocks else "")
+        return f"{prefix}準備できました。{title_part}{subtitle_part}{usage_part}{monthly_usage_part}{monthly_llm_usage_part}{archive_part}" + (f"\n{blocks}" if blocks else "")
     if status == "failed":
         mention = mention_text(body, fallback_user_id)
         prefix = f"{mention} " if mention else ""
@@ -652,6 +653,34 @@ def google_monthly_usage_text(meta: Any) -> str:
     )
 
 
+def llm_monthly_usage_text(meta: Any) -> str:
+    if not isinstance(meta, dict):
+        return ""
+    engine = str(meta.get("translation_engine") or "")
+    if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gpt_5_nano", "groq_gpt_oss_20b"}:
+        return ""
+    try:
+        query = urllib.parse.urlencode({"engine": engine})
+        _status, usage = http_json("GET", f"{settings.youtube_proxy_internal_base_url}/translation-usage/llm?{query}")
+    except Exception:
+        return ""
+    month = str(usage.get("month") or "今月")
+    label = str(meta.get("translation_provider_label") or engine)
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    total_tokens = int(usage.get("total_tokens") or 0)
+    estimated_usd = float(usage.get("estimated_usd") or 0.0)
+    estimated_jpy = float(usage.get("estimated_jpy") or 0.0)
+    charged_usd = float(usage.get("charged_usd") or 0.0)
+    charged_jpy = float(usage.get("charged_jpy") or 0.0)
+    return "\n".join([
+        f"\n{label} 月間使用量 ({month})",
+        f"入力: {input_tokens:,} / 出力: {output_tokens:,} / 合計: {total_tokens:,} tokens",
+        f"通常料金換算: ${estimated_usd:,.6f} / ¥{estimated_jpy:,.2f}",
+        f"課金見込み: ${charged_usd:,.6f} / ¥{charged_jpy:,.2f}",
+    ])
+
+
 def google_completion_details(meta: Any) -> str:
     """Format the Google Translation completion report shown by Discord."""
     if not isinstance(meta, dict) or str(meta.get("translation_engine") or "") != "google_cloud":
@@ -748,8 +777,23 @@ def translation_usage_text(meta: Any) -> str:
         lines.extend([
             f"入力トークン: {input_tokens:,}",
             f"出力トークン: {output_tokens:,}",
+            f"合計トークン: {int(meta.get('translation_total_tokens') or input_tokens + output_tokens):,}",
         ])
-    lines.append(f"今回の無料枠適用後見込み: ${overage_usd:,.4f} / ¥{overage_jpy:,.2f}")
+    if engine in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gpt_5_nano", "groq_gpt_oss_20b"}:
+        default_prices = {
+            "gemini_2_5_flash": (0.30, 2.50),
+            "gemini_2_5_flash_lite": (0.10, 0.40),
+            "gpt_5_nano": (0.05, 0.40),
+            "groq_gpt_oss_20b": (0.075, 0.30),
+        }
+        default_input_price, default_output_price = default_prices[engine]
+        input_price = float(meta.get("translation_input_price_usd_per_million") or default_input_price)
+        output_price = float(meta.get("translation_output_price_usd_per_million") or default_output_price)
+        lines.append(f"単価: 入力 ${input_price:.2f} / 出力 ${output_price:.2f}（各100万tokens）")
+        lines.append(f"今回の通常料金換算: ${overage_usd:,.6f} / ¥{overage_jpy:,.2f}")
+        lines.append(f"今回の課金見込み: ${api_cost_usd:,.6f} / ¥{api_cost_jpy:,.2f}")
+    else:
+        lines.append(f"今回の無料枠適用後見込み: ${overage_usd:,.4f} / ¥{overage_jpy:,.2f}")
     return "\n".join(lines)
 
 
@@ -935,7 +979,7 @@ class SubtitleChoiceView(discord.ui.View):
             child.disabled = True
         if interaction.message is not None:
             try:
-                await interaction.message.edit(view=self)
+                await interaction.message.edit(content="準備を受け付けました。", view=None)
             except discord.HTTPException:
                 pass
         try:
@@ -950,24 +994,25 @@ class SubtitleChoiceView(discord.ui.View):
                 archive_immediately=self.archive_immediately,
             )
         except PrepareApiError as error:
-            await interaction.followup.send(f"準備APIエラー ({error.status_code}): {error.detail}", ephemeral=False, silent=True)
+            error_content = f"準備APIエラー ({error.status_code}): {error.detail}"
+            if not await send_public_message(interaction, error_content):
+                await interaction.followup.send(error_content, ephemeral=False, silent=True)
             return
         content = status_message(body, interaction.user.id)
         progress_message = None
         if body.get("status") == "ready":
             posted = await send_public_completion(interaction, content)
-            await interaction.followup.send(
-                "準備済みURLを投稿しました。" if posted else content,
-                allowed_mentions=discord.AllowedMentions(users=True),
-                ephemeral=False,
-            )
+            if not posted:
+                await interaction.followup.send(content, ephemeral=False, silent=True)
         else:
-            progress_message = await interaction.followup.send(
-                content,
-                allowed_mentions=discord.AllowedMentions(users=True),
-                ephemeral=False,
-                wait=True,
-            )
+            progress_message = await send_public_message(interaction, content)
+            if progress_message is None:
+                progress_message = await interaction.followup.send(
+                    content,
+                    allowed_mentions=discord.AllowedMentions(users=True),
+                    ephemeral=False,
+                    wait=True,
+                )
         status_url = body.get("status_url")
         if body.get("status") in {"queued", "running"} and isinstance(status_url, str):
             asyncio.create_task(notify_when_done(interaction, status_url, progress_message=progress_message))
@@ -1116,7 +1161,7 @@ async def notify_when_done(
     )
 
 
-async def send_public_completion(interaction: discord.Interaction, content: str) -> bool:
+async def send_public_message(interaction: discord.Interaction, content: str) -> discord.Message | None:
     channel = interaction.channel
     if channel is None and interaction.channel_id is not None:
         try:
@@ -1126,16 +1171,19 @@ async def send_public_completion(interaction: discord.Interaction, content: str)
         except Exception:
             pass
     if channel is None:
-        return False
+        return None
     try:
-        await channel.send(
+        return await channel.send(
             content,
             allowed_mentions=discord.AllowedMentions(users=True),
             silent=True,
         )
-        return True
     except discord.HTTPException:
-        return False
+        return None
+
+
+async def send_public_completion(interaction: discord.Interaction, content: str) -> bool:
+    return await send_public_message(interaction, content) is not None
 
 
 async def send_dm_text(user: discord.User | discord.Member, content: str) -> None:
