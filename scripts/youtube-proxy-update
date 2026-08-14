@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 APP_DIR="/opt/youtube-mp4-proxy"
 APP_USER="youtubeproxy"
+PROXY_SERVICE="youtube-mp4-proxy"
+DISCORD_SERVICE="youtube-mp4-discord-bot"
 ARCHIVE=""
 
 usage() { echo "Usage: $0 --archive /tmp/release.tar.gz"; exit 2; }
@@ -32,12 +34,12 @@ rsync -a --delete \
     --exclude='cache/' \
     --exclude='data/' \
     "$APP_DIR/" "$BACKUP/"
-systemctl stop youtube-mp4-proxy-discord youtube-mp4-proxy
+systemctl stop "$DISCORD_SERVICE" "$PROXY_SERVICE"
 rsync -a --delete --exclude='.venv/' --exclude='.env*' --exclude='.pytest_cache/' --exclude='cache/' --exclude='data/' "$STAGE/" "$APP_DIR/"
-systemctl start youtube-mp4-proxy
-systemctl start youtube-mp4-proxy-discord
+systemctl start "$PROXY_SERVICE"
+systemctl start "$DISCORD_SERVICE"
 sleep 5
-systemctl is-active --quiet youtube-mp4-proxy
-systemctl is-active --quiet youtube-mp4-proxy-discord
+systemctl is-active --quiet "$PROXY_SERVICE"
+systemctl is-active --quiet "$DISCORD_SERVICE"
 curl --fail --silent --show-error http://127.0.0.1:8000/healthz
 echo "更新完了: $TS (切り戻し先: $BACKUP)"
