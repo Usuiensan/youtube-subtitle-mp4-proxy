@@ -47,6 +47,14 @@ def load_srt(path: Path) -> list[srt.Subtitle]:
     return list(srt.parse(path.read_text(encoding="utf-8-sig")))
 
 
+def normalize_subtitle_text(text: str, *, compact: bool = False) -> str:
+    normalized = re.sub(r"\\+[nNhH]", " ", str(text))
+    normalized = re.sub(r"\\+\r?\n", "\n", normalized)
+    normalized = re.sub(r"\\+(?=\s)", " ", normalized)
+    normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
+    return " ".join(normalized.split()) if compact else normalized
+
+
 def save_srt(path: Path, subtitles: list[srt.Subtitle]) -> None:
     path.write_text(srt.compose(subtitles), encoding="utf-8")
 

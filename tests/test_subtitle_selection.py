@@ -101,6 +101,37 @@ def test_ass_builder_preserves_srt_line_breaks(tmp_path) -> None:
     assert r"English line\N　\N日本語の行" in output.read_text(encoding="utf-8")
 
 
+def test_ass_builder_removes_literal_subtitle_escape_markers(tmp_path) -> None:
+    source = tmp_path / "subtitle.srt"
+    output = tmp_path / "subtitle.ass"
+    source.write_text(
+        srt.compose([
+            srt.Subtitle(
+                index=1,
+                start=timedelta(seconds=1),
+                end=timedelta(seconds=3),
+                content=r"English line\n日本語\hの行",
+            )
+        ]),
+        encoding="utf-8",
+    )
+
+    main.build_ass_from_srt(
+        source,
+        output,
+        align=1,
+        margin_l=20,
+        margin_r=20,
+        margin_v=20,
+        font_size=32,
+    )
+
+    ass = output.read_text(encoding="utf-8")
+    assert r"English line\n" not in ass
+    assert r"日本語\h" not in ass
+    assert "English line 日本語 の行" in ass
+
+
 def test_dual_subtitle_ass_is_centered_and_does_not_duplicate_source(tmp_path) -> None:
     source = tmp_path / "source.srt"
     translated = tmp_path / "translated.srt"

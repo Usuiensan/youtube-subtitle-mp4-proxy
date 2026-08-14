@@ -36,6 +36,7 @@ from app.translation import (
     TranslationError,
     TranslationSettings,
     load_srt,
+    normalize_subtitle_text,
     save_srt,
     translate_srt_with_local_worker,
 )
@@ -675,7 +676,7 @@ def cache_key(
 
 def render_profile_id(subtitle_font_size: int | None = None) -> str:
     return hashlib.sha1(
-        "\n".join(["dual-subtitle-layout-v13-separated-event-boxes", "media-stream-selection-v2", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
+        "\n".join(["dual-subtitle-layout-v13-separated-event-boxes", "media-stream-selection-v2", f"source-height-{settings.max_height}", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
     ).hexdigest()[:8]
 
 
@@ -3370,7 +3371,7 @@ def build_ass_from_srt(
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     for sub in subtitles:
-        content = sub.content
+        content = normalize_subtitle_text(sub.content)
         if not keep_source_line_breaks:
             content = " ".join(content.replace("\r\n", "\n").replace("\r", "\n").split())
         text = (
@@ -3504,11 +3505,11 @@ def ffmpeg_dual_subtitle_args(
     line_gap = max(4, round(dual_font_size * 0.45))
 
     def split_translation(source: str, translated: str) -> tuple[str, str]:
-        normalized = translated.replace("\r\n", "\n").replace("\r", "\n")
+        normalized = normalize_subtitle_text(translated)
         if "\n　\n" in normalized:
             source, translated = normalized.split("\n　\n", 1)
         else:
-            normalized_source = source.replace("\r\n", "\n").replace("\r", "\n")
+            normalized_source = normalize_subtitle_text(source)
             if normalized.startswith(f"{normalized_source}\n"):
                 translated = normalized[len(normalized_source) + 1 :]
         return source, translated
@@ -6349,6 +6350,9 @@ async def index() -> str:
       }});
       const body = await response.json().catch(() => ({{}}));
       if (!response.ok) {{
+        if (response.status === 401) {{
+          throw new Error("準備キーが無効または期限切れです。Discordで /webui-key days:7 を発行し、Videoタブの準備キーを更新してください。");
+        }}
         throw new Error(body.detail || body.error || `HTTP ${{response.status}}`);
       }}
       return body;

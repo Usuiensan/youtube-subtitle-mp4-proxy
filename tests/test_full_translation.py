@@ -14,6 +14,18 @@ def subtitle(index: int, text: str) -> srt.Subtitle:
     return srt.Subtitle(index, timedelta(seconds=index), timedelta(seconds=index + 1), text)
 
 
+def test_translation_prompt_flattens_subtitle_escape_markers() -> None:
+    prompt = translation_worker.build_full_translation_prompt(
+        {
+            "source_language": "en",
+            "target_language": "ja",
+            "subtitles": [{"id": 1, "text": r"first\nsecond\hthird"}],
+        }
+    )
+    assert r"first\nsecond" not in prompt
+    assert '"text":"first second third"' in prompt
+
+
 def test_validate_translations_requires_exact_ids_count_and_non_empty_text() -> None:
     target = [subtitle(1, "one"), subtitle(2, "two")]
     assert validate_translations(target, {"subtitles": [{"id": 1, "text": "一"}, {"id": 2, "text": "二"}]}) == {"1": "一", "2": "二"}

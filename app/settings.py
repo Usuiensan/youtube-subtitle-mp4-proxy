@@ -30,7 +30,7 @@ class Settings:
     prepare_job_retry_base_seconds = max(0.0, float(os.getenv("PREPARE_JOB_RETRY_BASE_SECONDS", "15")))
     default_lang = os.getenv("DEFAULT_LANG", "ja")
     max_duration_seconds = int(os.getenv("MAX_DURATION_SECONDS", "1800"))
-    max_height = int(os.getenv("MAX_HEIGHT", "720"))
+    max_height = int(os.getenv("MAX_HEIGHT", "1080"))
     cache_ttl_seconds = int(os.getenv("CACHE_TTL_SECONDS", "86400"))
     job_timeout_seconds = int(os.getenv("JOB_TIMEOUT_SECONDS", "7200"))
     subtitle_font = os.getenv("SUBTITLE_FONT", "Noto Sans JP")

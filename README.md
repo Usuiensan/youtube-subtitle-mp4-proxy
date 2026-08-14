@@ -530,7 +530,7 @@ WorkingDirectory=/opt/youtube-mp4-proxy
 Environment=CACHE_DIR=/var/cache/youtube-mp4
 Environment=DEFAULT_LANG=ja
 Environment=MAX_DURATION_SECONDS=1800
-Environment=MAX_HEIGHT=720
+Environment=MAX_HEIGHT=1080
 Environment=CACHE_TTL_SECONDS=86400
 Environment=SUBTITLE_FONT=Noto Sans JP
 ExecStart=/opt/youtube-mp4-proxy/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
