@@ -15,6 +15,38 @@ from unittest.mock import patch
 
 
 class GeminiTranslationTests(unittest.TestCase):
+    def test_translation_target_selection_updates_engine_select(self) -> None:
+        view = bot_main.SubtitleChoiceView(
+            requester_id=1,
+            video_id="video",
+            lang="ja",
+            mode="mp4",
+            options_body={
+                "candidates": [{"language": "en", "name": "英語"}],
+                "translation_engines": [
+                    {"value": "gemini_2_5_flash_lite", "label": "Gemini Flash-Lite", "model": "gemini-2.5-flash-lite"}
+                ],
+            },
+        )
+        view.target_select._values = ["ja"]
+
+        class Response:
+            def __init__(self) -> None:
+                self.kwargs = None
+
+            async def edit_message(self, **kwargs):
+                self.kwargs = kwargs
+
+        class Interaction:
+            def __init__(self) -> None:
+                self.response = Response()
+
+        interaction = Interaction()
+        asyncio.run(view.on_target_selected(interaction))
+
+        self.assertFalse(view.engine_select.disabled)
+        self.assertIs(interaction.response.kwargs["view"], view)
+
     def test_translation_audit_record_decodes_provider_and_model_json(self) -> None:
         record = app_main._decode_translation_audit_record(
             {

@@ -947,7 +947,7 @@ class SubtitleChoiceView(discord.ui.View):
         self.engine_select.placeholder = "翻訳エンジンを選択" if translate else "翻訳なし（そのまま）"
         if not translate:
             self.translation_engine = None
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.edit_message(view=self)
 
     @discord.ui.button(label="この設定で準備", style=discord.ButtonStyle.primary)
     async def start_prepare(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
