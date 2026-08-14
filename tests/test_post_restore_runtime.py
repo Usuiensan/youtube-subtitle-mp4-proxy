@@ -367,6 +367,7 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         async def run_case(source: str) -> None:
             interaction = SimpleNamespace(
                 response=SimpleNamespace(defer=AsyncMock()),
+                edit_original_response=AsyncMock(return_value=SimpleNamespace()),
                 followup=SimpleNamespace(send=AsyncMock()),
                 user=SimpleNamespace(id=123456789012345678),
             )
@@ -382,7 +383,8 @@ class PostRestoreRuntimeTests(unittest.TestCase):
                 await bot_main.prepare_command.callback(interaction, source, "en", None, None, False)
 
             interaction.response.defer.assert_awaited_once()
-            interaction.followup.send.assert_awaited()
+            interaction.edit_original_response.assert_awaited_once()
+            interaction.followup.send.assert_not_awaited()
 
         import asyncio
 
@@ -437,7 +439,7 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         interaction.followup.send.assert_awaited_once_with("done", ephemeral=True)
         clear_all.assert_awaited_once()
 
-    def test_notify_when_done_deletes_progress_message_after_completion(self) -> None:
+    def test_notify_when_done_keeps_progress_message_and_updates_completion(self) -> None:
         import asyncio
 
         interaction = SimpleNamespace(
@@ -446,9 +448,8 @@ class PostRestoreRuntimeTests(unittest.TestCase):
             channel_id=None,
             client=SimpleNamespace(fetch_channel=AsyncMock()),
             followup=SimpleNamespace(send=AsyncMock()),
-            delete_original_response=AsyncMock(),
         )
-        progress_message = SimpleNamespace(delete=AsyncMock(), edit=AsyncMock())
+        progress_message = SimpleNamespace(edit=AsyncMock())
         latest = {
             "status": "ready",
             "video_id": "dQw4w9WgXcQ",
@@ -461,9 +462,8 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         ):
             asyncio.run(bot_main.notify_when_done(interaction, "http://example.test/jobs/1", progress_message=progress_message))
 
-        progress_message.delete.assert_awaited_once()
-        interaction.delete_original_response.assert_awaited_once()
-        interaction.channel.send.assert_awaited_once()
+        progress_message.edit.assert_awaited_once()
+        interaction.channel.send.assert_not_awaited()
 
 
 if __name__ == "__main__":
