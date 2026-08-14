@@ -682,6 +682,7 @@ def render_profile_id(subtitle_font_size: int | None = None) -> str:
 def translation_profile_id() -> str:
     return json.dumps(
         {
+            "batch_translation_version": "full-srt-json-v1",
             "enabled": settings.translation_enabled,
             "target": "ja",
             "source_langs": settings.translation_source_langs,
@@ -1662,7 +1663,7 @@ def normalize_translation_engine(value: str | None) -> str:
 
 
 def translation_profile_options() -> list[dict]:
-    default_profile = "google_cloud"
+    default_profile = normalize_translation_engine(settings.translation_default_profile)
     profiles = [
         "qwen3_4b_instruct",
         "qwen3_8b",
@@ -1670,20 +1671,23 @@ def translation_profile_options() -> list[dict]:
         "aya_expanse_8b",
         "gemma3_12b",
         "translategemma_12b",
+        "gemini_2_5_flash_lite",
+        "gpt_5_nano",
+        "groq_gpt_oss_20b",
     ]
     options = [
         {
             "value": "google_cloud",
             "label": "Google翻訳",
             "model": None,
-            "default": True,
+            "default": default_profile == "google_cloud",
             "kind": "cloud",
         },
         {
             "value": "youtube_auto",
             "label": "YouTube自動翻訳（無料・品質低下の可能性）",
             "model": None,
-            "default": False,
+            "default": default_profile == "youtube_auto",
             "kind": "youtube",
         },
     ]
@@ -1861,8 +1865,8 @@ async def run_chat_completion(payload: dict[str, Any]) -> dict[str, Any]:
             model_name=selected.model_name,
             prompt=prompt,
             timeout_seconds=timeout_seconds,
-            api_key=settings.remote_llm_api_key if selected.provider_name == "openai_compatible" else settings.gemini_api_key,
-            endpoint=settings.remote_llm_endpoint,
+            api_key=selected.provider_api_key,
+            endpoint=selected.provider_endpoint,
             temperature=temperature,
             max_tokens=max_tokens,
         )
@@ -1881,10 +1885,24 @@ def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
     normalized = normalize_translation_engine(profile_id)
     model_name = settings.local_llm_profile_models.get(normalized, "")
     provider_name = "google_cloud"
-    if normalized in settings.local_llm_profile_models and normalized != "gemini_2_5_flash":
+    provider_endpoint = ""
+    provider_api_key = ""
+    if normalized in settings.local_llm_profile_models and normalized not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gpt_5_nano", "groq_gpt_oss_20b"}:
         provider_name = "openai_compatible"
-    elif normalized == "gemini_2_5_flash":
+        provider_endpoint = settings.remote_llm_endpoint
+        provider_api_key = settings.remote_llm_api_key
+    if normalized in {"gemini_2_5_flash", "gemini_2_5_flash_lite"}:
         provider_name = "gemini_api"
+        provider_endpoint = settings.gemini_api_endpoint
+        provider_api_key = settings.gemini_api_key
+    elif normalized == "gpt_5_nano":
+        provider_name = "openai_api"
+        provider_endpoint = settings.openai_api_endpoint
+        provider_api_key = settings.openai_api_key
+    elif normalized == "groq_gpt_oss_20b":
+        provider_name = "groq_api"
+        provider_endpoint = settings.groq_api_endpoint
+        provider_api_key = settings.groq_api_key
     prompt_template = settings.translation_prompt_template
     if normalized == "translategemma_12b":
         prompt_template = settings.translategemma_prompt_template
@@ -1904,6 +1922,8 @@ def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
         prompt_template=prompt_template,
         google_project=settings.google_cloud_project,
         provider_name=provider_name,
+        provider_endpoint=provider_endpoint,
+        provider_api_key=provider_api_key,
     )
 
 
@@ -2473,6 +2493,18 @@ def gemini_overage_estimate(input_tokens: int, output_tokens: int) -> tuple[floa
     return usd, jpy
 
 
+def llm_overage_estimate(engine: str, input_tokens: int, output_tokens: int) -> tuple[float, float]:
+    prices = {
+        "gemini_2_5_flash": (0.30, 2.50),
+        "gemini_2_5_flash_lite": (0.10, 0.40),
+        "gpt_5_nano": (0.05, 0.40),
+        "groq_gpt_oss_20b": (0.075, 0.30),
+    }
+    input_price, output_price = prices.get(engine, (0.0, 0.0))
+    usd = (input_tokens / 1_000_000.0) * input_price + (output_tokens / 1_000_000.0) * output_price
+    return usd, usd * settings.usd_to_jpy_rate
+
+
 def google_translate_overage_estimate(characters: int) -> tuple[int, float, float]:
     overage_chars = max(0, characters - settings.google_translate_free_chars_per_month)
     usd = (overage_chars / 1_000_000.0) * settings.google_translate_price_usd_per_million_chars
@@ -2506,16 +2538,29 @@ def enrich_translation_metadata(metadata: dict) -> dict:
             "translation_overage_estimate_usd": usd,
             "translation_overage_estimate_jpy": jpy,
         }
-    if engine != "gemini_2_5_flash":
+    if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gpt_5_nano", "groq_gpt_oss_20b"}:
         return metadata
     input_tokens = int(metadata.get("translation_input_tokens") or 0)
     output_tokens = int(metadata.get("translation_output_tokens") or 0)
-    usd, jpy = gemini_overage_estimate(input_tokens, output_tokens)
+    usd, jpy = llm_overage_estimate(engine, input_tokens, output_tokens)
+    labels = {
+        "gemini_2_5_flash": "Gemini Flash",
+        "gemini_2_5_flash_lite": "Gemini Flash-Lite",
+        "gpt_5_nano": "GPT-5 nano",
+        "groq_gpt_oss_20b": "Groq GPT-OSS 20B",
+    }
+    billing = {
+        "gemini_2_5_flash": "Gemini API Free Tier" if settings.gemini_billing_mode == "free_tier" else "Gemini API Paid Tier",
+        "gemini_2_5_flash_lite": "Gemini API Paid/Free Tier",
+        "gpt_5_nano": "OpenAI API Paid Tier",
+        "groq_gpt_oss_20b": "Groq API Paid/Free Tier",
+    }
     return {
         **metadata,
-        "translation_provider_label": "Gemini Flash",
-        "translation_billing_class": "Gemini API Free Tier" if settings.gemini_billing_mode == "free_tier" else "Gemini API Paid Tier",
-        "translation_api_cost_jpy": 0.0 if settings.gemini_billing_mode == "free_tier" else jpy,
+        "translation_provider_label": labels[engine],
+        "translation_billing_class": billing[engine],
+        "translation_api_cost_jpy": 0.0 if engine.startswith("gemini_") and settings.gemini_billing_mode == "free_tier" else jpy,
+        "translation_api_cost_usd": 0.0 if engine.startswith("gemini_") and settings.gemini_billing_mode == "free_tier" else usd,
         "translation_overage_estimate_usd": usd,
         "translation_overage_estimate_jpy": jpy,
     }
@@ -2953,36 +2998,10 @@ async def translate_subtitle_if_needed(
         record_google_translation_usage(settings.google_translation_usage_file, translation_characters)
         return translated_path, enrich_translation_metadata(metadata)
 
-    if selected_settings.provider_name == "gemini_api":
-        subtitles = load_srt(subtitle)
-        subtitle_count = len(subtitles)
-        estimated_requests = subtitle_count
-        if settings.gemini_max_requests_per_job <= 0 or estimated_requests > settings.gemini_max_requests_per_job:
-            fallback_settings = gemini_fallback_settings()
-            if job_id:
-                update_job_progress(
-                    job_id,
-                    "translate",
-                    0.0,
-                    details=(
-                        "Geminiリクエスト上限超過のためローカルLLMへ切替: "
-                        f"予定{estimated_requests}件 / 上限{settings.gemini_max_requests_per_job}件"
-                    ),
-                )
-            selected_settings = fallback_settings
-
-    if selected_settings.provider_name == "openai_compatible":
-        llm_available, llm_error = await remote_llm_available()
-        if not llm_available:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Remote LLM is unavailable. Ask the user before using google_cloud. reason={llm_error}",
-            )
-
     async def worker(payload: dict) -> dict:
         payload["_work_dir"] = str(work_dir)
-        payload["llm_endpoint"] = settings.remote_llm_endpoint
-        payload["llm_api_key"] = settings.remote_llm_api_key
+        payload["llm_endpoint"] = selected_settings.provider_endpoint
+        payload["llm_api_key"] = selected_settings.provider_api_key
         payload["llm_timeout_seconds"] = settings.local_llm_timeout_seconds
         return await run_translation_worker(payload)
 
@@ -3023,47 +3042,17 @@ async def translate_subtitle_if_needed(
                 details = f"{details}\n{sample_text}"
             update_job_progress(job_id, "translate", pct, eta_seconds=remaining, details=details)
 
-    try:
-        result = await translate_srt_with_local_worker(
-            subtitle_path=subtitle,
-            output_path=translated_path,
-            video_title=str(info.get("title") or ""),
-            channel_name=extract_channel_name(info),
-            source_language=selection["source_language"],
-            target_language=selection["requested_language"],
-            settings=selected_settings,
-            run_worker=worker,
-            on_progress=on_prog,
-        )
-    except TranslationError as error:
-        if selected_settings.provider_name != "gemini_api" or not is_non_retryable_gemini_quota_error(error):
-            raise
-        fallback_settings = gemini_fallback_settings()
-        if job_id:
-            update_job_progress(
-                job_id,
-                "translate",
-                0.0,
-                details="Gemini quota/spend cap到達のためローカルLLMへ切替",
-            )
-        if fallback_settings.provider_name == "openai_compatible":
-            llm_available, llm_error = await remote_llm_available()
-            if not llm_available:
-                raise HTTPException(
-                    status_code=503,
-                    detail=f"Gemini quota reached and fallback LLM is unavailable. reason={llm_error}",
-                ) from error
-        result = await translate_srt_with_local_worker(
-            subtitle_path=subtitle,
-            output_path=translated_path,
-            video_title=str(info.get("title") or ""),
-            channel_name=extract_channel_name(info),
-            source_language=selection["source_language"],
-            target_language=selection["requested_language"],
-            settings=fallback_settings,
-            run_worker=worker,
-            on_progress=on_prog,
-        )
+    result = await translate_srt_with_local_worker(
+        subtitle_path=subtitle,
+        output_path=translated_path,
+        video_title=str(info.get("title") or ""),
+        channel_name=extract_channel_name(info),
+        source_language=selection["source_language"],
+        target_language=selection["requested_language"],
+        settings=selected_settings,
+        run_worker=worker,
+        on_progress=on_prog,
+    )
     end_t = time.time()
     try:
         subtitles = load_srt(translated_path)

@@ -313,13 +313,15 @@ Google の API キーが必要なのは、YouTube Data API v3 を使う `/prepar
 
 `TRANSLATION_ENABLED=1` の場合、要求言語が `ja` で日本語の手動字幕がない動画は、Discord bot の単体 `/prepare` では翻訳元字幕をユーザーが選び、日本語へ翻訳してから焼き込みます。API から `subtitleSourceLang` を指定しない場合や一括準備では、動画の原言語、英語、韓国語、中国語、`TRANSLATION_SOURCE_LANGS` の順で自動選択します。
 
-LLM 翻訳は GTX 1050 Ti サーバー上では実行せず、RTX 3060 を搭載した別PCの OpenAI 互換 API に送ります。翻訳エンジン選択では `Qwen 3 4B Instruct`、`Qwen 3 8B`、`Qwen 3 14B`、`Aya Expanse 8B`、`Gemma 3 12B`、`TranslateGemma 12B`、`Gemini Flash` を切り替えられます。`TranslateGemma 12B` は `translategemma:12b` を使い、専用プロンプトを `TRANSLATEGEMMA_PROMPT_TEMPLATE_FILE` から読めます。準備前に `REMOTE_LLM_HEALTH_URL` を確認し、応答がない、または余裕なしとして失敗する場合は、Discord bot がユーザーに Google 翻訳で進めてよいか確認します。LLM 失敗時に Google Cloud Translation API へ自動フォールバックする動作は行いません。
+LLM 翻訳は字幕IDと原文だけを動画1本分まとめて1回のAPIリクエストへ送り、動画全体の文脈で翻訳します。応答はStructured Output / JSON Schemaで `{"subtitles":[{"id":1,"text":"..."}]}` に固定し、プログラム側で件数・ID集合・重複・空文字を検証します。タイムコードは送信せず、検証済みIDを元SRTへ再結合します。長すぎてcontextまたは出力上限を超えた場合は自動分割せず失敗します。
+
+翻訳エンジンは `Gemini Flash-Lite`、`GPT-5 nano`、`Groq GPT-OSS 20B`、既存のOpenAI互換Ollamaモデルを切り替えられます。Google翻訳とYouTube自動翻訳も残します。LLM経路では事前health check、再試行、字幕ごとのリクエスト、自動fallbackを行いません。
 
 ```bash
 export TRANSLATION_ENABLED=1
 export TRANSLATION_SOURCE_LANGS=en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW
-export TRANSLATION_DEFAULT_PROFILE=qwen3_4b_instruct
-export TRANSLATION_PROVIDER=qwen3_4b_instruct
+export TRANSLATION_DEFAULT_PROFILE=gemini_2_5_flash_lite
+export TRANSLATION_PROVIDER=gemini_2_5_flash_lite
 export REMOTE_LLM_ENDPOINT=http://192.168.68.115:11434/v1/chat/completions
 export REMOTE_LLM_HEALTH_URL=http://192.168.68.115:11434/v1/models
 export REMOTE_LLM_MODEL=qwen3:4b-instruct
@@ -332,14 +334,14 @@ export LOCAL_LLM_MODEL_AYA_EXPANSE_8B=aya-expanse:8b
 export LOCAL_LLM_MODEL_GEMMA3_12B=gemma3:12b
 export LOCAL_LLM_MODEL_TRANSLATEGEMMA_12B=translategemma:12b
 export LOCAL_LLM_MODEL_GEMINI_2_5_FLASH=gemini-2.5-flash
+export GEMINI_MODEL=gemini-2.5-flash-lite
+export GEMINI_API_KEY=your-gemini-api-key
+export OPENAI_MODEL=gpt-5-nano
+export OPENAI_API_KEY=your-openai-api-key
+export GROQ_MODEL=openai/gpt-oss-20b
+export GROQ_API_KEY=your-groq-api-key
 export REMOTE_LLM_API_KEY=
-export LOCAL_LLM_TIMEOUT_SECONDS=300
-export LOCAL_LLM_TARGET_WINDOW_SECONDS=120
-export LOCAL_LLM_TARGET_MAX_EVENTS=10
-export LOCAL_LLM_CONTEXT_BEFORE_SECONDS=120
-export LOCAL_LLM_CONTEXT_BEFORE_MAX_EVENTS=25
-export LOCAL_LLM_CONTEXT_AFTER_SECONDS=120
-export LOCAL_LLM_CONTEXT_AFTER_MAX_EVENTS=25
+export LOCAL_LLM_TIMEOUT_SECONDS=900
 export LOCAL_LLM_TEMPERATURE=0
 export TRANSLATION_FALLBACK_ENGINE=
 export GOOGLE_APPLICATION_CREDENTIALS=/etc/youtube-mp4-google-credentials.json
@@ -473,7 +475,7 @@ CPU エンコードに戻す場合は `FFMPEG_VIDEO_ENCODER=libx264` を指定�
 
 `Driver does not support the required nvenc API version` が出る場合は、FFmpeg が要求する NVENC API に対して NVIDIA ドライバーが古い状態です。この場合、アプリは CPU エンコードに自動フォールバックします。GPU を使い切りたい場合は NVIDIA ドライバーを更新してください。
 
-Gemini API は無料枠の RPD が小さいため、字幕1件ごとの大量リクエストに使う場合は枯渇しやすいです。`GEMINI_MAX_REQUESTS_PER_JOB` は1ジョブでGeminiへ投げる最大字幕件数です。既定は `3` で、超過時は `GEMINI_FALLBACK_PROFILE`、既定 `qwen3_4b_instruct`、へ自動で切り替えます。spending cap / RPD 系の 429 が返った場合も再試行せずローカルLLMへ退避します。
+Gemini Flash-Liteは字幕1本を1リクエストで処理します。APIのcontextまたは出力上限を超えた場合は、その動画を失敗として扱います。分割は必要性とtoken計測を確認してから追加します。
 
 TranslateGemma を使う場合は、`LOCAL_LLM_MODEL_TRANSLATEGEMMA_12B=translategemma:12b` を設定し、字幕翻訳は `prompts/translategemma-prompt.txt` の形式に合わせます。
 

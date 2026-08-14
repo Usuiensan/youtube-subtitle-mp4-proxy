@@ -618,6 +618,9 @@ def subtitle_status_text(meta: Any) -> str:
                 "gemma3_12b": "Gemma 3 12B",
                 "translategemma_12b": "TranslateGemma 12B",
                 "gemini_2_5_flash": "Gemini Flash",
+                "gemini_2_5_flash_lite": "Gemini Flash-Lite",
+                "gpt_5_nano": "GPT-5 nano",
+                "groq_gpt_oss_20b": "Groq GPT-OSS 20B",
             }.get(str(engine), str(engine or "LLM"))
             engine_text = f"{engine_label} ({model})"
         else:
@@ -701,7 +704,7 @@ def translation_usage_text(meta: Any) -> str:
         return ""
     engine = str(meta.get("translation_engine") or "")
     translation_skipped = bool(meta.get("translation_skipped"))
-    if engine not in {"gemini_2_5_flash", "google_cloud"} and not translation_skipped:
+    if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gpt_5_nano", "groq_gpt_oss_20b", "google_cloud"} and not translation_skipped:
         return ""
     provider_label = str(meta.get("translation_provider_label") or ("Google Cloud Translation" if translation_skipped else "Gemini Flash"))
     billing_class = str(meta.get("translation_billing_class") or "Gemini API Free Tier")

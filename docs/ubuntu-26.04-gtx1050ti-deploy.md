@@ -164,18 +164,16 @@ DISCORD_PREPARE_BATCH_MAX_ITEMS=5000
 
 TRANSLATION_ENABLED=1
 TRANSLATION_SOURCE_LANGS=en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW
-TRANSLATION_FALLBACK_ENGINE=google_cloud
+TRANSLATION_DEFAULT_PROFILE=gemini_2_5_flash_lite
+TRANSLATION_PROVIDER=gemini_2_5_flash_lite
+TRANSLATION_FALLBACK_ENGINE=
 LOCAL_LLM_ENGINE=openai_compatible
 LOCAL_LLM_ENDPOINT=http://192.168.68.115:11434/v1/chat/completions
 LOCAL_LLM_MODEL=qwen3:4b-instruct
-LOCAL_LLM_TIMEOUT_SECONDS=300
-LOCAL_LLM_TARGET_WINDOW_SECONDS=120
-LOCAL_LLM_TARGET_MAX_EVENTS=10
-LOCAL_LLM_CONTEXT_BEFORE_SECONDS=120
-LOCAL_LLM_CONTEXT_BEFORE_MAX_EVENTS=25
-LOCAL_LLM_CONTEXT_AFTER_SECONDS=120
-LOCAL_LLM_CONTEXT_AFTER_MAX_EVENTS=25
+LOCAL_LLM_TIMEOUT_SECONDS=900
 LOCAL_LLM_TEMPERATURE=0
+GEMINI_MODEL=gemini-2.5-flash-lite
+GEMINI_API_KEY=YOUR_GEMINI_API_KEY
 # GOOGLE_APPLICATION_CREDENTIALS=/etc/youtube-mp4-google-credentials.json
 # GOOGLE_CLOUD_PROJECT=your-google-cloud-project-id
 
@@ -353,9 +351,9 @@ MP4を準備しています。予想8分 / 終了予想 <t:1783619520:t>
 
 ## 9. ローカルLLM翻訳
 
-日本語字幕がない動画では、外国語の手動字幕を選んで日本語へ翻訳できます。翻訳workerはジョブごとに起動・終了するため、FastAPI本体へモデルをロードしません。翻訳が終わってworkerが終了してからNVENCを開始します。
+日本語字幕がない動画では、外国語の手動字幕を選んで日本語へ翻訳できます。翻訳workerはジョブごとに起動・終了するため、FastAPI本体へモデルをロードしません。LLMには字幕IDと原文だけを動画1本分まとめて1回送信し、Structured Output / JSON SchemaをID完全一致検証してから元SRTのタイムコードへ再結合します。翻訳が終わってworkerが終了してからNVENCを開始します。
 
-GTX 1050 Ti 4GBでは、小型の量子化モデルをOpenAI互換HTTP APIやOllama互換エンドポイントで動かす想定です。ローカルLLMが失敗した字幕windowだけ、Google Cloud Translation APIへフォールバックします。初期実装ではGoogle翻訳を字幕イベントごとに1回呼びます。
+GTX 1050 Ti 4GBでは、小型の量子化モデルをOpenAI互換HTTP APIやOllama互換エンドポイントで動かす想定です。Gemini Flash-Lite、GPT-5 nano、Groq GPT-OSS 20B、Ollama互換モデルを同じ翻訳インターフェースで切り替えられます。長すぎる動画は初期版では自動分割せず失敗にします。
 
 Google fallbackを使う場合は、認証JSONをリポジトリ外へ置きます。
 

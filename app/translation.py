@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import html
-import json
 import math
 import re
 import shutil
-import sys
 import time
 from dataclasses import dataclass
-from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -32,6 +29,8 @@ class TranslationSettings:
     prompt_template: str
     google_project: str
     provider_name: str
+    provider_endpoint: str
+    provider_api_key: str
 
 
 @dataclass
@@ -52,116 +51,15 @@ def save_srt(path: Path, subtitles: list[srt.Subtitle]) -> None:
     path.write_text(srt.compose(subtitles), encoding="utf-8")
 
 
-def seconds(value: timedelta) -> float:
-    return value.total_seconds()
-
-
-def window_subtitles(
-    subtitles: list[srt.Subtitle],
-    max_seconds: int,
-    max_events: int,
-) -> list[list[srt.Subtitle]]:
-    windows: list[list[srt.Subtitle]] = []
-    current: list[srt.Subtitle] = []
-    start_second: float | None = None
-
-    for subtitle in subtitles:
-        subtitle_start = seconds(subtitle.start)
-        if start_second is None:
-            start_second = subtitle_start
-        should_split = (
-            current
-            and (
-                len(current) >= max_events
-                or subtitle_start - start_second >= max_seconds
-            )
-        )
-        if should_split:
-            windows.append(current)
-            current = []
-            start_second = subtitle_start
-        current.append(subtitle)
-
-    if current:
-        windows.append(current)
-    return windows
-
-
-def context_for_window(
-    all_subtitles: list[srt.Subtitle],
-    target: list[srt.Subtitle],
-    context_before_seconds: int,
-    context_before_max_events: int,
-    context_after_seconds: int,
-    context_after_max_events: int,
-    previous_japanese: list[srt.Subtitle],
-) -> dict[str, list[dict[str, Any]]]:
-    target_start = target[0].start
-    target_end = target[-1].end
-    before_start = target_start - timedelta(seconds=context_before_seconds)
-    after_end = target_end + timedelta(seconds=context_after_seconds)
-    previous_start = target_start - timedelta(seconds=context_before_seconds)
-
-    # Get context before (sorted by start time, latest first, then limited, then sorted chronologically)
-    before_events = [
-        sub for sub in all_subtitles
-        if before_start <= sub.start < target_start
-    ]
-    before_events = sorted(before_events, key=lambda s: s.start, reverse=True)[:context_before_max_events]
-    before_events = sorted(before_events, key=lambda s: s.start)
-
-    # Get context after (sorted by start time, earliest first, then limited)
-    after_events = [
-        sub for sub in all_subtitles
-        if target_end < sub.start <= after_end
-    ]
-    after_events = sorted(after_events, key=lambda s: s.start)[:context_after_max_events]
-
-    # Get previous japanese (sorted by start time, latest first, then limited, then sorted chronologically)
-    prev_ja_events = [
-        sub for sub in previous_japanese
-        if previous_start <= sub.start < target_start
-    ]
-    prev_ja_events = sorted(prev_ja_events, key=lambda s: s.start, reverse=True)[:context_before_max_events]
-    prev_ja_events = sorted(prev_ja_events, key=lambda s: s.start)
-
-    return {
-        "context_before": [event_to_json(sub) for sub in before_events],
-        "context_after": [event_to_json(sub) for sub in after_events],
-        "previous_japanese": [event_to_json(sub) for sub in prev_ja_events],
-    }
-
-
-def event_to_json(subtitle: srt.Subtitle) -> dict[str, Any]:
-    return {
-        "id": str(subtitle.index),
-        "start": str(subtitle.start),
-        "end": str(subtitle.end),
-        "text": subtitle.content,
-    }
-
-
 def build_worker_payload(
     *,
     video_title: str,
     channel_name: str,
     source_language: str,
     target_language: str,
-    target: list[srt.Subtitle],
     all_subtitles: list[srt.Subtitle],
-    previous_japanese: list[srt.Subtitle],
     settings: TranslationSettings,
-    strict: bool = False,
 ) -> dict[str, Any]:
-    context = context_for_window(
-        all_subtitles,
-        target,
-        settings.context_before_seconds,
-        settings.context_before_max_events,
-        settings.context_after_seconds,
-        settings.context_after_max_events,
-        previous_japanese,
-    )
     return {
         "video_title": video_title,
         "channel_name": channel_name,
@@ -172,11 +70,7 @@ def build_worker_payload(
         "translation_provider": settings.provider_name,
         "translation_profile": settings.engine,
         "model_name": settings.model_name,
-        "strict": strict,
-        "context_before": context["context_before"],
-        "target": [event_to_json(sub) for sub in target],
-        "context_after": context["context_after"],
-        "previous_japanese": context["previous_japanese"],
+        "subtitles": [{"id": sub.index, "text": sub.content} for sub in all_subtitles],
     }
 
 
@@ -184,12 +78,16 @@ def validate_translations(
     target: list[srt.Subtitle],
     result: dict[str, Any],
 ) -> dict[str, str]:
-    translations = result.get("translations")
+    translations = result.get("subtitles")
     if not isinstance(translations, list):
-        raise TranslationError("translations must be an array")
+        raise TranslationError("subtitles must be an array")
 
     expected_ids = [str(sub.index) for sub in target]
     expected_set = set(expected_ids)
+    if len(translations) != len(expected_ids):
+        raise TranslationError(
+            f"subtitle count mismatch: expected {len(expected_ids)}, got {len(translations)}"
+        )
     seen: set[str] = set()
     output: dict[str, str] = {}
 
@@ -233,20 +131,6 @@ def discard_successful_attempt(result: dict[str, Any]) -> None:
         shutil.rmtree(attempt_dir, ignore_errors=True)
 
 
-def mark_failed_attempt(result: dict[str, Any], error: Exception) -> None:
-    attempt_dir = result.get("_translation_attempt_dir")
-    if not isinstance(attempt_dir, str) or not attempt_dir:
-        return
-    try:
-        Path(attempt_dir).mkdir(parents=True, exist_ok=True)
-        (Path(attempt_dir) / "validation-error.txt").write_text(
-            f"{type(error).__name__}: {error}",
-            encoding="utf-8",
-        )
-    except Exception:
-        pass
-
-
 async def translate_srt_with_local_worker(
     *,
     subtitle_path: Path,
@@ -261,22 +145,14 @@ async def translate_srt_with_local_worker(
 ) -> SubtitleTranslationResult:
     subtitles = load_srt(subtitle_path)
     translation_characters = sum(len(sub.content) for sub in subtitles)
-    windows = window_subtitles(
-        subtitles,
-        settings.target_window_seconds,
-        settings.target_max_events,
-    )
     translated_subtitles: list[srt.Subtitle] = []
     recent_pairs: list[dict[str, str]] = []
-    fallback_used = False
-    total_windows = len(windows)
     total_subtitles = len(subtitles)
-    translated_count = 0
     usage_totals = {
         "input_tokens": 0,
         "output_tokens": 0,
         "total_tokens": 0,
-        "requests": 0,
+        "requests": 1,
     }
 
     def add_usage(result: dict[str, Any]) -> None:
@@ -291,124 +167,58 @@ async def translate_srt_with_local_worker(
             value = usage.get(source_key)
             if isinstance(value, (int, float)):
                 usage_totals[target_key] += int(value)
-        usage_totals["requests"] += 1
 
     if on_progress:
         on_progress(0, total_subtitles, recent_pairs)
 
-    for index, window in enumerate(windows):
-        translated_map: dict[str, str] | None = None
-        last_error: Exception | None = None
-        for strict in (False, True):
-            try:
-                payload = build_worker_payload(
-                    video_title=video_title,
-                    channel_name=channel_name,
-                    source_language=source_language,
-                    target_language=target_language,
-                    target=window,
-                    all_subtitles=subtitles,
-                    previous_japanese=translated_subtitles,
-                    settings=settings,
-                    strict=strict,
-                )
-                result = await run_worker(payload)
-                add_usage(result)
-                try:
-                    translated_map = validate_translations(window, result)
-                except Exception as error:
-                    mark_failed_attempt(result, error)
-                    raise
-                discard_successful_attempt(result)
-                break
-            except Exception as error:
-                last_error = error
-                print(
-                    (
-                        "local LLM translation attempt failed: "
-                        f"window={index + 1}/{total_windows} strict={strict} "
-                        f"source={source_language} target={target_language} "
-                        f"error={type(error).__name__}: {error}"
-                    ),
-                    file=sys.stderr,
-                    flush=True,
-                )
-                translated_map = None
+    payload = build_worker_payload(
+        video_title=video_title,
+        channel_name=channel_name,
+        source_language=source_language,
+        target_language=target_language,
+        all_subtitles=subtitles,
+        settings=settings,
+    )
+    try:
+        result = await run_worker(payload)
+        add_usage(result)
+        translated_map = validate_translations(subtitles, result)
+    except Exception as error:
+        if isinstance(error, TranslationError):
+            raise
+        raise TranslationError(
+            "remote LLM translation failed; one-video request was not retried: "
+            f"source={source_language} target={target_language} "
+            f"error={type(error).__name__}: {error}"
+        ) from error
+    discard_successful_attempt(result)
 
-        if translated_map is None and len(window) > 1:
-            translated_map = {}
-            midpoint = len(window) // 2
-            for part_index, part in enumerate((window[:midpoint], window[midpoint:]), start=1):
-                payload = build_worker_payload(
-                    video_title=video_title,
-                    channel_name=channel_name,
-                    source_language=source_language,
-                    target_language=target_language,
-                    target=part,
-                    all_subtitles=subtitles,
-                    previous_japanese=translated_subtitles,
-                    settings=settings,
-                    strict=True,
-                )
-                try:
-                    result = await run_worker(payload)
-                    add_usage(result)
-                    try:
-                        translated_map.update(validate_translations(part, result))
-                    except Exception as error:
-                        mark_failed_attempt(result, error)
-                        raise
-                    discard_successful_attempt(result)
-                except Exception as error:
-                    last_error = error
-                    print(
-                        (
-                            "local LLM translation split retry failed: "
-                            f"window={index + 1}/{total_windows} part={part_index}/2 "
-                            f"source={source_language} target={target_language} "
-                            f"error={type(error).__name__}: {error}"
-                        ),
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                    translated_map = None
-                    break
-
-        if translated_map is None:
-            raise TranslationError(
-                "remote LLM translation failed; Google fallback is disabled. "
-                f"window={index + 1}/{total_windows} source={source_language} "
-                f"target={target_language} last_error={type(last_error).__name__ if last_error else 'unknown'}: {last_error}"
+    for sub in subtitles:
+        translated_text = translated_map[str(sub.index)]
+        translated_subtitles.append(
+            srt.Subtitle(
+                index=sub.index,
+                start=sub.start,
+                end=sub.end,
+                content=f"{sub.content}\n{translated_text}",
+                proprietary=sub.proprietary,
             )
-
-        for sub in window:
-            translated_text = translated_map[str(sub.index)]
-            translated_subtitles.append(
-                srt.Subtitle(
-                    index=sub.index,
-                    start=sub.start,
-                    end=sub.end,
-                    content=f"{sub.content}\n{translated_text}",
-                    proprietary=sub.proprietary,
-                )
-            )
-            recent_pairs.append({"source": sub.content, "translated": translated_text})
-            recent_pairs = recent_pairs[-5:]
-            translated_count += 1
-        if on_progress:
-            on_progress(translated_count, total_subtitles, recent_pairs)
+        )
+        recent_pairs.append({"source": sub.content, "translated": translated_text})
+        recent_pairs = recent_pairs[-5:]
+    if on_progress:
+        on_progress(total_subtitles, total_subtitles, recent_pairs)
 
     save_srt(output_path, translated_subtitles)
-    engine = "google_cloud" if fallback_used else settings.engine
     return SubtitleTranslationResult(
         subtitle_path=output_path,
         metadata={
             "requested_language": target_language,
             "source_language": source_language,
             "translated": True,
-            "translation_engine": engine,
-            "translation_model": settings.model_name if engine == settings.engine else None,
-            "translation_fallback_used": fallback_used,
+            "translation_engine": settings.engine,
+            "translation_model": settings.model_name,
+            "translation_fallback_used": False,
             "translation_created_at": int(time.time()),
             "translation_characters": translation_characters,
             "translation_input_tokens": usage_totals["input_tokens"],

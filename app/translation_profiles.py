@@ -17,6 +17,9 @@ def profile_models(getenv: EnvGetter) -> dict[str, str]:
         "gemma3_12b": (getenv("LOCAL_LLM_MODEL_GEMMA3_12B", "gemma3:12b") or "").strip(),
         "translategemma_12b": (getenv("LOCAL_LLM_MODEL_TRANSLATEGEMMA_12B", "translategemma:12b") or "").strip(),
         "gemini_2_5_flash": (getenv("LOCAL_LLM_MODEL_GEMINI_2_5_FLASH", "gemini-2.5-flash") or "").strip(),
+        "gemini_2_5_flash_lite": (getenv("GEMINI_MODEL", "gemini-2.5-flash-lite") or "").strip(),
+        "gpt_5_nano": (getenv("OPENAI_MODEL", "gpt-5-nano") or "").strip(),
+        "groq_gpt_oss_20b": (getenv("GROQ_MODEL", "openai/gpt-oss-20b") or "").strip(),
         "local_llm": (getenv("LOCAL_LLM_MODEL", "qwen3:4b-instruct") or "").strip(),
         "remote_llm": (getenv("REMOTE_LLM_MODEL", getenv("LOCAL_LLM_MODEL", "qwen3:4b-instruct")) or "").strip(),
     }
@@ -31,6 +34,9 @@ def profile_labels(getenv: EnvGetter) -> dict[str, str]:
         "gemma3_12b": "Gemma 3 12B",
         "translategemma_12b": "TranslateGemma 12B",
         "gemini_2_5_flash": "Gemini Flash",
+        "gemini_2_5_flash_lite": "Gemini Flash-Lite",
+        "gpt_5_nano": "GPT-5 nano",
+        "groq_gpt_oss_20b": "Groq GPT-OSS 20B",
         "local_llm": getenv("LOCAL_LLM_LABEL", "Default LLM") or "Default LLM",
         "remote_llm": getenv("REMOTE_LLM_LABEL", "Remote LLM") or "Remote LLM",
     }

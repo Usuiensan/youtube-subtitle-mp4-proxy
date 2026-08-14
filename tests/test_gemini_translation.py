@@ -125,26 +125,22 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertIn("Qwen 3 8B", text)
         self.assertIn("qwen3:8b", text)
 
-    def test_translation_worker_prompt_is_single_subtitle_and_minimal(self) -> None:
+    def test_translation_worker_prompt_contains_full_subtitle_context(self) -> None:
         payload = {
             "video_title": "Sample title",
             "source_language": "en",
             "target_language": "ja",
-            "context_before": [
-                {"id": "1", "text": "First line"},
-                {"id": "2", "text": "Second line"},
-            ],
-            "context_after": [
-                {"id": "4", "text": "Fourth line"},
+            "subtitles": [
+                {"id": 1, "text": "First line"},
+                {"id": 2, "text": "Translate me"},
+                {"id": 3, "text": "Last line"},
             ],
         }
-        prompt = translation_worker.build_single_subtitle_prompt({"id": "3", "text": "Translate me"}, payload)
-        self.assertIn("Translate exactly one subtitle", prompt)
-        self.assertIn("Current subtitle:", prompt)
+        prompt = translation_worker.build_full_translation_prompt(payload)
+        self.assertIn("Translate the complete subtitle list", prompt)
+        self.assertIn("First line", prompt)
         self.assertIn("Translate me", prompt)
-        self.assertNotIn("前5つの字幕", prompt)
-        self.assertNotIn("これを訳せ（字幕１つだけ）", prompt)
-        self.assertNotIn("previous_japanese", prompt)
+        self.assertIn("Last line", prompt)
 
     def test_dm_command_parser_strips_slash_prefix(self) -> None:
         command, args = bot_main.parse_dm_command("/prepare https://youtu.be/dQw4w9WgXcQ lang=ja")
