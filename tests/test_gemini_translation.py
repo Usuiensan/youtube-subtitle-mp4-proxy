@@ -15,6 +15,25 @@ from unittest.mock import patch
 
 
 class GeminiTranslationTests(unittest.TestCase):
+    def test_translation_audit_record_decodes_provider_and_model_json(self) -> None:
+        record = app_main._decode_translation_audit_record(
+            {
+                "event": "provider_response",
+                "request_body": '{"generationConfig":{"responseMimeType":"application/json"}}',
+                "response_body": json.dumps(
+                    {
+                        "candidates": [
+                            {"content": {"parts": [{"text": '{"subtitles":[{"id":1,"text":"こんにちは"}]}' }]} }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        )
+        self.assertEqual(record["request_json"]["generationConfig"]["responseMimeType"], "application/json")
+        self.assertEqual(record["response_json"]["candidates"][0]["content"]["parts"][0]["text"], '{"subtitles":[{"id":1,"text":"こんにちは"}]}')
+        self.assertEqual(record["model_response_json"]["subtitles"][0]["text"], "こんにちは")
+
     def test_gemini_profile_uses_gemini_provider(self) -> None:
         settings = app_main.translation_settings("gemini_2_5_flash")
         self.assertEqual(settings.model_name, app_main.settings.local_llm_profile_models["gemini_2_5_flash"])

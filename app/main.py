@@ -6621,7 +6621,14 @@ async def index() -> str:
 
     function renderAuditDetail(name, records) {{
       auditDetailTitle.textContent = name ? `${{name}} (${{records.length}} records)` : "";
-      auditDetail.textContent = records.map((record) => JSON.stringify(record, null, 2)).join("\\n\\n");
+      auditDetail.textContent = records.map((record) => {{
+        const display = {{ ...record }};
+        if (Object.prototype.hasOwnProperty.call(record, "request_json")) display.request_body = record.request_json;
+        if (Object.prototype.hasOwnProperty.call(record, "response_json")) display.response_body = record.response_json;
+        delete display.request_json;
+        delete display.response_json;
+        return JSON.stringify(display, null, 2);
+      }}).join("\\n\\n");
     }}
 
     function renderAuditList(items) {{
@@ -7059,6 +7066,41 @@ def _read_jsonl_lines(path: Path, limit: int | None = None) -> list[dict]:
     return records
 
 
+def _decode_audit_json(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
+def _decode_translation_audit_record(record: dict) -> dict:
+    decoded = dict(record)
+    request_json = _decode_audit_json(record.get("request_body"))
+    response_json = _decode_audit_json(record.get("response_body"))
+    if "request_body" in record:
+        decoded["request_json"] = request_json
+    if "response_body" in record:
+        decoded["response_json"] = response_json
+
+    model_text = None
+    if isinstance(response_json, dict):
+        candidates = response_json.get("candidates")
+        if isinstance(candidates, list) and candidates and isinstance(candidates[0], dict):
+            content = candidates[0].get("content")
+            parts = content.get("parts") if isinstance(content, dict) else None
+            model_text = parts[0].get("text") if isinstance(parts, list) and parts and isinstance(parts[0], dict) else None
+        choices = response_json.get("choices")
+        if model_text is None and isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            message = choices[0].get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            model_text = content if isinstance(content, str) else None
+    if model_text is not None:
+        decoded["model_response_json"] = _decode_audit_json(model_text)
+    return decoded
+
+
 def _list_cached_variants_for_video(request: Request, video_id: str) -> list[dict]:
     roots = [settings.cache_hot_dir]
     if settings.cache_archive_dir is not None:
@@ -7165,7 +7207,7 @@ async def translation_audit_detail(name: str, limit: int = Query(200, ge=1, le=2
     path = settings.translation_audit_dir / name
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="Audit file not found")
-    records = _read_jsonl_lines(path, limit=limit)
+    records = [_decode_translation_audit_record(record) for record in _read_jsonl_lines(path, limit=limit)]
     return JSONResponse({"name": name, "path": str(path), "count": len(records), "records": records})
 
 
