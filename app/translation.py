@@ -187,7 +187,7 @@ async def translate_srt_with_local_worker(
         if isinstance(error, TranslationError):
             raise
         raise TranslationError(
-            "remote LLM translation failed; one-video request was not retried: "
+            "remote LLM translation failed: "
             f"source={source_language} target={target_language} "
             f"error={type(error).__name__}: {error}"
         ) from error
