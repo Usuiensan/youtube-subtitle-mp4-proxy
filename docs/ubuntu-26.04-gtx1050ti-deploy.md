@@ -96,7 +96,7 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-翻訳エンジンを複数選べるようにする場合は、`TRANSLATION_DEFAULT_PROFILE` と `LOCAL_LLM_MODEL_*` を環境ファイルに入れて、OpenAI互換の翻訳サーバーで公開しているモデル名に合わせてください。
+翻訳エンジンは `TRANSLATION_DEFAULT_PROFILE` で1つに固定します。対応する `LOCAL_LLM_MODEL_*` を環境ファイルに入れて、OpenAI互換の翻訳サーバーで公開しているモデル名に合わせてください。
 
 確認:
 

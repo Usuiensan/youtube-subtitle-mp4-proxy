@@ -896,7 +896,7 @@ class SubtitleChoiceView(discord.ui.View):
             options=source_options,
         )
         self.engine_select = discord.ui.Select(
-            placeholder="翻訳エンジンを選択",
+            placeholder="環境設定で固定",
             min_values=1,
             max_values=1,
             options=engine_options,
@@ -951,8 +951,8 @@ class SubtitleChoiceView(discord.ui.View):
         self.target_lang = self.target_select.values[0]
         self._mark_selected(self.target_select, self.target_lang)
         translate = self.target_lang != "same"
-        self.engine_select.disabled = not translate
-        self.engine_select.placeholder = "翻訳エンジンを選択" if translate else "翻訳なし（そのまま）"
+        self.engine_select.disabled = True
+        self.engine_select.placeholder = "環境設定で固定" if translate else "翻訳なし（そのまま）"
         if translate and self.translation_engine is None:
             default_engine = next((option.value for option in self.engine_select.options if option.default), None)
             self.translation_engine = default_engine or (self.engine_select.options[0].value if self.engine_select.options else None)

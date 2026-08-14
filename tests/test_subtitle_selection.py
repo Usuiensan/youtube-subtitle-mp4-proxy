@@ -58,6 +58,15 @@ def test_google_cloud_translation_is_disabled() -> None:
     assert "disabled" in error.value.detail
 
 
+def test_translation_engine_is_fixed_by_environment() -> None:
+    configured = main.configured_translation_engine()
+    assert main.enforce_configured_translation_engine(configured) == configured
+    with pytest.raises(main.HTTPException) as error:
+        main.enforce_configured_translation_engine("qwen3_8b" if configured != "qwen3_8b" else "gemma3_12b")
+    assert error.value.status_code == 422
+    assert "TRANSLATION_DEFAULT_PROFILE" in error.value.detail
+
+
 def test_subtitle_candidates_ignore_automatic_captions() -> None:
     info = {
         "subtitles": {"en": [{"ext": "vtt"}]},

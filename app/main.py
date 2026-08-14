@@ -1246,12 +1246,7 @@ def default_serving_key(video_id: str, lang: str, mode: str) -> str:
 
 def validate_translation_variant(source_lang: str, translation_engine: str) -> str:
     validate_lang(source_lang)
-    normalized = normalize_translation_engine(translation_engine)
-    if normalized == "google_cloud":
-        raise HTTPException(status_code=422, detail="Google Cloud Translation is disabled")
-    if normalized == "youtube_auto":
-        raise HTTPException(status_code=422, detail="YouTube自動翻訳字幕は利用しません")
-    return normalized
+    return enforce_configured_translation_engine(translation_engine)
 
 
 def cleanup_ytdlp_cookie_copies(cookie_dir: Path) -> None:
@@ -1667,35 +1662,34 @@ def normalize_translation_engine(value: str | None) -> str:
     return "qwen3_4b_instruct"
 
 
+def configured_translation_engine() -> str:
+    return normalize_translation_engine(None)
+
+
+def enforce_configured_translation_engine(value: str | None) -> str:
+    if value:
+        requested = str(value).strip().lower()
+        if requested in {"google", "google_cloud", "google_translate"}:
+            raise HTTPException(status_code=422, detail="Google Cloud Translation is disabled")
+        if requested in {"youtube_auto", "youtube_automatic", "youtube_auto_translate"}:
+            raise HTTPException(status_code=422, detail="YouTube自動翻訳字幕は利用しません")
+        if normalize_translation_engine(value) != configured_translation_engine():
+            raise HTTPException(status_code=422, detail="翻訳エンジンはTRANSLATION_DEFAULT_PROFILEで固定されています")
+    return configured_translation_engine()
+
+
 def translation_profile_options() -> list[dict]:
-    default_profile = normalize_translation_engine(settings.translation_default_profile)
-    profiles = [
-        "qwen3_4b_instruct",
-        "qwen3_8b",
-        "qwen3_14b",
-        "aya_expanse_8b",
-        "gemma3_12b",
-        "translategemma_12b",
-        "gemini_2_5_flash_lite",
-        "gpt_5_nano",
-        "groq_gpt_oss_20b",
-    ]
-    options = []
-    for profile_id in profiles:
-        model = str(settings.local_llm_profile_models.get(profile_id) or "").strip()
-        if not model:
-            continue
-        label = settings.local_llm_profile_labels.get(profile_id, profile_id)
-        options.append(
-            {
-                "value": profile_id,
-                "label": label,
-                "model": model,
-                "default": default_profile == profile_id,
-                "kind": "openai_compatible",
-            }
-        )
-    return options
+    profile_id = configured_translation_engine()
+    model = str(settings.local_llm_profile_models.get(profile_id) or "").strip()
+    if not model:
+        return []
+    return [{
+        "value": profile_id,
+        "label": settings.local_llm_profile_labels.get(profile_id, profile_id),
+        "model": model,
+        "default": True,
+        "kind": "openai_compatible",
+    }]
 
 
 def remote_llm_health_url() -> str:
@@ -1860,7 +1854,7 @@ def chat_completion_with_provider(
 
 
 async def run_chat_completion(payload: dict[str, Any]) -> dict[str, Any]:
-    profile_id = normalize_translation_engine(str(payload.get("profile") or payload.get("translation_engine") or settings.translation_default_profile))
+    profile_id = configured_translation_engine()
     selected = translation_settings(profile_id)
     prompt = chat_prompt_from_messages(
         payload.get("messages") if isinstance(payload.get("messages"), list) else [],
@@ -2085,8 +2079,7 @@ def select_subtitle_language(
     source_lang: str | None = None,
     translation_engine: str | None = None,
 ) -> dict:
-    if translation_engine and normalize_translation_engine(translation_engine) == "google_cloud":
-        raise HTTPException(status_code=422, detail="Google Cloud Translation is disabled")
+    fixed_engine = enforce_configured_translation_engine(translation_engine)
     manual_subtitles = info.get("subtitles") or {}
     if not isinstance(manual_subtitles, dict):
         manual_subtitles = {}
@@ -2105,7 +2098,7 @@ def select_subtitle_language(
             "source_language": selected,
             "translated": normalize_lang(selected) != normalize_lang(requested_lang),
             "source_kind": "manual",
-            "translation_engine_requested": normalize_translation_engine(translation_engine),
+            "translation_engine_requested": fixed_engine,
         }
 
     requested = subtitle_lang_available(manual_subtitles, requested_lang)
@@ -2140,7 +2133,7 @@ def select_subtitle_language(
                 "source_language": selected,
                 "translated": True,
                 "source_kind": "manual",
-                "translation_engine_requested": normalize_translation_engine(translation_engine),
+                "translation_engine_requested": fixed_engine,
             }
 
     raise HTTPException(status_code=422, detail="No subtitle found in any language")
@@ -4639,9 +4632,7 @@ async def enqueue_prepare_job(
         subtitle_source_lang = subtitle_source_lang.strip()
         if not subtitle_source_lang:
             raise HTTPException(status_code=400, detail="Invalid subtitle source language")
-    normalized_engine = normalize_translation_engine(translation_engine) if translation_engine else None
-    if normalized_engine == "google_cloud":
-        raise HTTPException(status_code=422, detail="Google Cloud Translation is disabled")
+    normalized_engine = enforce_configured_translation_engine(translation_engine) if translation_engine else None
     ready = prepare_ready_path(video_id, lang, mode, subtitle_source_lang, normalized_engine)
     url = prepared_media_url(request, video_id, lang, mode, subtitle_source_lang, normalized_engine)
     if ready:
@@ -5686,10 +5677,9 @@ async def index() -> str:
           </select>
         </label>
       <label>
-        Translation
-        <select id="translationEngine" name="translationEngine">
-            <option value="" selected disabled>翻訳方式を選択</option>
-        </select>
+        Translation（環境設定で固定）
+        <output id="translationEngineFixed"></output>
+        <select id="translationEngine" name="translationEngine" hidden aria-hidden="true"></select>
       </label>
       </div>
       <div class="actions">
@@ -5837,8 +5827,9 @@ async def index() -> str:
     <section id="chatPanel" class="tool" aria-labelledby="chatTab" hidden>
       <div class="row">
         <label>
-          モデル
-          <select id="chatModel" name="chatModel"></select>
+          モデル（環境設定で固定）
+          <output id="chatModelFixed"></output>
+          <select id="chatModel" name="chatModel" hidden aria-hidden="true"></select>
         </label>
         <label>
           生成温度
@@ -5908,6 +5899,7 @@ async def index() -> str:
     const prepareOptions = document.getElementById("prepareOptions");
     const subtitleSource = document.getElementById("subtitleSource");
     const translationEngine = document.getElementById("translationEngine");
+    const translationEngineFixed = document.getElementById("translationEngineFixed");
     const sourceUrl = document.getElementById("sourceUrl");
     const sourceType = document.getElementById("sourceType");
     const playerMode = document.getElementById("playerMode");
@@ -5965,6 +5957,7 @@ async def index() -> str:
     }}
     const chatPanel = document.getElementById("chatPanel");
     const chatModel = document.getElementById("chatModel");
+    const chatModelFixed = document.getElementById("chatModelFixed");
     const chatTemperature = document.getElementById("chatTemperature");
     const chatSystemPrompt = document.getElementById("chatSystemPrompt");
     const chatLog = document.getElementById("chatLog");
@@ -6108,6 +6101,7 @@ async def index() -> str:
         const selectOption = document.createElement("option");
         selectOption.value = option.value;
         selectOption.textContent = option.label || option.value;
+        selectOption.dataset.model = option.model || "";
         if (option.default) selectOption.selected = true;
         translationEngine.appendChild(selectOption);
         const chatOption = document.createElement("option");
@@ -6120,6 +6114,9 @@ async def index() -> str:
         const fallback = translationEngine.options[0];
         if (fallback) fallback.selected = true;
       }}
+      const fixed = translationEngine.selectedOptions[0];
+      translationEngineFixed.textContent = fixed?.dataset.model || fixed?.textContent || "";
+      chatModelFixed.textContent = translationOptions[0]?.model || translationOptions[0]?.label || "";
     }}
 
     function percentText(value) {{
@@ -6813,18 +6810,16 @@ async def index() -> str:
       }}
       if (Array.isArray(body.translation_engines)) {{
         translationEngine.innerHTML = "";
-        const enginePlaceholder = document.createElement("option");
-        enginePlaceholder.value = "";
-        enginePlaceholder.textContent = "翻訳方式を選択";
-        enginePlaceholder.selected = true;
-        enginePlaceholder.disabled = true;
-        translationEngine.appendChild(enginePlaceholder);
         for (const engine of body.translation_engines) {{
           const option = document.createElement("option");
           option.value = engine.value;
           option.textContent = engine.label || engine.value;
+          option.dataset.model = engine.model || "";
+          option.selected = true;
           translationEngine.appendChild(option);
         }}
+        const fixed = translationEngine.selectedOptions[0];
+        translationEngineFixed.textContent = fixed?.dataset.model || fixed?.textContent || "";
       }}
       prepareOptions.hidden = false;
       prepareStatus.textContent = "日本語字幕が見つかりませんでした。翻訳元字幕と翻訳方式を選んで、もう一度 Prepare を押してください。";
@@ -6978,6 +6973,7 @@ async def index() -> str:
       prepareOptions.hidden = true;
       subtitleSource.innerHTML = "";
       translationEngine.innerHTML = "";
+      translationEngineFixed.textContent = "";
     }}
     input.addEventListener("input", () => {{ resetPrepareChoices(); update(); }});
     lang.addEventListener("input", () => {{ resetPrepareChoices(); update(); }});

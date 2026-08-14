@@ -44,7 +44,7 @@ class GeminiTranslationTests(unittest.TestCase):
         interaction = Interaction()
         asyncio.run(view.on_target_selected(interaction))
 
-        self.assertFalse(view.engine_select.disabled)
+        self.assertTrue(view.engine_select.disabled)
         self.assertEqual(view.translation_engine, "gemini_2_5_flash_lite")
         self.assertIs(interaction.response.kwargs["view"], view)
 
@@ -93,7 +93,7 @@ class GeminiTranslationTests(unittest.TestCase):
         view.target_select._values = ["ja"]
         asyncio.run(view.on_target_selected(interaction))
         self.assertEqual(view.translation_engine, "gemini_2_5_flash_lite")
-        self.assertFalse(view.engine_select.disabled)
+        self.assertTrue(view.engine_select.disabled)
 
     def test_translation_audit_record_decodes_provider_and_model_json(self) -> None:
         record = app_main._decode_translation_audit_record(
@@ -129,19 +129,10 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertIn(app_main.settings.local_llm_profile_models["gemini_2_5_flash_lite"], models)
 
-    def test_translation_profiles_expose_multiple_llms(self) -> None:
+    def test_translation_profile_options_expose_configured_profile_only(self) -> None:
         options = app_main.translation_profile_options()
-        values = {option["value"] for option in options}
-        self.assertNotIn("google_cloud", values)
-        self.assertIn("qwen3_4b_instruct", values)
-        self.assertIn("qwen3_8b", values)
-        self.assertIn("aya_expanse_8b", values)
-        self.assertIn("gemma3_12b", values)
-        self.assertIn("translategemma_12b", values)
-        qwen_option = next(option for option in options if option["value"] == "qwen3_8b")
-        self.assertEqual(qwen_option["label"], "Qwen 3 8B")
-        self.assertEqual(qwen_option["model"], "qwen3:8b")
-        self.assertEqual(app_main.translation_settings("qwen3_8b").provider_name, "openai_compatible")
+        self.assertEqual([option["value"] for option in options], [app_main.configured_translation_engine()])
+        self.assertTrue(options[0]["default"])
 
     def test_enrich_translation_metadata_adds_cost_fields(self) -> None:
         metadata = app_main.enrich_translation_metadata(
