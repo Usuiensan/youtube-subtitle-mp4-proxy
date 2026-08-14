@@ -315,12 +315,14 @@ Google の API キーが必要なのは、YouTube Data API v3 を使う `/prepar
 
 LLM 翻訳は字幕IDと原文だけを動画1本分まとめて1回のAPIリクエストへ送り、動画全体の文脈で翻訳します。応答はStructured Output / JSON Schemaで `{"subtitles":[{"id":1,"text":"..."}]}` に固定し、プログラム側で件数・ID集合・重複・空文字を検証します。タイムコードは送信せず、検証済みIDを元SRTへ再結合します。長すぎてcontextまたは出力上限を超えた場合は自動分割せず失敗します。Gemini などのクラウドLLMは `REMOTE_LLM_ENDPOINT` なしでもAPIキー設定だけで候補に表示します。
 
-翻訳エンジンは `Gemini Flash-Lite`、`GPT-5 nano`、`Groq GPT-OSS 20B`、既存のOpenAI互換Ollamaモデルを切り替えられます。Google Cloud Translation は使用しません。YouTube自動生成字幕・自動翻訳も使用しません。LLM経路では事前health check、再試行、字幕ごとのリクエスト、自動fallbackを行いません。
+翻訳エンジンは `TRANSLATION_DEFAULT_PROFILE` で1つに固定します。Google Cloud Translation は使用しません。YouTube自動生成字幕・自動翻訳も使用しません。LLM APIの503（一時的な混雑）は最大3回まで指数バックオフで再試行し、Discordの進捗に表示します。
 
 ```bash
 export TRANSLATION_ENABLED=1
 export TRANSLATION_SOURCE_LANGS=en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW
 export TRANSLATION_DEFAULT_PROFILE=gemini_2_5_flash_lite
+export TRANSLATION_API_RETRY_MAX_ATTEMPTS=3
+export TRANSLATION_API_RETRY_BASE_SECONDS=5
 export TRANSLATION_PROVIDER=gemini_2_5_flash_lite
 export REMOTE_LLM_ENDPOINT=http://192.168.68.115:11434/v1/chat/completions
 export REMOTE_LLM_HEALTH_URL=http://192.168.68.115:11434/v1/models

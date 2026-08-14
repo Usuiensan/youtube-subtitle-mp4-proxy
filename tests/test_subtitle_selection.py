@@ -67,6 +67,11 @@ def test_translation_engine_is_fixed_by_environment() -> None:
     assert "TRANSLATION_DEFAULT_PROFILE" in error.value.detail
 
 
+def test_translation_api_503_is_retryable_but_other_errors_are_not() -> None:
+    assert main.is_retryable_translation_api_503(RuntimeError("translation api http error 503: unavailable"))
+    assert not main.is_retryable_translation_api_503(RuntimeError("translation api http error 429: quota"))
+
+
 def test_subtitle_candidates_ignore_automatic_captions() -> None:
     info = {
         "subtitles": {"en": [{"ext": "vtt"}]},

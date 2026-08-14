@@ -65,6 +65,8 @@ class Settings:
     local_llm_profile_models = profile_models(os.getenv)
     local_llm_profile_labels = profile_labels(os.getenv)
     local_llm_timeout_seconds = int(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "300"))
+    translation_api_retry_max_attempts = max(1, int(os.getenv("TRANSLATION_API_RETRY_MAX_ATTEMPTS", "3")))
+    translation_api_retry_base_seconds = max(0.0, float(os.getenv("TRANSLATION_API_RETRY_BASE_SECONDS", "5")))
     remote_llm_endpoint = os.getenv("REMOTE_LLM_ENDPOINT", os.getenv("LOCAL_LLM_ENDPOINT", "")).strip()
     remote_llm_health_url = os.getenv("REMOTE_LLM_HEALTH_URL", "").strip()
     remote_llm_api_key = os.getenv("REMOTE_LLM_API_KEY", os.getenv("LOCAL_LLM_API_KEY", "")).strip()

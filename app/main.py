@@ -1947,6 +1947,10 @@ def is_non_retryable_gemini_quota_error(error: Exception) -> bool:
     return "gemini" in text and "429" in text and any(marker in text for marker in markers)
 
 
+def is_retryable_translation_api_503(error: Exception) -> bool:
+    return "translation api http error 503:" in str(error).lower()
+
+
 def gemini_fallback_settings() -> TranslationSettings:
     fallback_profile = normalize_translation_engine(settings.gemini_fallback_profile)
     if fallback_profile == "gemini_2_5_flash" or fallback_profile == "google_cloud":
@@ -2919,7 +2923,25 @@ async def translate_subtitle_if_needed(
         payload["llm_endpoint"] = selected_settings.provider_endpoint
         payload["llm_api_key"] = selected_settings.provider_api_key
         payload["llm_timeout_seconds"] = settings.local_llm_timeout_seconds
-        return await run_translation_worker(payload)
+        max_attempts = settings.translation_api_retry_max_attempts
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return await run_translation_worker(payload)
+            except RuntimeError as error:
+                if not is_retryable_translation_api_503(error) or attempt >= max_attempts:
+                    raise
+                retry_number = attempt
+                retry_total = max_attempts - 1
+                delay = settings.translation_api_retry_base_seconds * (2 ** (attempt - 1))
+                if job_id:
+                    update_job_progress(
+                        job_id,
+                        "translate",
+                        0.0,
+                        eta_seconds=int(delay),
+                        details=f"API再試行中… {retry_number}/{retry_total}（503、一時的な混雑）",
+                    )
+                await asyncio.sleep(delay)
 
     on_prog = None
     start_t = time.time()
