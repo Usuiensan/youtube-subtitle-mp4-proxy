@@ -462,6 +462,32 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         progress_message.edit.assert_awaited_once()
         interaction.channel.send.assert_not_awaited()
 
+    def test_notify_when_done_posts_failure_publicly_if_progress_edit_fails(self) -> None:
+        import asyncio
+
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=123),
+            channel=SimpleNamespace(send=AsyncMock()),
+            channel_id=None,
+            client=SimpleNamespace(fetch_channel=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+        progress_message = SimpleNamespace(edit=AsyncMock(side_effect=self.discord_not_found()))
+        latest = {
+            "status": "failed",
+            "video_id": "dQw4w9WgXcQ",
+            "error": "remote LLM translation failed: model not found",
+        }
+
+        with patch.object(bot_main, "fetch_job", new=AsyncMock(return_value=latest)), patch.object(
+            bot_main.asyncio, "sleep", new=AsyncMock()
+        ):
+            asyncio.run(bot_main.notify_when_done(interaction, "http://example.test/jobs/1", progress_message=progress_message))
+
+        interaction.channel.send.assert_awaited_once()
+        self.assertIn("model not found", interaction.channel.send.await_args.args[0])
+        interaction.followup.send.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()

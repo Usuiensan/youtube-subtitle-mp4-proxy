@@ -1119,9 +1119,9 @@ async def notify_when_done(
                 try:
                     await progress_message.edit(content=content, view=None)
                 except discord.HTTPException:
-                    await send_notification(content, public=latest.get("status") == "ready")
+                    await send_notification(content, public=latest.get("status") in {"ready", "failed"})
             else:
-                await send_notification(content, public=latest.get("status") == "ready")
+                await send_notification(content, public=latest.get("status") in {"ready", "failed"})
             return
         if latest:
             content = status_message(latest, interaction.user.id)
