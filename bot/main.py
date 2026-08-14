@@ -935,7 +935,7 @@ class SubtitleChoiceView(discord.ui.View):
             child.disabled = True
         if interaction.message is not None:
             try:
-                await interaction.message.delete()
+                await interaction.message.edit(view=self)
             except discord.HTTPException:
                 pass
         try:
