@@ -110,6 +110,24 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertIn("課金区分: API利用なし", text)
         self.assertNotIn("Google Cloud", text)
 
+    def test_legacy_skipped_metadata_does_not_show_google_cloud(self) -> None:
+        text = bot_main.translation_usage_text(
+            {
+                "translation_engine": "google_cloud",
+                "translation_skipped": True,
+                "translation_provider_label": "Google Cloud Translation",
+                "translation_billing_class": "Cloud Translation Basic NMT",
+                "translation_characters": 7,
+                "translation_usage_estimate_usd": 0.0001,
+                "translation_usage_estimate_jpy": 0.02,
+            }
+        )
+
+        self.assertIn("翻訳エンジン: 出元字幕（翻訳なし）", text)
+        self.assertIn("課金区分: API利用なし", text)
+        self.assertNotIn("Google Cloud", text)
+        self.assertNotIn("通常単価換算", text)
+
     def test_ready_status_includes_clickable_and_code_block_urls(self) -> None:
         text = bot_main.status_message(
             {

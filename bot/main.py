@@ -735,8 +735,8 @@ def translation_usage_text(meta: Any) -> str:
     translation_skipped = bool(meta.get("translation_skipped"))
     if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gpt_5_nano", "groq_gpt_oss_20b"} and not translation_skipped:
         return ""
-    provider_label = str(meta.get("translation_provider_label") or ("出元字幕（翻訳なし）" if translation_skipped else "Gemini Flash"))
-    billing_class = str(meta.get("translation_billing_class") or "Gemini API Free Tier")
+    provider_label = "出元字幕（翻訳なし）" if translation_skipped else str(meta.get("translation_provider_label") or "Gemini Flash")
+    billing_class = "API利用なし" if translation_skipped else str(meta.get("translation_billing_class") or "Gemini API Free Tier")
     characters = int(meta.get("translation_characters") or 0)
     input_tokens = int(meta.get("translation_input_tokens") or 0)
     output_tokens = int(meta.get("translation_output_tokens") or 0)
@@ -744,8 +744,6 @@ def translation_usage_text(meta: Any) -> str:
     api_cost_usd = float(meta.get("translation_api_cost_usd") or 0.0)
     overage_usd = float(meta.get("translation_overage_estimate_usd") or 0.0)
     overage_jpy = float(meta.get("translation_overage_estimate_jpy") or 0.0)
-    usage_usd = float(meta.get("translation_usage_estimate_usd") or 0.0)
-    usage_jpy = float(meta.get("translation_usage_estimate_jpy") or 0.0)
     free_chars = int(meta.get("translation_free_chars_per_month") or 0)
     overage_chars = int(meta.get("translation_billable_overage_characters") or 0)
     lines = [
@@ -766,11 +764,6 @@ def translation_usage_text(meta: Any) -> str:
     ])
     if free_chars:
         lines.append(f"月間無料枠: {free_chars:,}文字")
-    if translation_skipped and (usage_usd or usage_jpy):
-        unit_usd = (usage_usd / characters * 1_000_000) if characters else 0.0
-        lines.append(f"通常単価換算: ${usage_usd:,.4f} / ¥{usage_jpy:,.2f}")
-        if unit_usd:
-            lines.append(f"計算根拠: {characters:,}文字 × ${unit_usd:,.2f}/100万文字")
     if overage_chars:
         lines.append(f"無料枠超過文字数: {overage_chars:,}文字")
     if input_tokens or output_tokens:
