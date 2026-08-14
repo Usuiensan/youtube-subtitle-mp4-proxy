@@ -1960,6 +1960,10 @@ def is_retryable_translation_api_503(error: Exception) -> bool:
     return "translation api http error 503:" in str(error).lower()
 
 
+def is_subtitle_count_mismatch(error: Exception) -> bool:
+    return str(error).startswith("subtitle count mismatch:")
+
+
 def gemini_fallback_settings() -> TranslationSettings:
     fallback_profile = normalize_translation_engine(settings.gemini_fallback_profile)
     if fallback_profile == "gemini_2_5_flash" or fallback_profile == "google_cloud":
@@ -2886,11 +2890,24 @@ async def translate_subtitle_if_needed(
     translated_path = work_dir / f"{subtitle.stem}.ja.translated.srt"
     selected_settings = translation_settings(configured_translation_engine())
 
-    async def worker(payload: dict) -> dict:
+    attempt_plan = [(selected_settings, "")]
+    if selected_settings.provider_name == "gemini_api":
+        attempt_plan.append((selected_settings, "high"))
+        full_flash_settings = translation_settings("gemini_2_5_flash")
+        if full_flash_settings.model_name != selected_settings.model_name:
+            attempt_plan.append((full_flash_settings, ""))
+
+    async def worker(payload: dict, attempt_settings: TranslationSettings, thinking_level: str) -> dict:
         payload["_work_dir"] = str(work_dir)
-        payload["llm_endpoint"] = selected_settings.provider_endpoint
-        payload["llm_api_key"] = selected_settings.provider_api_key
+        payload["model_name"] = attempt_settings.model_name
+        payload["translation_profile"] = attempt_settings.engine
+        payload["llm_endpoint"] = attempt_settings.provider_endpoint
+        payload["llm_api_key"] = attempt_settings.provider_api_key
         payload["llm_timeout_seconds"] = settings.local_llm_timeout_seconds
+        if thinking_level:
+            payload["gemini_thinking_level"] = thinking_level
+        else:
+            payload.pop("gemini_thinking_level", None)
         max_attempts = settings.translation_api_retry_max_attempts
         for attempt in range(1, max_attempts + 1):
             try:
@@ -2948,17 +2965,33 @@ async def translate_subtitle_if_needed(
                 details = f"{details}\n{sample_text}"
             update_job_progress(job_id, "translate", pct, eta_seconds=remaining, details=details)
 
-    result = await translate_srt_with_local_worker(
-        subtitle_path=subtitle,
-        output_path=translated_path,
-        video_title=str(info.get("title") or ""),
-        channel_name=extract_channel_name(info),
-        source_language=selection["source_language"],
-        target_language=selection["requested_language"],
-        settings=selected_settings,
-        run_worker=worker,
-        on_progress=on_prog,
-    )
+    result = None
+    for attempt_index, (attempt_settings, thinking_level) in enumerate(attempt_plan):
+        try:
+            result = await translate_srt_with_local_worker(
+                subtitle_path=subtitle,
+                output_path=translated_path,
+                video_title=str(info.get("title") or ""),
+                channel_name=extract_channel_name(info),
+                source_language=selection["source_language"],
+                target_language=selection["requested_language"],
+                settings=attempt_settings,
+                run_worker=lambda payload, current=attempt_settings, level=thinking_level: worker(payload, current, level),
+                on_progress=on_prog,
+            )
+            selected_settings = attempt_settings
+            break
+        except TranslationError as error:
+            if not is_subtitle_count_mismatch(error) or attempt_index + 1 >= len(attempt_plan):
+                raise
+            next_settings, next_thinking_level = attempt_plan[attempt_index + 1]
+            if job_id:
+                if next_thinking_level:
+                    details = "字幕件数不一致のため、推論レベルを上げて再試行します…"
+                else:
+                    details = f"字幕件数不一致のため、{next_settings.model_name}へ切り替えて再試行します…"
+                update_job_progress(job_id, "translate", 0.0, details=details)
+    assert result is not None
     end_t = time.time()
     try:
         subtitles = load_srt(translated_path)
@@ -2969,7 +3002,7 @@ async def translate_subtitle_if_needed(
     metadata = enrich_translation_metadata({**selection, **result.metadata})
     record_llm_translation_usage(
         settings.llm_translation_usage_file,
-        requested_engine,
+        selected_settings.engine,
         metadata.get("translation_input_tokens", 0),
         metadata.get("translation_output_tokens", 0),
         metadata.get("translation_total_tokens", 0),
@@ -7137,7 +7170,8 @@ def _list_cached_variants_for_video(request: Request, video_id: str) -> list[dic
 
 
 @app.get("/translation-audit")
-async def translation_audit_index() -> JSONResponse:
+async def translation_audit_index(request: Request) -> JSONResponse:
+    require_prepare_auth(request)
     items = []
     for path in _translation_audit_files():
         records = _read_jsonl_lines(path)
@@ -7177,7 +7211,8 @@ async def llm_translation_usage(engine: str | None = Query(None)) -> JSONRespons
 
 
 @app.get("/translation-audit/{name}")
-async def translation_audit_detail(name: str, limit: int = Query(200, ge=1, le=2000)) -> JSONResponse:
+async def translation_audit_detail(request: Request, name: str, limit: int = Query(200, ge=1, le=2000)) -> JSONResponse:
+    require_prepare_auth(request)
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
         raise HTTPException(status_code=400, detail="Invalid audit file name")
     path = settings.translation_audit_dir / name

@@ -107,6 +107,38 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertEqual(settings.model_name, app_main.settings.local_llm_profile_models["gemini_2_5_flash"])
         self.assertEqual(settings.provider_name, "gemini_api")
 
+    def test_gemini_thinking_level_is_added_to_generation_config(self) -> None:
+        requests: list[dict] = []
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"candidates":[{"content":{"parts":[{"text":"{\\"subtitles\\":[{\\"id\\":1,\\"text\\":\\"Hi\\"}]}"}]}}],"usageMetadata":{}}'
+
+        def urlopen(request, timeout):
+            requests.append(json.loads(request.data.decode("utf-8")))
+            return Response()
+
+        with patch.object(translation_worker.urllib.request, "urlopen", urlopen):
+            translation_worker.translate_batch_gemini(
+                {
+                    "llm_endpoint": "https://example.invalid/generateContent",
+                    "llm_api_key": "test-key",
+                    "model_name": "gemini-3.1-flash-lite",
+                    "source_language": "en",
+                    "target_language": "ja",
+                    "subtitles": [{"id": 1, "text": "Hi"}],
+                    "gemini_thinking_level": "high",
+                }
+            )
+
+        self.assertEqual(requests[0]["generationConfig"]["thinkingConfig"], {"thinkingLevel": "high"})
+
     def test_gemini_availability_does_not_require_remote_llm_endpoint(self) -> None:
         with patch.object(app_main.settings, "remote_llm_endpoint", ""), patch.object(
             app_main.settings, "gemini_api_key", "test-key"

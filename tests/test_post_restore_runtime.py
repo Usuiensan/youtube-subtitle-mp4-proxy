@@ -76,6 +76,11 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         response = TestClient(app_main.app).post("/prepare/youtube/dQw4w9WgXcQ/ja?mode=mp4")
         self.assertIn(response.status_code, {401, 403, 503})
 
+    def test_translation_audit_requires_prepare_token(self) -> None:
+        with patch.object(app_main.settings, "discord_prepare_token", "token"):
+            response = TestClient(app_main.app).get("/translation-audit")
+        self.assertEqual(response.status_code, 401)
+
     def test_prepared_srt_download_does_not_require_prepare_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             original_hot_dir = app_main.settings.cache_hot_dir

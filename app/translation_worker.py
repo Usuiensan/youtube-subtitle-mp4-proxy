@@ -219,6 +219,9 @@ def translate_batch_gemini(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
             "responseSchema": gemini_schema,
         },
     }
+    thinking_level = str(payload.get("gemini_thinking_level") or "").strip().lower()
+    if thinking_level in {"minimal", "low", "medium", "high"}:
+        body["generationConfig"]["thinkingConfig"] = {"thinkingLevel": thinking_level}
     data = _request_json(
         url,
         body,
