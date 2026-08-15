@@ -11,7 +11,7 @@ try {
     & git -C $repo archive --format=tar --output=$tarArchive HEAD -- ':(exclude).env'
     if ($LASTEXITCODE -ne 0) { throw "git archiveに失敗しました (exit=$LASTEXITCODE)" }
     New-Item -ItemType Directory -Path $emptyDir -Force | Out-Null
-    & tar.exe -rf $tarArchive --no-recursion --mode=755 -C $emptyDir .
+    & tar.exe -rf $tarArchive --no-recursion -C $emptyDir .
     if ($LASTEXITCODE -ne 0) { throw "tarへのrootディレクトリ追加に失敗しました (exit=$LASTEXITCODE)" }
     $source = [System.IO.File]::OpenRead($tarArchive)
     $target = [System.IO.File]::Create($archive)
