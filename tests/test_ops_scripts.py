@@ -23,3 +23,11 @@ def test_root_wrappers_have_fixed_local_endpoints_and_services() -> None:
     assert '. "$SECRETS_FILE"' not in config
     assert 'TRANSLATION_AUDIT_API_TOKEN"' in audit
     assert 'TRANSLATION_CONFIG_API_TOKEN"' in config
+
+
+def test_update_script_excludes_local_env_and_checks_native_commands() -> None:
+    text = (ROOT / "youtube-subtitles-update.ps1").read_text(encoding="utf-8")
+    assert "archive --format=tar" in text
+    assert ":(exclude).env" in text
+    assert "scpに失敗しました" in text
+    assert "本番更新に失敗しました" in text
