@@ -1727,7 +1727,7 @@ def remote_llm_health_url() -> str:
 def configured_cloud_models() -> set[str]:
     models: set[str] = set()
     if settings.gemini_api_key:
-        for profile in ("gemini_2_5_flash", "gemini_2_5_flash_lite"):
+        for profile in ("gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash"):
             model = settings.local_llm_profile_models.get(profile)
             if model:
                 models.add(model)
@@ -1913,11 +1913,11 @@ def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
     provider_name = "openai_compatible"
     provider_endpoint = ""
     provider_api_key = ""
-    if normalized in settings.local_llm_profile_models and normalized not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gpt_5_nano", "groq_gpt_oss_20b"}:
+    if normalized in settings.local_llm_profile_models and normalized not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash", "gpt_5_nano", "groq_gpt_oss_20b"}:
         provider_name = "openai_compatible"
         provider_endpoint = settings.remote_llm_endpoint
         provider_api_key = settings.remote_llm_api_key
-    if normalized in {"gemini_2_5_flash", "gemini_2_5_flash_lite"}:
+    if normalized in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash"}:
         provider_name = "gemini_api"
         provider_endpoint = settings.gemini_api_endpoint
         provider_api_key = settings.gemini_api_key
@@ -2004,6 +2004,23 @@ def translation_retry_fallback_settings(selected: TranslationSettings) -> Transl
 
 def next_gemini_thinking_level(level: str) -> str | None:
     return {"minimal": "low", "low": "medium", "medium": "high"}.get(level)
+
+
+def translation_attempt_plan(selected: TranslationSettings) -> list[tuple[TranslationSettings, str]]:
+    plan: list[tuple[TranslationSettings, str]] = [(selected, "")]
+    if selected.provider_name == "gemini_api" and selected.model_name.startswith("gemini-3"):
+        level = os.getenv("GEMINI_THINKING_LEVEL", "medium").strip().lower()
+        level = level if level in {"minimal", "low", "medium", "high"} else "medium"
+        plan = [(selected, level)]
+        if next_level := next_gemini_thinking_level(level):
+            plan.append((selected, next_level))
+    if selected.engine == "gemini_2_5_flash_lite":
+        fallback = translation_settings("gemini_3_5_flash")
+        if translation_settings_is_configured(fallback):
+            plan.append((fallback, "high"))
+    elif fallback := translation_retry_fallback_settings(selected):
+        plan.append((fallback, ""))
+    return plan
 
 
 def chat_profile_options() -> list[dict]:
@@ -2925,18 +2942,7 @@ async def translate_subtitle_if_needed(
     translated_path = work_dir / f"{subtitle.stem}.ja.translated.srt"
     selected_settings = translation_settings(configured_translation_engine())
 
-    attempt_plan: list[tuple[TranslationSettings, str]] = [(selected_settings, "")]
-    if selected_settings.provider_name == "gemini_api" and selected_settings.model_name.startswith("gemini-3"):
-        default_thinking_level = os.getenv("GEMINI_THINKING_LEVEL", "medium").strip().lower()
-        if default_thinking_level not in {"minimal", "low", "medium", "high"}:
-            default_thinking_level = "medium"
-        attempt_plan = [(selected_settings, default_thinking_level)]
-        next_level = next_gemini_thinking_level(default_thinking_level)
-        if next_level:
-            attempt_plan.append((selected_settings, next_level))
-    fallback_settings = translation_retry_fallback_settings(selected_settings)
-    if fallback_settings is not None:
-        attempt_plan.append((fallback_settings, ""))
+    attempt_plan = translation_attempt_plan(selected_settings)
 
     async def worker(payload: dict, attempt_settings: TranslationSettings, thinking_level: str) -> dict:
         payload["_work_dir"] = str(work_dir)
@@ -3028,10 +3034,10 @@ async def translate_subtitle_if_needed(
                 raise
             next_settings, next_thinking_level = attempt_plan[attempt_index + 1]
             if job_id:
-                if next_thinking_level:
+                if next_settings.engine == attempt_settings.engine and next_thinking_level:
                     details = "翻訳結果異常のため、推論レベルを上げて再試行します…"
                 else:
-                    details = f"翻訳結果異常のため、{next_settings.model_name}へ切り替えて再試行します…"
+                    details = f"翻訳結果異常のため、{next_settings.model_name}（推論レベル {next_thinking_level or '既定'}）へ切り替えて再試行します…"
                 update_job_progress(job_id, "translate", 0.0, details=details)
     assert result is not None
     end_t = time.time()

@@ -39,6 +39,7 @@ def test_gemini_lite_profile_is_fixed_to_31(monkeypatch) -> None:
     monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
     assert profile_models(os.getenv)["gemini_2_5_flash_lite"] == "gemini-3.1-flash-lite"
+    assert profile_models(os.getenv)["gemini_3_5_flash"] == "gemini-3.5-flash"
 
 
 def test_load_env_file_does_not_override_existing_environment(tmp_path, monkeypatch) -> None:

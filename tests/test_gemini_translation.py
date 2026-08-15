@@ -125,6 +125,27 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertEqual(settings.model_name, app_main.settings.local_llm_profile_models["gemini_2_5_flash"])
         self.assertEqual(settings.provider_name, "gemini_api")
 
+        settings = app_main.translation_settings("gemini_3_5_flash")
+        self.assertEqual(settings.model_name, "gemini-3.5-flash")
+        self.assertEqual(settings.provider_name, "gemini_api")
+
+    def test_gemini_lite_attempts_35_flash_at_high(self) -> None:
+        with patch.dict("os.environ", {"GEMINI_THINKING_LEVEL": "medium"}), patch.object(
+            app_main.settings, "gemini_api_key", "test-key"
+        ):
+            plan = app_main.translation_attempt_plan(
+                app_main.translation_settings("gemini_2_5_flash_lite")
+            )
+
+        self.assertEqual(
+            [(setting.model_name, level) for setting, level in plan],
+            [
+                ("gemini-3.1-flash-lite", "medium"),
+                ("gemini-3.1-flash-lite", "high"),
+                ("gemini-3.5-flash", "high"),
+            ],
+        )
+
     def test_translation_retry_skips_client_http_errors(self) -> None:
         self.assertFalse(app_main.is_retryable_translation_failure(RuntimeError("translation api http error 404: missing")))
         self.assertFalse(app_main.is_retryable_translation_failure(RuntimeError("translation api http error 400: bad request")))
@@ -185,6 +206,7 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertTrue(available)
         self.assertIsNone(error)
         self.assertIn(app_main.settings.local_llm_profile_models["gemini_2_5_flash_lite"], models)
+        self.assertIn(app_main.settings.local_llm_profile_models["gemini_3_5_flash"], models)
 
     def test_translation_profile_options_expose_configured_profile_only(self) -> None:
         options = app_main.translation_profile_options()
