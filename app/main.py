@@ -1740,6 +1740,57 @@ def configured_cloud_models() -> set[str]:
     return models
 
 
+def gemini_models_url() -> str:
+    endpoint = settings.gemini_api_endpoint or (
+        "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    )
+    parsed = urllib.parse.urlparse(endpoint)
+    marker = "/models/"
+    if marker in parsed.path:
+        base_path = parsed.path.split(marker, 1)[0]
+    else:
+        base_path = parsed.path.rstrip("/")
+    return urllib.parse.urlunparse(
+        (parsed.scheme, parsed.netloc, f"{base_path}/models", "", "", "")
+    )
+
+
+def gemini_model_catalog() -> list[dict[str, object]]:
+    if not settings.gemini_api_key:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+    request = urllib.request.Request(
+        gemini_models_url(),
+        headers={"Accept": "application/json", "x-goog-api-key": settings.gemini_api_key},
+        method="GET",
+    )
+    with urllib.request.urlopen(request, timeout=settings.remote_llm_health_timeout_seconds) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    items = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    catalog = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("baseModelId") or item.get("name") or "").removeprefix("models/")
+        actions = item.get("supportedGenerationMethods") or item.get("supportedActions") or []
+        if not model_id.startswith("gemini-") or "generateContent" not in actions:
+            continue
+        catalog.append(
+            {
+                "model": model_id,
+                "name": item.get("displayName") or model_id,
+                "description": item.get("description") or "",
+                "input_token_limit": int(item.get("inputTokenLimit") or 0),
+                "output_token_limit": int(item.get("outputTokenLimit") or 0),
+                "supported_actions": actions,
+                "configured": model_id in configured_cloud_models(),
+            }
+        )
+    catalog.sort(key=lambda item: str(item["model"]))
+    return catalog
+
+
 async def remote_llm_status() -> tuple[bool, str | None, set[str]]:
     cloud_models = configured_cloud_models()
     if not settings.remote_llm_endpoint:
@@ -7266,6 +7317,19 @@ def config_response(*, restart_required: bool) -> JSONResponse:
 async def ops_config_get(request: Request) -> JSONResponse:
     require_translation_config_auth(request)
     return config_response(restart_required=False)
+
+
+@app.get("/ops/gemini-models")
+async def ops_gemini_models(request: Request) -> JSONResponse:
+    require_translation_config_auth(request)
+    try:
+        models = await asyncio.to_thread(gemini_model_catalog)
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise HTTPException(status_code=502, detail=f"Gemini models.list failed: HTTP {error.code}: {detail}") from error
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"Gemini models.list failed: {error}") from error
+    return JSONResponse({"models": models, "source": "Gemini API models.list"})
 
 
 @app.put("/ops/config")

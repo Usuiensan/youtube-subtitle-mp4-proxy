@@ -226,6 +226,44 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertIn(app_main.settings.local_llm_profile_models["gemini_2_5_flash_lite"], models)
         self.assertIn(app_main.settings.local_llm_profile_models["gemini_3_5_flash"], models)
 
+    def test_gemini_model_catalog_filters_to_generate_content_models(self) -> None:
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "models": [
+                            {
+                                "name": "models/gemini-3.5-flash-lite",
+                                "displayName": "Gemini 3.5 Flash-Lite",
+                                "inputTokenLimit": 1_048_576,
+                                "outputTokenLimit": 65_536,
+                                "supportedGenerationMethods": ["generateContent"],
+                            },
+                            {
+                                "name": "models/gemini-embedding-2",
+                                "supportedGenerationMethods": ["embedContent"],
+                            },
+                        ]
+                    }
+                ).encode()
+
+        with patch.object(app_main.settings, "gemini_api_key", "test-key"), patch(
+            "app.main.urllib.request.urlopen", return_value=Response()
+        ) as urlopen:
+            models = app_main.gemini_model_catalog()
+
+        self.assertEqual([model["model"] for model in models], ["gemini-3.5-flash-lite"])
+        self.assertEqual(models[0]["input_token_limit"], 1_048_576)
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://generativelanguage.googleapis.com/v1beta/models")
+        self.assertEqual(request.get_header("X-goog-api-key"), "test-key")
+
     def test_translation_profile_options_expose_configured_profile_only(self) -> None:
         options = app_main.translation_profile_options()
         self.assertEqual([option["value"] for option in options], [app_main.configured_translation_engine()])
