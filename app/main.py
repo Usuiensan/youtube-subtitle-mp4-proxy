@@ -2885,7 +2885,7 @@ async def run_ffmpeg_with_progress(args: list[str], job_id: str, duration_second
     )
     
     parser = FfmpegProgressParser(duration_seconds)
-    stderr_chunks: list[str] = []
+    stderr_tail = bytearray()
     
     async def read_stdout():
         while True:
@@ -2914,10 +2914,12 @@ async def run_ffmpeg_with_progress(args: list[str], job_id: str, duration_second
             
     async def read_stderr():
         while True:
-            line = await process.stderr.readline()
-            if not line:
+            chunk = await process.stderr.read(65536)
+            if not chunk:
                 break
-            stderr_chunks.append(line.decode("utf-8", errors="replace"))
+            stderr_tail.extend(chunk)
+            if len(stderr_tail) > 65536:
+                del stderr_tail[:-65536]
             
     try:
         await asyncio.wait_for(
@@ -2931,7 +2933,7 @@ async def run_ffmpeg_with_progress(args: list[str], job_id: str, duration_second
         raise HTTPException(status_code=504, detail="ffmpeg timed out")
         
     if process.returncode != 0:
-        stderr_text = "".join(stderr_chunks).strip()
+        stderr_text = bytes(stderr_tail).decode("utf-8", errors="replace").strip()
         message = f"ffmpeg failed with exit status {process.returncode}"
         if stderr_text:
             message = f"{message}\n{stderr_text}"
