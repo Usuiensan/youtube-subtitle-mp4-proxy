@@ -35,11 +35,13 @@ from fastapi.responses import (
 from app.translation import (
     TranslationError,
     TranslationSettings,
+    build_worker_payload,
     load_srt,
     normalize_subtitle_text,
     save_srt,
     translate_srt_with_local_worker,
 )
+from app.translation_worker import estimate_translation_input_tokens
 from app.metrics import MetricsManager
 from app.ops_config import (
     ConfigValidationError,
@@ -2006,7 +2008,21 @@ def next_gemini_thinking_level(level: str) -> str | None:
     return {"minimal": "low", "low": "medium", "medium": "high"}.get(level)
 
 
-def translation_attempt_plan(selected: TranslationSettings) -> list[tuple[TranslationSettings, str]]:
+LONG_TRANSLATION_INPUT_TOKEN_THRESHOLD = 8000
+
+
+def translation_attempt_plan(
+    selected: TranslationSettings,
+    input_token_estimate: int = 0,
+) -> list[tuple[TranslationSettings, str]]:
+    if selected.provider_name == "gemini_api" and input_token_estimate >= LONG_TRANSLATION_INPUT_TOKEN_THRESHOLD:
+        # ponytail: fixed threshold; tune from audit data if the model mix changes.
+        fallback = translation_settings("gemini_3_5_flash")
+        if translation_settings_is_configured(fallback):
+            return [(fallback, "high")]
+        if selected.model_name.startswith("gemini-3"):
+            return [(selected, "high")]
+
     plan: list[tuple[TranslationSettings, str]] = [(selected, "")]
     if selected.provider_name == "gemini_api" and selected.model_name.startswith("gemini-3"):
         level = os.getenv("GEMINI_THINKING_LEVEL", "medium").strip().lower()
@@ -2941,8 +2957,22 @@ async def translate_subtitle_if_needed(
 
     translated_path = work_dir / f"{subtitle.stem}.ja.translated.srt"
     selected_settings = translation_settings(configured_translation_engine())
-
-    attempt_plan = translation_attempt_plan(selected_settings)
+    video_title = str(info.get("title") or "")
+    channel_name = extract_channel_name(info)
+    source_subtitles = load_srt(subtitle)
+    estimate_payload = build_worker_payload(
+        video_title=video_title,
+        channel_name=channel_name,
+        source_language=selection["source_language"],
+        target_language=selection["requested_language"],
+        all_subtitles=source_subtitles,
+        settings=selected_settings,
+        video_id=str(info.get("id") or ""),
+    )
+    attempt_plan = translation_attempt_plan(
+        selected_settings,
+        estimate_translation_input_tokens(estimate_payload),
+    )
 
     async def worker(payload: dict, attempt_settings: TranslationSettings, thinking_level: str) -> dict:
         payload["_work_dir"] = str(work_dir)
@@ -3018,8 +3048,8 @@ async def translate_subtitle_if_needed(
             result = await translate_srt_with_local_worker(
                 subtitle_path=subtitle,
                 output_path=translated_path,
-                video_title=str(info.get("title") or ""),
-                channel_name=extract_channel_name(info),
+                video_title=video_title,
+                channel_name=channel_name,
                 source_language=selection["source_language"],
                 target_language=selection["requested_language"],
                 settings=attempt_settings,

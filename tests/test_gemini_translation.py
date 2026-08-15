@@ -146,6 +146,23 @@ class GeminiTranslationTests(unittest.TestCase):
             ],
         )
 
+    def test_long_gemini_input_starts_with_35_flash_high_once(self) -> None:
+        with patch.object(app_main.settings, "gemini_api_key", "test-key"):
+            plan = app_main.translation_attempt_plan(
+                app_main.translation_settings("gemini_2_5_flash_lite"),
+                input_token_estimate=8000,
+            )
+
+        self.assertEqual([(setting.model_name, level) for setting, level in plan], [("gemini-3.5-flash", "high")])
+
+    def test_high_thinking_reserves_output_budget(self) -> None:
+        budget = translation_worker._output_token_budget(
+            "x" * 24000,
+            {"subtitles": [{"id": 1, "text": "x"}], "gemini_thinking_level": "high"},
+        )
+
+        self.assertEqual(budget, 32000)
+
     def test_translation_retry_skips_client_http_errors(self) -> None:
         self.assertFalse(app_main.is_retryable_translation_failure(RuntimeError("translation api http error 404: missing")))
         self.assertFalse(app_main.is_retryable_translation_failure(RuntimeError("translation api http error 400: bad request")))

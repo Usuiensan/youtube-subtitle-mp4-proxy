@@ -112,11 +112,18 @@ def _usage_gemini(data: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def estimate_translation_input_tokens(payload: dict[str, Any]) -> int:
+    prompt = build_full_translation_prompt(payload)
+    return max(1, math.ceil(len(prompt.encode("utf-8")) / 3))
+
+
 def _output_token_budget(prompt: str, payload: dict[str, Any]) -> int:
     configured = max(1, int(os.getenv("LOCAL_LLM_MAX_OUTPUT_TOKENS", "65536")))
     input_estimate = max(1, math.ceil(len(prompt.encode("utf-8")) / 3))
     subtitle_count = len(payload.get("subtitles") or [])
-    required = max(4096, input_estimate * 2, subtitle_count * 32)
+    thinking_level = str(payload.get("gemini_thinking_level") or "").strip().lower()
+    input_multiplier = 4 if thinking_level == "high" else 2
+    required = max(4096, input_estimate * input_multiplier, subtitle_count * 32)
     return min(configured, required)
 
 
@@ -292,7 +299,7 @@ def main() -> int:
             "subtitle_count": len(payload.get("subtitles") or []),
             "source_language": payload.get("source_language"),
             "target_language": payload.get("target_language"),
-            "input_token_estimate": max(1, math.ceil(len(prompt.encode("utf-8")) / 3)),
+            "input_token_estimate": estimate_translation_input_tokens(payload),
             "output_token_budget": _output_token_budget(prompt, payload),
         },
     )
