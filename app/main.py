@@ -5560,6 +5560,19 @@ async def index() -> str:
       padding: calc(12 / 16 * 1rem) calc(16 / 16 * 1rem);
       overflow-wrap: anywhere;
     }}
+    .audit-detail-dialog {{
+      width: min(1000px, calc(100vw - 48px));
+      max-height: calc(100vh - 48px);
+      border: 1px solid var(--color-gray-600);
+      padding: calc(16 / 16 * 1rem);
+    }}
+    .audit-detail-dialog::backdrop {{
+      background: rgb(0 0 0 / 45%);
+    }}
+    .audit-detail-dialog pre {{
+      max-height: 65vh;
+      overflow: auto;
+    }}
     .compare-video {{
       width: 100%;
       aspect-ratio: 16 / 9;
@@ -5909,9 +5922,14 @@ async def index() -> str:
       </div>
       <output id="auditMessage"></output>
       <div id="auditList" class="job-list"></div>
-      <h2>詳細</h2>
-      <output id="auditDetailTitle"></output>
-      <pre id="auditDetail" style="white-space: pre-wrap; overflow-wrap: anywhere;"></pre>
+      <dialog id="auditDetailDialog" class="audit-detail-dialog" aria-labelledby="auditDetailTitle">
+        <div class="actions">
+          <h2>詳細</h2>
+          <button type="button" id="auditDetailCloseButton" class="secondary">閉じる</button>
+        </div>
+        <output id="auditDetailTitle"></output>
+        <pre id="auditDetail" style="white-space: pre-wrap; overflow-wrap: anywhere;"></pre>
+      </dialog>
     </section>
     </section>
   </main>
@@ -6012,6 +6030,8 @@ async def index() -> str:
     const auditLimit = document.getElementById("auditLimit");
     const auditMessage = document.getElementById("auditMessage");
     const auditList = document.getElementById("auditList");
+    const auditDetailDialog = document.getElementById("auditDetailDialog");
+    const auditDetailCloseButton = document.getElementById("auditDetailCloseButton");
     const auditDetailTitle = document.getElementById("auditDetailTitle");
     const auditDetail = document.getElementById("auditDetail");
 
@@ -6726,6 +6746,7 @@ async def index() -> str:
             const detail = await apiFetch(`/translation-audit/${{encodeURIComponent(item.name)}}?limit=${{Number(auditLimit.value || 200)}}`);
             renderAuditDetail(detail.name, Array.isArray(detail.records) ? detail.records : []);
             auditMessage.textContent = `${{detail.count || 0}} records`;
+            auditDetailDialog.showModal();
           }} catch (error) {{
             auditMessage.textContent = `詳細取得エラー: ${{error.message}}`;
           }}
@@ -7043,6 +7064,7 @@ async def index() -> str:
     auditLimit.addEventListener("change", () => {{
       if (!auditPanel.hidden) loadAuditList();
     }});
+    auditDetailCloseButton.addEventListener("click", () => auditDetailDialog.close());
     renderTranslationOptions();
   </script>
 </body>
