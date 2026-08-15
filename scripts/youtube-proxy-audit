@@ -1,0 +1,46 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+SECRETS_FILE=/etc/youtube-mp4-proxy/secrets.env
+BASE_URL=http://127.0.0.1:8000/translation-audit
+[[ $(id -u) -eq 0 ]] || { echo 'root権限で実行してください' >&2; exit 1; }
+[[ -r "$SECRETS_FILE" ]] || { echo '監査設定が見つかりません' >&2; exit 1; }
+. "$SECRETS_FILE"
+AUDIT_TOKEN=${TRANSLATION_AUDIT_API_TOKEN:-}
+[[ -n "$AUDIT_TOKEN" ]] || { echo '監査設定が不完全です' >&2; exit 1; }
+
+OP=''
+NAME=''
+LIMIT=200
+VIDEO_ID=''
+MODEL=''
+PROVIDER=''
+while (($#)); do
+    case "$1" in
+        --list) [[ -z "$OP" ]] || { echo '操作が重複しています' >&2; exit 2; }; OP=list; shift;;
+        --detail-name) [[ $# -ge 2 && -z "$OP" ]] || { echo 'detail-name が不正です' >&2; exit 2; }; OP=detail; NAME=$2; shift 2;;
+        --limit) [[ $# -ge 2 && "$2" =~ ^[0-9]+$ && $2 -ge 1 && $2 -le 1000 ]] || { echo 'limit が不正です' >&2; exit 2; }; LIMIT=$2; shift 2;;
+        --video-id) [[ $# -ge 2 && "$2" =~ ^[A-Za-z0-9_-]{1,128}$ ]] || { echo 'video-id が不正です' >&2; exit 2; }; VIDEO_ID=$2; shift 2;;
+        --model) [[ $# -ge 2 && "$2" =~ ^[A-Za-z0-9_.:-]{1,128}$ ]] || { echo 'model が不正です' >&2; exit 2; }; MODEL=$2; shift 2;;
+        --provider) [[ $# -ge 2 && "$2" =~ ^[A-Za-z0-9_.:-]{1,128}$ ]] || { echo 'provider が不正です' >&2; exit 2; }; PROVIDER=$2; shift 2;;
+        *) echo '許可されていない引数です' >&2; exit 2;;
+    esac
+done
+[[ -n "$OP" ]] || OP=list
+[[ "$OP" != detail || "$NAME" =~ ^[A-Za-z0-9_.-]+\.jsonl$ ]] || { echo '監査ファイル名が不正です' >&2; exit 2; }
+[[ "$OP" == list || ( -z "$VIDEO_ID$MODEL$PROVIDER" ) ]] || { echo 'detail はフィルタを受け付けません' >&2; exit 2; }
+
+if [[ "$OP" == detail ]]; then
+    endpoint="$BASE_URL/$NAME"
+    curl --fail --silent --show-error --config - "$endpoint" <<EOF
+header = "X-Translation-Audit-Token: $AUDIT_TOKEN"
+EOF
+else
+    curl_args=(--get --data-urlencode "limit=$LIMIT")
+    [[ -n "$VIDEO_ID" ]] && curl_args+=(--data-urlencode "video_id=$VIDEO_ID")
+    [[ -n "$MODEL" ]] && curl_args+=(--data-urlencode "model=$MODEL")
+    [[ -n "$PROVIDER" ]] && curl_args+=(--data-urlencode "provider=$PROVIDER")
+    curl --fail --silent --show-error --config - "${curl_args[@]}" "$BASE_URL" <<EOF
+header = "X-Translation-Audit-Token: $AUDIT_TOKEN"
+EOF
+fi

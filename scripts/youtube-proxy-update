@@ -2,27 +2,39 @@
 set -Eeuo pipefail
 
 APP_DIR="/opt/youtube-mp4-proxy"
-APP_USER="youtubeproxy"
 PROXY_SERVICE="youtube-mp4-proxy"
 DISCORD_SERVICE="youtube-mp4-discord-bot"
+INCOMING_DIR="/var/lib/youtube-proxy/incoming"
 ARCHIVE=""
 
-usage() { echo "Usage: $0 --archive /tmp/release.tar.gz"; exit 2; }
+usage() { echo "Usage: $0 --archive /tmp/youtube-proxy-<git-sha>.tar.gz"; exit 2; }
 while (($#)); do
     case "$1" in
         --archive) [[ $# -ge 2 ]] || usage; ARCHIVE="$2"; shift 2;;
         *) usage;;
     esac
 done
-[[ -n "$ARCHIVE" && -f "$ARCHIVE" ]] || { echo "アーカイブが見つかりません: $ARCHIVE"; exit 1; }
+[[ "$ARCHIVE" =~ ^/tmp/youtube-proxy-[0-9a-f]{40}\.tar\.gz$ ]] || { echo "アーカイブパスが不正です"; exit 1; }
+[[ -f "$ARCHIVE" && ! -L "$ARCHIVE" ]] || { echo "アーカイブが見つかりません"; exit 1; }
 [[ $(id -u) -eq 0 ]] || { echo "root権限で実行してください"; exit 1; }
 [[ -x "$APP_DIR/.venv/bin/python" ]] || { echo "Python仮想環境が見つかりません"; exit 1; }
 
 TS=$(date +%Y%m%d-%H%M%S)
-STAGE="/tmp/youtube-proxy-release-$TS"
+STAGE=$(mktemp -d "/tmp/youtube-proxy-release-$TS.XXXXXX")
 BACKUP="$APP_DIR.rollback-$TS"
-mkdir -p "$STAGE"
-tar -xzf "$ARCHIVE" -C "$STAGE"
+SAFE_ARCHIVE="$INCOMING_DIR/$(basename "$ARCHIVE")"
+mkdir -p "$INCOMING_DIR"
+chmod 700 "$INCOMING_DIR"
+install -o root -g root -m 600 "$ARCHIVE" "$SAFE_ARCHIVE"
+rm -f -- "$ARCHIVE"
+while IFS= read -r entry; do
+    [[ "$entry" != /* && "$entry" != ../* && "$entry" != */../* && "$entry" != *$'\n'* ]] || { echo "アーカイブ内パスが不正です"; exit 1; }
+done < <(tar -tzf "$SAFE_ARCHIVE")
+tar -xzf "$SAFE_ARCHIVE" --no-same-owner --no-same-permissions -C "$STAGE"
+if find "$STAGE" -type l -print -quit | grep -q .; then
+    echo "アーカイブ内のシンボリックリンクは禁止です"
+    exit 1
+fi
 "$APP_DIR/.venv/bin/python" -m compileall -q "$STAGE/app" "$STAGE/bot"
 grep -q 'silent=True' "$STAGE/bot/main.py"
 
@@ -35,7 +47,7 @@ rsync -a --delete \
     --exclude='data/' \
     "$APP_DIR/" "$BACKUP/"
 systemctl stop "$DISCORD_SERVICE" "$PROXY_SERVICE"
-rsync -a --delete --exclude='.venv/' --exclude='.env*' --exclude='.pytest_cache/' --exclude='cache/' --exclude='data/' "$STAGE/" "$APP_DIR/"
+rsync -a --delete --exclude='.venv/' --exclude='.env*' --exclude='.pytest_cache/' --exclude='cache/' --exclude='data/' --exclude='.translation-audit/' --exclude='.translation-attempts/' "$STAGE/" "$APP_DIR/"
 systemctl start "$PROXY_SERVICE"
 systemctl start "$DISCORD_SERVICE"
 sleep 5

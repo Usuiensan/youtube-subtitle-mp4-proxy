@@ -41,6 +41,15 @@ from app.translation import (
     translate_srt_with_local_worker,
 )
 from app.metrics import MetricsManager
+from app.ops_config import (
+    ConfigValidationError,
+    allowed_values,
+    append_audit as append_config_audit,
+    config_file,
+    revision as config_revision,
+    validate_values,
+    write_values,
+)
 from app.google_translation_usage import summary as google_translation_usage_summary
 from app.llm_usage import record as record_llm_translation_usage, summary as llm_translation_usage_summary
 from app.cache_layout import CacheLayout
@@ -7115,14 +7124,63 @@ def _translation_audit_files() -> list[Path]:
 def require_translation_audit_auth(request: Request) -> None:
     configured = settings.translation_audit_api_token
     supplied = request.headers.get("x-translation-audit-token", "")
-    if configured:
-        if supplied and secrets.compare_digest(supplied, configured):
-            return
-        if supplied or not request.headers.get("authorization"):
-            raise HTTPException(status_code=401, detail="Invalid translation audit token")
-        require_prepare_auth(request)
-        return
-    require_prepare_auth(request)
+    authorization = request.headers.get("authorization", "")
+    if not supplied and authorization.lower().startswith("bearer "):
+        supplied = authorization[7:].strip()
+    if not configured or not supplied or not secrets.compare_digest(supplied, configured):
+        raise HTTPException(status_code=401, detail="Invalid translation audit token")
+
+
+def require_translation_config_auth(request: Request) -> None:
+    configured = settings.translation_config_api_token
+    supplied = request.headers.get("x-translation-config-token", "")
+    authorization = request.headers.get("authorization", "")
+    if not supplied and authorization.lower().startswith("bearer "):
+        supplied = authorization[7:].strip()
+    if not configured or not supplied or not secrets.compare_digest(supplied, configured):
+        raise HTTPException(status_code=401, detail="Invalid translation config token")
+
+
+def config_response(*, restart_required: bool) -> JSONResponse:
+    digest = config_revision()
+    return JSONResponse(
+        {
+            "values": allowed_values(),
+            "revision": digest,
+            "hash": digest,
+            "restart_required": restart_required,
+        }
+    )
+
+
+@app.get("/ops/config")
+async def ops_config_get(request: Request) -> JSONResponse:
+    require_translation_config_auth(request)
+    return config_response(restart_required=False)
+
+
+@app.put("/ops/config")
+async def ops_config_put(request: Request) -> JSONResponse:
+    require_translation_config_auth(request)
+    payload = await request.json()
+    if not isinstance(payload, dict) or not isinstance(payload.get("expected_revision"), str):
+        raise HTTPException(status_code=400, detail="expected_revision is required")
+    try:
+        values = validate_values(payload.get("values"))
+    except ConfigValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    expected_revision = payload["expected_revision"]
+    try:
+        old_values, _ = write_values(values, expected_revision)
+    except RuntimeError as error:
+        current = str(error).rsplit(": ", 1)[-1]
+        raise HTTPException(status_code=409, detail={"message": "configuration revision conflict", "revision": current}) from error
+    except OSError as error:
+        raise HTTPException(status_code=500, detail="configuration write failed") from error
+    operator = request.headers.get("x-operator", "api")
+    for key, value in values.items():
+        append_config_audit(key, old_values.get(key), value, operator, "updated")
+    return config_response(restart_required=True)
 
 
 def translation_audit_file(name: str) -> Path:

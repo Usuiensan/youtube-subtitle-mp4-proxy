@@ -1,0 +1,57 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+SECRETS_FILE=/etc/youtube-mp4-proxy/secrets.env
+BASE_URL=http://127.0.0.1:8000/ops/config
+PROXY_SERVICE=youtube-mp4-proxy
+DISCORD_SERVICE=youtube-mp4-discord-bot
+[[ $(id -u) -eq 0 ]] || { echo 'root権限で実行してください' >&2; exit 1; }
+[[ -r "$SECRETS_FILE" ]] || { echo 'コンフィグ設定が見つかりません' >&2; exit 1; }
+. "$SECRETS_FILE"
+CONFIG_TOKEN=${TRANSLATION_CONFIG_API_TOKEN:-}
+[[ -n "$CONFIG_TOKEN" ]] || { echo 'コンフィグ設定が不完全です' >&2; exit 1; }
+
+curl_config() {
+    curl --fail --silent --show-error --config - "$@" <<EOF
+header = "X-Translation-Config-Token: $CONFIG_TOKEN"
+EOF
+}
+
+OP=''
+KEY=''
+VALUE=''
+REVISION=''
+while (($#)); do
+    case "$1" in
+        get|validate|restart|status) [[ -z "$OP" ]] || { echo '操作が重複しています' >&2; exit 2; }; OP=$1; shift;;
+        set) [[ -z "$OP" ]] || { echo '操作が重複しています' >&2; exit 2; }; OP=set; shift;;
+        --key) [[ $# -ge 2 ]] || { echo 'key が不正です' >&2; exit 2; }; KEY=$2; shift 2;;
+        --value) [[ $# -ge 2 ]] || { echo 'value が不正です' >&2; exit 2; }; VALUE=$2; shift 2;;
+        --expected-revision) [[ $# -ge 2 ]] || { echo 'revision が不正です' >&2; exit 2; }; REVISION=$2; shift 2;;
+        *) echo '許可されていない引数です' >&2; exit 2;;
+    esac
+done
+OP=${OP:-get}
+case "$OP" in
+    get) curl_config "$BASE_URL";;
+    validate) curl_config "$BASE_URL";;
+    set)
+        [[ "$KEY" =~ ^(LOCAL_LLM_MAX_OUTPUT_TOKENS|TRANSLATION_API_RETRY_MAX_ATTEMPTS|TRANSLATION_API_RETRY_BASE_SECONDS|GEMINI_THINKING_LEVEL|SYSTEM_METRICS_INTERVAL_SECONDS|SYSTEM_METRICS_HISTORY_SECONDS)$ ]] || { echo 'key がallowlist外です' >&2; exit 2; }
+        [[ "$VALUE" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo 'value が不正です' >&2; exit 2; }
+        [[ "$REVISION" =~ ^[0-9a-f]{64}$ ]] || { echo 'revision が不正です' >&2; exit 2; }
+        body="{\"expected_revision\":\"$REVISION\",\"values\":{\"$KEY\":\"$VALUE\"}}"
+        curl_config -X PUT -H 'Content-Type: application/json' --data-raw "$body" "$BASE_URL"
+        ;;
+    restart)
+        systemctl restart "$PROXY_SERVICE" "$DISCORD_SERVICE"
+        sleep 2
+        systemctl is-active --quiet "$PROXY_SERVICE"
+        systemctl is-active --quiet "$DISCORD_SERVICE"
+        curl --fail --silent --show-error http://127.0.0.1:8000/healthz
+        ;;
+    status)
+        printf '%s: ' "$PROXY_SERVICE"; systemctl is-active "$PROXY_SERVICE"
+        printf '%s: ' "$DISCORD_SERVICE"; systemctl is-active "$DISCORD_SERVICE"
+        curl --fail --silent --show-error http://127.0.0.1:8000/healthz
+        ;;
+esac

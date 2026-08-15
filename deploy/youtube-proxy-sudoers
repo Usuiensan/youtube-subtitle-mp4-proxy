@@ -1,0 +1,1 @@
+furukawa ALL=(root) NOPASSWD: /usr/local/sbin/youtube-proxy-update, /usr/local/sbin/youtube-proxy-audit, /usr/local/sbin/youtube-proxy-config

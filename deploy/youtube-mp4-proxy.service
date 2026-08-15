@@ -1,0 +1,17 @@
+[Unit]
+Description=YouTube MP4 proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=app
+Group=app
+WorkingDirectory=/opt/youtube-mp4-proxy
+EnvironmentFile=/etc/youtube-mp4-proxy/config.env
+EnvironmentFile=/etc/youtube-mp4-proxy/secrets.env
+ExecStart=/opt/youtube-mp4-proxy/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

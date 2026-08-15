@@ -580,6 +580,10 @@ furukawa ALL=(root) NOPASSWD: /usr/local/sbin/youtube-proxy-update
 
 設定後は `youtube-subtitles-update.ps1` を実行します。未設定の場合はパスワード待ちにならず、`sudo: a password is required` で終了します。
 
+### 本番運用操作基盤
+
+監査確認と非機密コンフィグ変更は [本番運用操作手順](docs/production-operations.md) に従います。監査トークンとコンフィグ変更トークンは別管理し、Windows側の操作スクリプトやSSH引数へ値を渡しません。
+
 ## 字幕デザイン
 
 初期値は白文字、約25%透明の黒背景、下寄せ中央です。720pで自動改行が入りにくいよう、文字サイズは控えめにしています。
