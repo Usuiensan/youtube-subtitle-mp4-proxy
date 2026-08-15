@@ -195,7 +195,7 @@ def translate_batch_openai(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
 
 
 def translate_batch_gemini(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, int]]:
-    model = str(payload.get("model_name") or os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite"))
+    model = str(payload.get("model_name") or "gemini-3.1-flash-lite")
     api_key = str(payload.get("llm_api_key") or os.getenv("GEMINI_API_KEY") or "")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured")

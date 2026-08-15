@@ -2899,9 +2899,6 @@ async def translate_subtitle_if_needed(
         attempt_plan = [(selected_settings, default_thinking_level)]
         if default_thinking_level != "high":
             attempt_plan.append((selected_settings, "high"))
-        full_flash_settings = translation_settings("gemini_2_5_flash")
-        if full_flash_settings.model_name != selected_settings.model_name:
-            attempt_plan.append((full_flash_settings, ""))
 
     async def worker(payload: dict, attempt_settings: TranslationSettings, thinking_level: str) -> dict:
         payload["_work_dir"] = str(work_dir)

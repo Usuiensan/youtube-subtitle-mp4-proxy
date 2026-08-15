@@ -8,12 +8,20 @@ def test_translation_profile_uses_provider_compatibility_fallback(monkeypatch) -
     import app.settings as settings_module
 
     monkeypatch.delenv("TRANSLATION_DEFAULT_PROFILE", raising=False)
-    monkeypatch.setenv("TRANSLATION_PROVIDER", "gemini_2_5_flash_lite")
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "gemini_2_5_flash")
     importlib.reload(settings_module)
     try:
         assert settings_module.Settings.translation_default_profile == "gemini_2_5_flash_lite"
     finally:
         importlib.reload(settings_module)
+
+
+def test_gemini_lite_profile_is_fixed_to_31(monkeypatch) -> None:
+    from app.translation_profiles import profile_models
+
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+
+    assert profile_models(os.getenv)["gemini_2_5_flash_lite"] == "gemini-3.1-flash-lite"
 
 
 def test_load_env_file_does_not_override_existing_environment(tmp_path, monkeypatch) -> None:
