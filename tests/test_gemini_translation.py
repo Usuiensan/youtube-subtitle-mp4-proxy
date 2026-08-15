@@ -269,7 +269,6 @@ class GeminiTranslationTests(unittest.TestCase):
         payload = {
             "video_title": "Sample title",
             "channel_name": "Sample channel",
-            "description": "A sample description",
             "source_language": "en",
             "target_language": "ja",
             "subtitles": [
@@ -283,7 +282,6 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertIn("Default video title", prompt)
         self.assertIn("Sample title", prompt)
         self.assertIn("Sample channel", prompt)
-        self.assertIn("A sample description", prompt)
         self.assertIn("First line", prompt)
         self.assertIn("Translate me", prompt)
         self.assertIn("Last line", prompt)

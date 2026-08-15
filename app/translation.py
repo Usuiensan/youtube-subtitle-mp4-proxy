@@ -67,12 +67,10 @@ def build_worker_payload(
     target_language: str,
     all_subtitles: list[srt.Subtitle],
     settings: TranslationSettings,
-    description: str = "",
 ) -> dict[str, Any]:
     return {
         "video_title": video_title,
         "channel_name": channel_name,
-        "description": description,
         "topic": settings.topic,
         "glossary": settings.glossary,
         "source_language": source_language,
@@ -152,7 +150,6 @@ async def translate_srt_with_local_worker(
     settings: TranslationSettings,
     run_worker: Callable[[dict[str, Any]], Any],
     on_progress: Callable[[int, int, list[dict[str, str]] | None], None] | None = None,
-    description: str = "",
 ) -> SubtitleTranslationResult:
     subtitles = load_srt(subtitle_path)
     translation_characters = sum(len(sub.content) for sub in subtitles)
@@ -189,7 +186,6 @@ async def translate_srt_with_local_worker(
         target_language=target_language,
         all_subtitles=subtitles,
         settings=settings,
-        description=description,
     )
     try:
         result = await run_worker(payload)

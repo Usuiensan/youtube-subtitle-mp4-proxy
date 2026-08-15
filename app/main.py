@@ -949,7 +949,6 @@ def write_meta(key: str, video_id: str, lang: str, info: dict, mode: str) -> Non
                 "channel_name": extract_channel_name(info),
                 "channel_id": extract_channel_id(info),
                 "title_variants": extract_title_variants(info),
-                "description": info.get("description"),
                 "duration": info.get("duration"),
                 "created_at": int(time.time()),
                 "mode": mode,
@@ -980,7 +979,6 @@ def write_source_meta(
                 "channel_name": extract_channel_name(info),
                 "channel_id": extract_channel_id(info),
                 "title_variants": extract_title_variants(info),
-                "description": info.get("description"),
                 "duration": info.get("duration"),
                 "webpage_url": info.get("webpage_url")
                 or f"https://www.youtube.com/watch?v={video_id}",
@@ -2986,7 +2984,6 @@ async def translate_subtitle_if_needed(
                 settings=attempt_settings,
                 run_worker=lambda payload, current=attempt_settings, level=thinking_level: worker(payload, current, level),
                 on_progress=on_prog,
-                description=str(info.get("description") or ""),
             )
             selected_settings = attempt_settings
             break
