@@ -60,8 +60,14 @@ def build_full_translation_prompt(payload: dict[str, Any]) -> str:
     target_language = str(payload.get("target_language") or "ja")
     title = str(payload.get("video_title") or "不明")
     channel = str(payload.get("channel_name") or "不明")
-    topic = str(payload.get("topic") or "").strip() or "なし"
-    glossary = str(payload.get("glossary") or "").strip() or "なし"
+    topic = str(payload.get("topic") or "").strip()
+    glossary = str(payload.get("glossary") or "").strip()
+    context_lines = [f"Default video title: {title}", f"Channel: {channel}"]
+    if topic:
+        context_lines.append(f"Topic: {topic}")
+    if glossary:
+        context_lines.append(f"Glossary: {glossary}")
+    context = "\n".join(context_lines)
     subtitle_json = json.dumps(
         [
             {"id": item.get("id"), "text": normalize_subtitle_text(item.get("text", ""), compact=True)}
@@ -80,10 +86,7 @@ Return only an object matching the supplied JSON schema. For every input id, ret
 Do not include timestamps, explanations, numbering outside the JSON, or any fields other than id and text.
 Preserve URLs, meaningful numbers, names, and wording. Subtitle line breaks are formatting only and are flattened in the input.
 
-Default video title: {title}
-Channel: {channel}
-Topic: {topic}
-Glossary: {glossary}
+{context}
 
 Subtitle list (id and original text only):
 {subtitle_json}

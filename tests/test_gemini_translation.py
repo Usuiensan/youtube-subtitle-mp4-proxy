@@ -282,9 +282,17 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertIn("Default video title", prompt)
         self.assertIn("Sample title", prompt)
         self.assertIn("Sample channel", prompt)
+        self.assertNotIn("Topic:", prompt)
+        self.assertNotIn("Glossary:", prompt)
         self.assertIn("First line", prompt)
         self.assertIn("Translate me", prompt)
         self.assertIn("Last line", prompt)
+
+        prompt_with_context = translation_worker.build_full_translation_prompt(
+            {**payload, "topic": "Bridges", "glossary": "Route 66=ルート66"}
+        )
+        self.assertIn("Topic: Bridges", prompt_with_context)
+        self.assertIn("Glossary: Route 66=ルート66", prompt_with_context)
 
     def test_gemini_request_and_raw_response_are_saved_without_api_key(self) -> None:
         with TemporaryDirectory() as temp_dir:
