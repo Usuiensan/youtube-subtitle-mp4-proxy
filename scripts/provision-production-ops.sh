@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+APP_DIR=/opt/youtube-mp4-proxy
 OLD_ENV=/etc/youtube-mp4-proxy.env
 OPS_DIR=/etc/youtube-mp4-proxy
 BACKUP_DIR=/var/backups/youtube-mp4-proxy
@@ -15,6 +16,10 @@ TMP=$(mktemp -d /tmp/youtube-proxy-provision.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT
 install -d -o root -g root -m 700 "$BACKUP" "$TMP"
 install -o root -g root -m 600 "$OLD_ENV" "$BACKUP/legacy.env"
+if [[ -f "$APP_DIR/.env" ]]; then
+    install -o root -g root -m 600 "$APP_DIR/.env" "$BACKUP/app.env"
+    rm -f -- "$APP_DIR/.env"
+fi
 install -d -o root -g app -m 750 "$OPS_DIR"
 
 awk -F= '

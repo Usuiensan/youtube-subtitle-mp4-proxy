@@ -31,3 +31,9 @@ def test_update_script_excludes_local_env_and_checks_native_commands() -> None:
     assert ":(exclude).env" in text
     assert "scpに失敗しました" in text
     assert "本番更新に失敗しました" in text
+
+
+def test_provisioning_removes_legacy_app_env_only_after_backup() -> None:
+    text = (ROOT / "scripts" / "provision-production-ops.sh").read_text(encoding="utf-8")
+    assert 'install -o root -g root -m 600 "$APP_DIR/.env" "$BACKUP/app.env"' in text
+    assert 'rm -f -- "$APP_DIR/.env"' in text

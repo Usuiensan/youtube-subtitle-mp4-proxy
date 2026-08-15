@@ -41,6 +41,7 @@ case "$OP" in
         [[ "$(stat -c '%U:%G:%a' /etc/youtube-mp4-proxy/config.env)" == 'root:app:660' ]] || { echo 'config.envの権限が不正です' >&2; exit 1; }
         [[ "$(stat -c '%U:%G:%a' /etc/youtube-mp4-proxy/secrets.env)" == 'root:app:640' ]] || { echo 'secrets.envの権限が不正です' >&2; exit 1; }
         [[ ! -e /etc/youtube-mp4-proxy.env ]] || { echo '旧envファイルが残っています' >&2; exit 1; }
+        [[ ! -e /opt/youtube-mp4-proxy/.env ]] || { echo 'アプリ配下の旧envファイルが残っています' >&2; exit 1; }
         curl_config "$BASE_URL";;
     set)
         [[ "$KEY" =~ ^(LOCAL_LLM_MAX_OUTPUT_TOKENS|TRANSLATION_API_RETRY_MAX_ATTEMPTS|TRANSLATION_API_RETRY_BASE_SECONDS|GEMINI_THINKING_LEVEL|SYSTEM_METRICS_INTERVAL_SECONDS|SYSTEM_METRICS_HISTORY_SECONDS)$ ]] || { echo 'key がallowlist外です' >&2; exit 2; }
