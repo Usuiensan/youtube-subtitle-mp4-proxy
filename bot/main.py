@@ -377,18 +377,34 @@ def eta_text_from_seconds(seconds: Any, estimated_ready_at: Any = None) -> str:
 
 def title_text(title: Any, title_variants: Any = None) -> str:
     if isinstance(title_variants, list) and title_variants:
-        lines = ["動画タイトル :"]
-        for item in title_variants:
-            if not isinstance(item, dict):
-                continue
-            raw_language = item.get("language")
-            raw_title = item.get("title")
-            if not isinstance(raw_title, str) or not raw_title:
-                continue
-            language = lang_name_ja(raw_language) if isinstance(raw_language, str) else "default"
-            escaped = raw_title.replace("`", "'")
-            lines.append(f"[{language}] {escaped}")
-        if len(lines) > 1:
+        items = [
+            item
+            for item in title_variants
+            if isinstance(item, dict) and isinstance(item.get("title"), str) and item["title"]
+        ]
+        if len(items) > 1:
+            labels = {"default": "既定", "ja": "日本語", "en": "英語", "ko": "韓国語", "zh": "中国語"}
+            lines = ["動画タイトル :"]
+            shown: set[str] = set()
+            other_count = 0
+            for item in items:
+                raw_language = item.get("language")
+                normalized = raw_language.lower().strip() if isinstance(raw_language, str) else "default"
+                base = normalized.split("-", 1)[0]
+                group = (
+                    "default" if normalized in {"", "default", "original", "und"}
+                    else base if base in {"ja", "en", "ko"}
+                    else "zh" if base in {"zh", "cmn", "zho", "chi"}
+                    else "other"
+                )
+                if group == "other" or group in shown:
+                    other_count += 1
+                    continue
+                shown.add(group)
+                escaped = item["title"].replace("`", "'")
+                lines.append(f"[{labels[group]}] {escaped}")
+            if other_count:
+                lines.append(f"ほか{other_count}言語")
             return "\n".join(lines)
     if not isinstance(title, str) or not title:
         return ""

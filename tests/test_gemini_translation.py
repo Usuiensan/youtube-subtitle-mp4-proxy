@@ -268,6 +268,8 @@ class GeminiTranslationTests(unittest.TestCase):
     def test_translation_worker_prompt_contains_full_subtitle_context(self) -> None:
         payload = {
             "video_title": "Sample title",
+            "channel_name": "Sample channel",
+            "description": "A sample description",
             "source_language": "en",
             "target_language": "ja",
             "subtitles": [
@@ -278,6 +280,10 @@ class GeminiTranslationTests(unittest.TestCase):
         }
         prompt = translation_worker.build_full_translation_prompt(payload)
         self.assertIn("Translate the complete subtitle list", prompt)
+        self.assertIn("Default video title", prompt)
+        self.assertIn("Sample title", prompt)
+        self.assertIn("Sample channel", prompt)
+        self.assertIn("A sample description", prompt)
         self.assertIn("First line", prompt)
         self.assertIn("Translate me", prompt)
         self.assertIn("Last line", prompt)

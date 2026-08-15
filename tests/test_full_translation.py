@@ -77,9 +77,11 @@ def test_llm_translation_calls_worker_once_for_the_whole_srt(tmp_path) -> None:
             target_language="ja",
             settings=settings,
             run_worker=worker,
+            description="A channel description",
         )
     )
     assert len(calls) == 1
+    assert calls[0]["description"] == "A channel description"
     assert calls[0]["subtitles"] == [{"id": 1, "text": "Hello"}, {"id": 2, "text": "World"}]
     translated = list(srt.parse(output.read_text(encoding="utf-8")))
     assert [item.content for item in translated] == ["こんにちは", "世界"]
