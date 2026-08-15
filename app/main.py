@@ -1988,7 +1988,6 @@ def translation_retry_fallback_settings(selected: TranslationSettings) -> Transl
         settings.gemini_fallback_profile,
         "qwen3_8b",
         "qwen3_14b",
-        "gemini_2_5_flash",
     ]
     for profile in profiles:
         normalized = normalize_translation_engine(profile)

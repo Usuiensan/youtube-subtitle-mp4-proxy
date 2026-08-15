@@ -131,7 +131,7 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertTrue(app_main.is_retryable_translation_failure(RuntimeError("translation api http error 503: unavailable")))
         self.assertTrue(app_main.is_retryable_translation_failure(RuntimeError("translation api returned invalid JSON")))
 
-    def test_translation_retry_skips_unconfigured_remote_llm(self) -> None:
+    def test_translation_retry_does_not_use_deprecated_gemini_model(self) -> None:
         with patch.object(app_main.settings, "remote_llm_endpoint", ""), patch.object(
             app_main.settings, "gemini_api_key", "test-key"
         ):
@@ -139,8 +139,7 @@ class GeminiTranslationTests(unittest.TestCase):
                 app_main.translation_settings("gemini_2_5_flash_lite")
             )
 
-        self.assertIsNotNone(fallback)
-        self.assertEqual(fallback.engine, "gemini_2_5_flash")
+        self.assertIsNone(fallback)
 
     def test_gemini_thinking_level_is_added_to_generation_config(self) -> None:
         requests: list[dict] = []
@@ -173,6 +172,9 @@ class GeminiTranslationTests(unittest.TestCase):
             )
 
         self.assertEqual(requests[0]["generationConfig"]["thinkingConfig"], {"thinkingLevel": "high"})
+        subtitles_schema = requests[0]["generationConfig"]["responseSchema"]["properties"]["subtitles"]
+        self.assertEqual(subtitles_schema["minItems"], 1)
+        self.assertEqual(subtitles_schema["maxItems"], 1)
 
     def test_gemini_availability_does_not_require_remote_llm_endpoint(self) -> None:
         with patch.object(app_main.settings, "remote_llm_endpoint", ""), patch.object(
