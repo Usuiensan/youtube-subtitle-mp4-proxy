@@ -212,8 +212,8 @@ class GeminiTranslationTests(unittest.TestCase):
 
         self.assertEqual(requests[0]["generationConfig"]["thinkingConfig"], {"thinkingLevel": "high"})
         subtitles_schema = requests[0]["generationConfig"]["responseSchema"]["properties"]["subtitles"]
-        self.assertEqual(subtitles_schema["minItems"], 1)
-        self.assertEqual(subtitles_schema["maxItems"], 1)
+        self.assertNotIn("minItems", subtitles_schema)
+        self.assertNotIn("maxItems", subtitles_schema)
 
     def test_gemini_availability_does_not_require_remote_llm_endpoint(self) -> None:
         with patch.object(app_main.settings, "remote_llm_endpoint", ""), patch.object(

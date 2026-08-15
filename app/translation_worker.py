@@ -230,8 +230,6 @@ def translate_batch_gemini(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
         "properties": {
             "subtitles": {
                 "type": "ARRAY",
-                "minItems": len(payload.get("subtitles") or []),
-                "maxItems": len(payload.get("subtitles") or []),
                 "items": {
                     "type": "OBJECT",
                     "properties": {
