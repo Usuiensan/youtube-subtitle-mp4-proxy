@@ -26,13 +26,17 @@ def test_translation_prompt_flattens_subtitle_escape_markers() -> None:
     assert '"text":"first second third"' in prompt
 
 
-def test_validate_translations_requires_exact_ids_count_and_non_empty_text() -> None:
+def test_validate_translations_requires_contiguous_ranges_and_non_empty_text() -> None:
     target = [subtitle(1, "one"), subtitle(2, "two")]
-    assert validate_translations(target, {"subtitles": [{"id": 1, "text": "一"}, {"id": 2, "text": "二"}]}) == {"1": "一", "2": "二"}
+    assert validate_translations(
+        target,
+        {"subtitles": [{"from_id": 1, "to_id": 2, "text": "一と二"}]},
+    ) == [{"from_id": "1", "to_id": "2", "text": "一と二"}]
     for result in (
-        {"subtitles": [{"id": 1, "text": "一"}]},
-        {"subtitles": [{"id": 1, "text": "一"}, {"id": 1, "text": "重複"}]},
-        {"subtitles": [{"id": 1, "text": "一"}, {"id": 2, "text": ""}]},
+        {"subtitles": [{"from_id": 1, "to_id": 1, "text": "一"}]},
+        {"subtitles": [{"from_id": 1, "to_id": 1, "text": "一"}, {"from_id": 1, "to_id": 2, "text": "重複"}]},
+        {"subtitles": [{"from_id": 2, "to_id": 1, "text": "逆順"}]},
+        {"subtitles": [{"from_id": 1, "to_id": 2, "text": ""}]},
     ):
         with pytest.raises(TranslationError):
             validate_translations(target, result)
@@ -65,7 +69,7 @@ def test_llm_translation_calls_worker_once_for_the_whole_srt(tmp_path) -> None:
 
     async def worker(payload: dict) -> dict:
         calls.append(payload)
-        return {"subtitles": [{"id": 1, "text": "こんにちは"}, {"id": 2, "text": "世界"}]}
+        return {"subtitles": [{"from_id": 1, "to_id": 2, "text": "こんにちは、世界"}]}
 
     result = asyncio.run(
         translate_srt_with_local_worker(
@@ -82,7 +86,8 @@ def test_llm_translation_calls_worker_once_for_the_whole_srt(tmp_path) -> None:
     assert len(calls) == 1
     assert calls[0]["subtitles"] == [{"id": 1, "text": "Hello"}, {"id": 2, "text": "World"}]
     translated = list(srt.parse(output.read_text(encoding="utf-8")))
-    assert [item.content for item in translated] == ["こんにちは", "世界"]
+    assert [item.content for item in translated] == ["こんにちは、世界"]
+    assert [(item.start, item.end) for item in translated] == [(timedelta(seconds=1), timedelta(seconds=3))]
     assert result.metadata["translation_request_count"] == 1
 
 
@@ -112,7 +117,7 @@ def test_llm_validation_failure_keeps_provider_usage(tmp_path) -> None:
 
     async def worker(_payload: dict) -> dict:
         return {
-            "subtitles": [{"id": 1, "text": "こんにちは"}],
+            "subtitles": [{"from_id": 1, "to_id": 1, "text": "こんにちは"}],
             "_usage": {"input_tokens": 100, "output_tokens": 40, "total_tokens": 140},
         }
 
@@ -153,7 +158,7 @@ def test_openai_request_uses_strict_json_schema(monkeypatch) -> None:
             return False
 
         def read(self):
-            return b'{"choices":[{"message":{"content":"{\\"subtitles\\":[{\\"id\\":1,\\"text\\":\\"Hi\\"}]}"}}],"usage":{}}'
+            return b'{"choices":[{"message":{"content":"{\\"subtitles\\":[{\\"from_id\\":1,\\"to_id\\":1,\\"text\\":\\"Hi\\"}]}"}}],"usage":{}}'
 
     def urlopen(request, timeout):
         requests.append({"body": json.loads(request.data.decode("utf-8")), "timeout": timeout})
@@ -171,7 +176,7 @@ def test_openai_request_uses_strict_json_schema(monkeypatch) -> None:
             "subtitles": [{"id": 1, "text": "Hi"}],
         }
     )
-    assert result == {"subtitles": [{"id": 1, "text": "Hi"}]}
+    assert result == {"subtitles": [{"from_id": 1, "to_id": 1, "text": "Hi"}]}
     schema = requests[0]["body"]["response_format"]["json_schema"]
     assert schema["strict"] is True
     assert schema["schema"]["required"] == ["subtitles"]

@@ -313,7 +313,7 @@ Google の API キーが必要なのは、YouTube Data API v3 を使う `/prepar
 
 `TRANSLATION_ENABLED=1` の場合、要求言語が `ja` で日本語の手動字幕がない動画は、Discord bot の単体 `/prepare` では翻訳元字幕をユーザーが選び、日本語へ翻訳してから焼き込みます。API から `subtitleSourceLang` を指定しない場合や一括準備では、動画の原言語、英語、韓国語、中国語、`TRANSLATION_SOURCE_LANGS` の順で自動選択します。
 
-LLM 翻訳は字幕IDと原文だけを動画1本分まとめて1回のAPIリクエストへ送り、動画全体の文脈で翻訳します。入力トークンの推定値と字幕件数から出力トークン予算を決め、件数不足を予防します。応答はStructured Output / JSON Schemaで `{"subtitles":[{"id":1,"text":"..."}]}` に固定し、プログラム側で件数・ID集合・重複・空文字を検証します。タイムコードは送信せず、検証済みIDを元SRTへ再結合します。結果異常時は推論レベル変更後に別モデルへ再送し、404などの4xxエラーは再送しません。Gemini などのクラウドLLMは `REMOTE_LLM_ENDPOINT` なしでもAPIキー設定だけで候補に表示します。
+LLM 翻訳は字幕IDと原文だけを動画1本分まとめて1回のAPIリクエストへ送り、動画全体の文脈で翻訳します。入力トークンの推定値と字幕件数から出力トークン予算を決め、件数不足を予防します。応答はStructured Output / JSON Schemaで `{"subtitles":[{"from_id":1,"to_id":2,"text":"..."}]}` に固定し、各訳が覆う連続ID範囲を検証します。範囲は昇順で重複・欠落なく全原字幕を覆う必要があり、訳SRTはその範囲の開始〜終了時刻を持ちます。タイムコードはLLMへ送信しません。結果異常時は推論レベル変更後に別モデルへ再送し、404などの4xxエラーは再送しません。Gemini などのクラウドLLMは `REMOTE_LLM_ENDPOINT` なしでもAPIキー設定だけで候補に表示します。
 
 翻訳エンジンは `TRANSLATION_DEFAULT_PROFILE` で1つに固定します。Google Cloud Translation は使用しません。YouTube自動生成字幕・自動翻訳も使用しません。LLM APIの503（一時的な混雑）は最大3回まで指数バックオフで再試行し、結果異常時は推論レベル変更・別モデル切り替えを行い、Discordの進捗に表示します。HTTP 4xxは再送しません。
 

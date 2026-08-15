@@ -87,50 +87,51 @@ def build_worker_payload(
 def validate_translations(
     target: list[srt.Subtitle],
     result: dict[str, Any],
-) -> dict[str, str]:
+) -> list[dict[str, Any]]:
     translations = result.get("subtitles")
     if not isinstance(translations, list):
         raise TranslationError("subtitles must be an array")
 
     expected_ids = [str(sub.index) for sub in target]
-    expected_set = set(expected_ids)
-    if len(translations) != len(expected_ids):
-        raise TranslationError(
-            f"subtitle count mismatch: expected {len(expected_ids)}, got {len(translations)}"
-        )
-    seen: set[str] = set()
-    output: dict[str, str] = {}
+    expected_positions = {item_id: position for position, item_id in enumerate(expected_ids)}
+    next_position = 0
+    output: list[dict[str, Any]] = []
 
     for item in translations:
         if not isinstance(item, dict):
             raise TranslationError("translation item must be an object")
-        item_id = str(item.get("id", ""))
+        from_id = str(item.get("from_id", ""))
+        to_id = str(item.get("to_id", ""))
         text = str(item.get("text", "")).strip()
-        if item_id not in expected_set:
-            raise TranslationError(f"unexpected subtitle id: {item_id}")
-        if item_id in seen:
-            raise TranslationError(f"duplicate subtitle id: {item_id}")
+        if from_id not in expected_positions or to_id not in expected_positions:
+            raise TranslationError(f"unexpected subtitle range: {from_id}-{to_id}")
+        from_position = expected_positions[from_id]
+        to_position = expected_positions[to_id]
+        if from_position != next_position or to_position < from_position:
+            expected_from_id = expected_ids[next_position] if next_position < len(expected_ids) else "end"
+            raise TranslationError(
+                f"subtitle range must continue at {expected_from_id}: got {from_id}-{to_id}"
+            )
         if not text:
-            raise TranslationError(f"empty translation: {item_id}")
-        if len(text) > max(400, len(target[expected_ids.index(item_id)].content) * 8):
-            raise TranslationError(f"translation too long: {item_id}")
-        seen.add(item_id)
-        output[item_id] = text
-
-    if seen != expected_set:
-        raise TranslationError("missing subtitle ids")
-
-    for sub in target:
-        original = sub.content
-        translated = output[str(sub.index)]
+            raise TranslationError(f"empty translation: {from_id}-{to_id}")
+        covered = target[from_position : to_position + 1]
+        original = "\n".join(sub.content for sub in covered)
+        if len(text) > max(400, len(original) * 8):
+            raise TranslationError(f"translation too long: {from_id}-{to_id}")
         for url in re.findall(r"https?://\S+", original):
-            if url not in translated:
-                raise TranslationError(f"url disappeared: {sub.index}")
+            if url not in text:
+                raise TranslationError(f"url disappeared: {from_id}-{to_id}")
         original_numbers = re.findall(r"\d+", original)
         if len(original_numbers) >= 2:
-            translated_numbers = re.findall(r"\d+", translated)
+            translated_numbers = re.findall(r"\d+", text)
             if len(translated_numbers) < math.floor(len(original_numbers) / 2):
-                raise TranslationError(f"numbers disappeared: {sub.index}")
+                raise TranslationError(f"numbers disappeared: {from_id}-{to_id}")
+        output.append({"from_id": from_id, "to_id": to_id, "text": text})
+        next_position = to_position + 1
+
+    if next_position != len(target):
+        missing_id = expected_ids[next_position] if next_position < len(target) else "end"
+        raise TranslationError(f"missing subtitle range starting at: {missing_id}")
 
     return output
 
@@ -205,7 +206,7 @@ async def translate_srt_with_local_worker(
     try:
         result = await run_worker(payload)
         add_usage(result)
-        translated_map = validate_translations(subtitles, result)
+        translated_segments = validate_translations(subtitles, result)
     except Exception as error:
         if isinstance(error, TranslationError) and result is not None:
             error.translation_usage = {
@@ -223,18 +224,31 @@ async def translate_srt_with_local_worker(
         ) from error
     discard_successful_attempt(result)
 
-    for sub in subtitles:
-        translated_text = translated_map[str(sub.index)]
+    subtitle_positions = {str(sub.index): position for position, sub in enumerate(subtitles)}
+    for segment_index, segment in enumerate(translated_segments, start=1):
+        start_subtitle = subtitles[subtitle_positions[segment["from_id"]]]
+        end_subtitle = subtitles[subtitle_positions[segment["to_id"]]]
+        translated_text = segment["text"]
         translated_subtitles.append(
             srt.Subtitle(
-                index=sub.index,
-                start=sub.start,
-                end=sub.end,
+                index=segment_index,
+                start=start_subtitle.start,
+                end=end_subtitle.end,
                 content=translated_text,
-                proprietary=sub.proprietary,
+                proprietary=start_subtitle.proprietary,
             )
         )
-        recent_pairs.append({"source": sub.content, "translated": translated_text})
+        recent_pairs.append(
+            {
+                "source": " ".join(
+                    sub.content
+                    for sub in subtitles[
+                        subtitle_positions[segment["from_id"]] : subtitle_positions[segment["to_id"]] + 1
+                    ]
+                ),
+                "translated": translated_text,
+            }
+        )
         recent_pairs = recent_pairs[-5:]
     if on_progress:
         on_progress(total_subtitles, total_subtitles, recent_pairs)

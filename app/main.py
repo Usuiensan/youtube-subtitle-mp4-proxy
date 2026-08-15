@@ -694,7 +694,7 @@ def render_profile_id(subtitle_font_size: int | None = None) -> str:
 def translation_profile_id() -> str:
     return json.dumps(
         {
-            "batch_translation_version": "full-srt-json-v1",
+            "batch_translation_version": "full-srt-range-v1",
             "enabled": settings.translation_enabled,
             "target": "ja",
             "source_langs": settings.translation_source_langs,
@@ -3715,48 +3715,54 @@ def ffmpeg_dual_subtitle_args(
     line_height = max(1, round(dual_font_size * 1.25))
     line_gap = max(4, round(dual_font_size * 0.45))
 
-    def split_translation(source: str, translated: str) -> tuple[str, str]:
-        normalized = normalize_subtitle_text(translated)
-        if "\n　\n" in normalized:
-            source, translated = normalized.split("\n　\n", 1)
-        else:
-            normalized_source = normalize_subtitle_text(source)
-            if normalized.startswith(f"{normalized_source}\n"):
-                translated = normalized[len(normalized_source) + 1 :]
-        return source, translated
+    normalized_source_texts = [normalize_subtitle_text(subtitle.content) for subtitle in source_subtitles]
 
-    combined_subtitles = []
+    def translated_text(subtitle: srt.Subtitle) -> str:
+        text = normalize_subtitle_text(subtitle.content)
+        if "\n　\n" in text:
+            return text.split("\n　\n", 1)[1]
+        for source_text in normalized_source_texts:
+            if text.startswith(f"{source_text}\n"):
+                return text[len(source_text) + 1 :]
+        return text
+
+    translated_lines = [
+        (subtitle, wrap_text_to_width(translated_text(subtitle), width_chars))
+        for subtitle in translated_subtitles
+    ]
+    combined_subtitles: list[srt.Subtitle] = []
     event_margin_v: dict[int, int] = {}
-    for source_sub, translated_sub in zip(source_subtitles, translated_subtitles):
-        source_text, translated_text = split_translation(source_sub.content, translated_sub.content)
-        source_lines = wrap_text_to_width(source_text, width_chars)
-        translated_lines = wrap_text_to_width(translated_text, width_chars)
-        source_index = source_sub.index * 2
-        translated_index = source_index + 1
-        combined_subtitles.extend(
-            [
-                srt.Subtitle(
-                    index=source_index,
-                    start=source_sub.start,
-                    end=source_sub.end,
-                    content="\n".join(source_lines),
-                    proprietary=source_sub.proprietary,
-                ),
-                srt.Subtitle(
-                    index=translated_index,
-                    start=translated_sub.start,
-                    end=translated_sub.end,
-                    content="\n".join(translated_lines),
-                    proprietary=translated_sub.proprietary,
-                ),
-            ]
+    for source_position, source_sub in enumerate(source_subtitles, start=1):
+        source_lines = wrap_text_to_width(source_sub.content, width_chars)
+        active_translation_lines = [
+            lines
+            for translated_sub, lines in translated_lines
+            if translated_sub.start < source_sub.end and source_sub.start < translated_sub.end
+        ]
+        translated_line_count = max((len(lines) for lines in active_translation_lines), default=1)
+        source_index = source_position * 2
+        combined_subtitles.append(
+            srt.Subtitle(
+                index=source_index,
+                start=source_sub.start,
+                end=source_sub.end,
+                content="\n".join(source_lines),
+                proprietary=source_sub.proprietary,
+            )
         )
-        event_margin_v.update(
-            {
-                source_index: base_margin_v + len(translated_lines) * line_height + line_gap,
-                translated_index: base_margin_v,
-            }
+        event_margin_v[source_index] = base_margin_v + translated_line_count * line_height + line_gap
+    for translated_position, (translated_sub, lines) in enumerate(translated_lines, start=1):
+        translated_index = translated_position * 2 - 1
+        combined_subtitles.append(
+            srt.Subtitle(
+                index=translated_index,
+                start=translated_sub.start,
+                end=translated_sub.end,
+                content="\n".join(lines),
+                proprietary=translated_sub.proprietary,
+            )
         )
+        event_margin_v[translated_index] = base_margin_v
     build_ass_from_srt(
         original_subtitle,
         combined_ass,

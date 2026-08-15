@@ -200,7 +200,7 @@ class GeminiTranslationTests(unittest.TestCase):
                 return False
 
             def read(self):
-                return b'{"candidates":[{"content":{"parts":[{"text":"{\\"subtitles\\":[{\\"id\\":1,\\"text\\":\\"Hi\\"}]}"}]}}],"usageMetadata":{}}'
+                return b'{"candidates":[{"content":{"parts":[{"text":"{\\"subtitles\\":[{\\"from_id\\":1,\\"to_id\\":1,\\"text\\":\\"Hi\\"}]}"}]}}],"usageMetadata":{}}'
 
         def urlopen(request, timeout):
             requests.append(json.loads(request.data.decode("utf-8")))
@@ -221,6 +221,8 @@ class GeminiTranslationTests(unittest.TestCase):
 
         self.assertEqual(requests[0]["generationConfig"]["thinkingConfig"], {"thinkingLevel": "high"})
         subtitles_schema = requests[0]["generationConfig"]["responseSchema"]["properties"]["subtitles"]
+        item_schema = subtitles_schema["items"]
+        self.assertEqual(item_schema["required"], ["from_id", "to_id", "text"])
         self.assertNotIn("minItems", subtitles_schema)
         self.assertNotIn("maxItems", subtitles_schema)
 

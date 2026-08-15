@@ -162,6 +162,34 @@ def test_dual_subtitle_ass_is_centered_and_does_not_duplicate_source(tmp_path) -
     assert int(dialogues[0].split(",")[7]) > int(dialogues[1].split(",")[7])
 
 
+def test_dual_subtitle_ass_keeps_source_cues_with_a_ranged_translation(tmp_path) -> None:
+    source = tmp_path / "source.srt"
+    translated = tmp_path / "translated.srt"
+    source.write_text(
+        srt.compose(
+            [
+                srt.Subtitle(1, timedelta(seconds=1), timedelta(seconds=2), "First source"),
+                srt.Subtitle(2, timedelta(seconds=2), timedelta(seconds=3), "Second source"),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    translated.write_text(
+        srt.compose([srt.Subtitle(1, timedelta(seconds=1), timedelta(seconds=3), "まとめた訳")]),
+        encoding="utf-8",
+    )
+
+    main.ffmpeg_dual_subtitle_args(source, translated)
+    ass = source.with_suffix(".dual.ass").read_text(encoding="utf-8")
+    dialogues = [line for line in ass.splitlines() if line.startswith("Dialogue:")]
+
+    assert len(dialogues) == 3
+    assert sum("First source" in line for line in dialogues) == 1
+    assert sum("Second source" in line for line in dialogues) == 1
+    ranged = next(line for line in dialogues if "まとめた訳" in line)
+    assert ",0:00:01.00,0:00:03.00," in ranged
+
+
 def test_translation_overlay_uses_model_only() -> None:
     assert main.subtitle_translation_service_label(
         {
