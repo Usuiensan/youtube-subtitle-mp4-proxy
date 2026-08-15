@@ -7143,8 +7143,9 @@ def require_translation_audit_auth(request: Request) -> None:
     authorization = request.headers.get("authorization", "")
     if not supplied and authorization.lower().startswith("bearer "):
         supplied = authorization[7:].strip()
-    if not configured or not supplied or not secrets.compare_digest(supplied, configured):
-        raise HTTPException(status_code=401, detail="Invalid translation audit token")
+    if configured and supplied and secrets.compare_digest(supplied, configured):
+        return
+    require_prepare_auth(request)
 
 
 def require_translation_config_auth(request: Request) -> None:

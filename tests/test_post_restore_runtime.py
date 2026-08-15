@@ -92,9 +92,11 @@ class PostRestoreRuntimeTests(unittest.TestCase):
             original_dir = app_main.settings.translation_audit_dir
             original_audit_token = app_main.settings.translation_audit_api_token
             original_prepare_token = app_main.settings.discord_prepare_token
+            original_webui_temp_key_secret = app_main.settings.webui_temp_key_secret
             app_main.settings.translation_audit_dir = audit_dir
             app_main.settings.translation_audit_api_token = "audit-token"
             app_main.settings.discord_prepare_token = "prepare-token"
+            app_main.settings.webui_temp_key_secret = "webui-temp-key-secret"
             try:
                 client = TestClient(app_main.app)
                 headers = {"X-Translation-Audit-Token": "audit-token"}
@@ -106,10 +108,16 @@ class PostRestoreRuntimeTests(unittest.TestCase):
                 self.assertNotIn("path", detail.json())
                 self.assertEqual(client.get("/translation-audit/../safe.jsonl", headers=headers).status_code, 404)
                 self.assertEqual(client.get("/translation-audit", headers={"X-Translation-Audit-Token": "wrong"}).status_code, 401)
+                temp_key = app_main.make_webui_temp_key(7)["key"]
+                self.assertEqual(
+                    client.get("/translation-audit", headers={"Authorization": f"Bearer {temp_key}"}).status_code,
+                    200,
+                )
             finally:
                 app_main.settings.translation_audit_dir = original_dir
                 app_main.settings.translation_audit_api_token = original_audit_token
                 app_main.settings.discord_prepare_token = original_prepare_token
+                app_main.settings.webui_temp_key_secret = original_webui_temp_key_secret
 
     def test_prepared_srt_download_does_not_require_prepare_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
