@@ -113,6 +113,17 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertTrue(app_main.is_retryable_translation_failure(RuntimeError("translation api http error 503: unavailable")))
         self.assertTrue(app_main.is_retryable_translation_failure(RuntimeError("translation api returned invalid JSON")))
 
+    def test_translation_retry_skips_unconfigured_remote_llm(self) -> None:
+        with patch.object(app_main.settings, "remote_llm_endpoint", ""), patch.object(
+            app_main.settings, "gemini_api_key", "test-key"
+        ):
+            fallback = app_main.translation_retry_fallback_settings(
+                app_main.translation_settings("gemini_2_5_flash_lite")
+            )
+
+        self.assertIsNotNone(fallback)
+        self.assertEqual(fallback.engine, "gemini_2_5_flash")
+
     def test_gemini_thinking_level_is_added_to_generation_config(self) -> None:
         requests: list[dict] = []
 

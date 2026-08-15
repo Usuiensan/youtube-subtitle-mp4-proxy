@@ -12,9 +12,14 @@ from pathlib import Path
 from app.config_files import (
     default_translation_prompt_file,
     default_translategemma_prompt_file,
+    load_env_file,
     read_text_file,
+    repository_root,
 )
 from app.translation_profiles import profile_labels, profile_models
+
+
+load_env_file(repository_root() / ".env.local")
 
 
 class Settings:

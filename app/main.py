@@ -1974,6 +1974,14 @@ def is_retryable_translation_failure(error: Exception) -> bool:
     return not re.search(r"translation api http error 4\d\d:", str(error).lower())
 
 
+def translation_settings_is_configured(candidate: TranslationSettings) -> bool:
+    if not candidate.model_name:
+        return False
+    if candidate.provider_name == "openai_compatible":
+        return bool(candidate.provider_endpoint)
+    return bool(candidate.provider_api_key)
+
+
 def translation_retry_fallback_settings(selected: TranslationSettings) -> TranslationSettings | None:
     profiles = [
         selected.fallback_engine,
@@ -1987,7 +1995,10 @@ def translation_retry_fallback_settings(selected: TranslationSettings) -> Transl
         if normalized in {selected.engine, "google_cloud", "youtube_auto"}:
             continue
         candidate = translation_settings(normalized)
-        if candidate.model_name and candidate.model_name != selected.model_name:
+        if (
+            candidate.model_name != selected.model_name
+            and translation_settings_is_configured(candidate)
+        ):
             return candidate
     return None
 

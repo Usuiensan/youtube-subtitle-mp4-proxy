@@ -1,5 +1,6 @@
 import os
 import importlib
+from unittest.mock import patch
 
 from app.config_files import load_env_file, read_text_file
 
@@ -14,6 +15,22 @@ def test_translation_profile_uses_provider_compatibility_fallback(monkeypatch) -
         assert settings_module.Settings.translation_default_profile == "gemini_2_5_flash_lite"
     finally:
         importlib.reload(settings_module)
+
+
+def test_settings_load_env_local_before_reading_provider_settings(monkeypatch) -> None:
+    import app.config_files as config_files
+    import app.settings as settings_module
+
+    with monkeypatch.context() as env:
+        env.delenv("GEMINI_API_KEY", raising=False)
+        with patch.object(
+            config_files,
+            "load_env_file",
+            side_effect=lambda _path: env.setenv("GEMINI_API_KEY", "from-env-local"),
+        ):
+            importlib.reload(settings_module)
+        assert settings_module.Settings.gemini_api_key == "from-env-local"
+    importlib.reload(settings_module)
 
 
 def test_gemini_lite_profile_is_fixed_to_31(monkeypatch) -> None:
