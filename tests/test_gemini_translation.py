@@ -44,6 +44,21 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertFalse(hasattr(view, "engine_select"))
         self.assertIs(interaction.response.kwargs["view"], view)
 
+    def test_single_source_defaults_to_japanese_without_source_select(self) -> None:
+        view = bot_main.SubtitleChoiceView(
+            requester_id=1,
+            video_id="video",
+            lang="ja",
+            mode="mp4",
+            options_body={"candidates": [{"language": "en", "name": "英語"}]},
+        )
+
+        self.assertEqual(view.source_lang, "en")
+        self.assertEqual(view.target_lang, "ja")
+        self.assertNotIn(view.source_select, view.children)
+        self.assertIn(view.target_select, view.children)
+        self.assertTrue(next(option for option in view.target_select.options if option.value == "ja").default)
+
     def test_translation_select_callbacks_redraw_and_restore_engine(self) -> None:
         view = bot_main.SubtitleChoiceView(
             requester_id=1,
@@ -51,7 +66,10 @@ class GeminiTranslationTests(unittest.TestCase):
             lang="ja",
             mode="mp4",
             options_body={
-                "candidates": [{"language": "en", "name": "英語"}],
+                "candidates": [
+                    {"language": "en", "name": "英語"},
+                    {"language": "ko", "name": "韓国語"},
+                ],
             },
         )
 

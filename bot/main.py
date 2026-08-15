@@ -841,6 +841,16 @@ def default_source_language(candidates: list[dict[str, Any]]) -> str | None:
     return languages[0] if languages else None
 
 
+def subtitle_choice_prompt(title: str, view: "SubtitleChoiceView") -> str:
+    if view.source_lang:
+        return (
+            f"日本語字幕が見つかりませんでした。\n{title}\n"
+            f"翻訳元字幕は {view.source_lang} に固定しました。翻訳先は必要な場合だけ変更できます。\n"
+            "`実行` を押すと日本語へ翻訳して準備します。"
+        )
+    return f"日本語字幕が見つかりませんでした。\n{title}\n翻訳元字幕と翻訳先を選択してください。"
+
+
 class SubtitleChoiceView(discord.ui.View):
 
     def __init__(
@@ -860,7 +870,7 @@ class SubtitleChoiceView(discord.ui.View):
         self.mode = mode
         self.archive_immediately = archive_immediately
         self.source_lang: str | None = None
-        self.target_lang: str = "same"
+        self.target_lang: str = "ja"
         candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
         visible_candidates = candidates[:25]
         selected_source_lang = None
@@ -884,6 +894,9 @@ class SubtitleChoiceView(discord.ui.View):
                     default=language == selected_source_lang,
                 )
             )
+        if len(source_options) == 1:
+            self.source_lang = source_options[0].value
+            source_options[0].default = True
         self.source_select = discord.ui.Select(
             placeholder="翻訳元字幕を選択",
             min_values=1,
@@ -891,8 +904,8 @@ class SubtitleChoiceView(discord.ui.View):
             options=source_options,
         )
         target_options = [
-            discord.SelectOption(label="そのまま", value="same", default=True),
-            discord.SelectOption(label="日本語", value="ja"),
+            discord.SelectOption(label="日本語", value="ja", default=True),
+            discord.SelectOption(label="そのまま", value="same"),
             discord.SelectOption(label="英語", value="en"),
             discord.SelectOption(label="韓国語", value="ko"),
             discord.SelectOption(label="中国語(簡体字)", value="zh-Hans"),
@@ -901,14 +914,15 @@ class SubtitleChoiceView(discord.ui.View):
             discord.SelectOption(label="ドイツ語", value="de"),
         ]
         self.target_select = discord.ui.Select(
-            placeholder="翻訳先を選択（そのまま＝翻訳なし）",
+            placeholder="翻訳先を変更（既定: 日本語）",
             min_values=1,
             max_values=1,
             options=target_options,
         )
         self.source_select.callback = self.on_source_selected
         self.target_select.callback = self.on_target_selected
-        self.add_item(self.source_select)
+        if self.source_lang is None:
+            self.add_item(self.source_select)
         self.add_item(self.target_select)
 
     @staticmethod
@@ -932,7 +946,7 @@ class SubtitleChoiceView(discord.ui.View):
         self._mark_selected(self.target_select, self.target_lang)
         await interaction.response.edit_message(view=self)
 
-    @discord.ui.button(label="この設定で準備", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="実行", style=discord.ButtonStyle.primary)
     async def start_prepare(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
         if not self.source_lang:
             await interaction.response.send_message("先に翻訳元字幕を選択してください。", ephemeral=False, silent=True)
@@ -1262,10 +1276,7 @@ async def handle_dm_prepare_like(
                         options_body=options_body,
                         archive_immediately=archive_immediately,
                     )
-                    prompt = (
-                        f"日本語字幕が見つかりませんでした。\n{title}\n"
-                        "翻訳元字幕と翻訳先を選択してください。"
-                    )
+                    prompt = subtitle_choice_prompt(title, view)
                     await send_dm_message(user, prompt, view=view)
                     return
                 if options_body.get("error"):
@@ -1469,7 +1480,7 @@ class YoutubeProxyBot(discord.Client):
                 archive_immediately=False,
             )
             await message.channel.send(
-                f"字幕準備候補を確認しました。\n{title}\n翻訳元字幕と翻訳先を選んでください。",
+                subtitle_choice_prompt(title, view),
                 view=view,
                 mention_author=False,
                 silent=True,
@@ -1492,7 +1503,7 @@ class YoutubeProxyBot(discord.Client):
             archive_immediately=False,
         )
         await message.channel.send(
-            f"字幕準備候補を確認しました。\n{title}\n翻訳元字幕と翻訳先を選んでください。",
+            subtitle_choice_prompt(title, view),
             view=view,
             mention_author=False,
             silent=True,
@@ -1571,10 +1582,7 @@ async def prepare_command(
                         options_body=options_body,
                         archive_immediately=archive_immediately,
                     )
-                    prompt = (
-                        f"日本語字幕が見つかりませんでした。\n{title}\n"
-                        "翻訳元字幕と翻訳先を選択してください。"
-                    )
+                    prompt = subtitle_choice_prompt(title, view)
                     await interaction.edit_original_response(content=prompt, view=view)
                     return
                 if options_body.get("error"):
