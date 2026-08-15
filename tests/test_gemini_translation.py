@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 
 from app import main as app_main
 from app import translation_worker
+from app.translation import TranslationError
 from bot import main as bot_main
 from unittest.mock import patch
 
@@ -244,6 +245,21 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertGreater(metadata["translation_overage_estimate_usd"], 0.0)
         self.assertGreater(metadata["translation_overage_estimate_jpy"], 0.0)
 
+    def test_failed_translation_usage_estimates_response_cost(self) -> None:
+        error = TranslationError("subtitle count mismatch")
+        error.translation_usage = {
+            "input_tokens": 1000,
+            "output_tokens": 500,
+            "total_tokens": 1500,
+        }
+        settings = app_main.translation_settings("gemini_3_5_flash")
+
+        usage = app_main.failed_translation_usage(error, settings)
+
+        assert usage is not None
+        assert usage["estimated_usd"] > 0
+        assert usage["estimated_jpy"] > 0
+
     def test_bot_translation_usage_text(self) -> None:
         text = bot_main.translation_usage_text(
             {
@@ -265,6 +281,24 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertIn("出力トークン: 16,731", text)
         self.assertIn("合計トークン: 30,939", text)
         self.assertIn("入力 $0.30 / 出力 $2.50", text)
+
+    def test_bot_translation_failure_usage_text(self) -> None:
+        text = bot_main.translation_failure_usage_text(
+            {
+                "attempts": [{"engine": "gemini_3_5_flash"}],
+                "input_tokens": 1000,
+                "output_tokens": 500,
+                "total_tokens": 1500,
+                "estimated_usd": 0.00155,
+                "estimated_jpy": 0.248,
+                "charged_usd": 0.0,
+                "charged_jpy": 0.0,
+            }
+        )
+
+        self.assertIn("LLM応答分の使用量", text)
+        self.assertIn("通常料金換算", text)
+        self.assertIn("課金見込み", text)
 
     def test_google_cloud_translation_is_disabled(self) -> None:
         self.assertNotEqual(app_main.normalize_translation_engine(None), "google_cloud")

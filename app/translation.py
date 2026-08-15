@@ -165,6 +165,7 @@ async def translate_srt_with_local_worker(
         "total_tokens": 0,
         "requests": 1,
     }
+    result: dict[str, Any] | None = None
 
     def add_usage(result: dict[str, Any]) -> None:
         usage = result.get("_usage")
@@ -196,6 +197,13 @@ async def translate_srt_with_local_worker(
         add_usage(result)
         translated_map = validate_translations(subtitles, result)
     except Exception as error:
+        if isinstance(error, TranslationError) and result is not None:
+            error.translation_usage = {
+                "engine": settings.engine,
+                "model": settings.model_name,
+                **usage_totals,
+            }
+            error.translation_attempt_dir = result.get("_translation_attempt_dir")
         if isinstance(error, TranslationError):
             raise
         raise TranslationError(

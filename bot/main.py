@@ -521,7 +521,8 @@ def status_message(body: dict[str, Any], fallback_user_id: int | None = None) ->
     if status == "failed":
         mention = mention_text(body, fallback_user_id)
         prefix = f"{mention} " if mention else ""
-        return f"{prefix}準備に失敗しました。{title_part}\n{body.get('error', 'unknown error')}"
+        usage_text = translation_failure_usage_text(body.get("translation_usage"))
+        return f"{prefix}準備に失敗しました。{title_part}\n{body.get('error', 'unknown error')}" + (f"\n{usage_text}" if usage_text else "")
     progress = body.get("progress")
     if isinstance(progress, dict) and progress:
         phase = progress.get("phase", "")
@@ -672,7 +673,7 @@ def llm_monthly_usage_text(meta: Any) -> str:
     if not isinstance(meta, dict):
         return ""
     engine = str(meta.get("translation_engine") or "")
-    if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gpt_5_nano", "groq_gpt_oss_20b"}:
+    if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash", "gpt_5_nano", "groq_gpt_oss_20b"}:
         return ""
     try:
         query = urllib.parse.urlencode({"engine": engine})
@@ -748,7 +749,7 @@ def translation_usage_text(meta: Any) -> str:
         return ""
     engine = str(meta.get("translation_engine") or "")
     translation_skipped = bool(meta.get("translation_skipped"))
-    if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gpt_5_nano", "groq_gpt_oss_20b"} and not translation_skipped:
+    if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash", "gpt_5_nano", "groq_gpt_oss_20b"} and not translation_skipped:
         return ""
     provider_label = "出元字幕（翻訳なし）" if translation_skipped else str(meta.get("translation_provider_label") or "Gemini Flash")
     billing_class = "API利用なし" if translation_skipped else str(meta.get("translation_billing_class") or "Gemini API Free Tier")
@@ -787,10 +788,11 @@ def translation_usage_text(meta: Any) -> str:
             f"出力トークン: {output_tokens:,}",
             f"合計トークン: {int(meta.get('translation_total_tokens') or input_tokens + output_tokens):,}",
         ])
-    if engine in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gpt_5_nano", "groq_gpt_oss_20b"}:
+    if engine in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash", "gpt_5_nano", "groq_gpt_oss_20b"}:
         default_prices = {
             "gemini_2_5_flash": (0.30, 2.50),
             "gemini_2_5_flash_lite": (0.10, 0.40),
+            "gemini_3_5_flash": (0.30, 2.50),
             "gpt_5_nano": (0.05, 0.40),
             "groq_gpt_oss_20b": (0.075, 0.30),
         }
@@ -801,6 +803,21 @@ def translation_usage_text(meta: Any) -> str:
         lines.append(f"今回の通常料金換算: ${overage_usd:,.6f} / ¥{overage_jpy:,.2f}")
         lines.append(f"今回の課金見込み: ${api_cost_usd:,.6f} / ¥{api_cost_jpy:,.2f}")
     return "\n".join(lines)
+
+
+def translation_failure_usage_text(usage: Any) -> str:
+    if not isinstance(usage, dict) or not usage.get("attempts"):
+        return ""
+    attempts = usage["attempts"]
+    return "\n".join([
+        "LLM応答分の使用量（翻訳結果は失敗）",
+        f"試行回数: {len(attempts)}",
+        f"入力トークン: {int(usage.get('input_tokens') or 0):,}",
+        f"出力トークン: {int(usage.get('output_tokens') or 0):,}",
+        f"合計トークン: {int(usage.get('total_tokens') or 0):,}",
+        f"通常料金換算: ${float(usage.get('estimated_usd') or 0.0):,.6f} / ¥{float(usage.get('estimated_jpy') or 0.0):,.2f}",
+        f"課金見込み: ${float(usage.get('charged_usd') or 0.0):,.6f} / ¥{float(usage.get('charged_jpy') or 0.0):,.2f}",
+    ])
 
 
 def sanitize_progress_details(details: Any) -> str:

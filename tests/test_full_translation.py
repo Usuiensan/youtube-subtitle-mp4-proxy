@@ -86,6 +86,60 @@ def test_llm_translation_calls_worker_once_for_the_whole_srt(tmp_path) -> None:
     assert result.metadata["translation_request_count"] == 1
 
 
+def test_llm_validation_failure_keeps_provider_usage(tmp_path) -> None:
+    source = tmp_path / "source.srt"
+    output = tmp_path / "translated.srt"
+    source.write_text(srt.compose([subtitle(1, "Hello"), subtitle(2, "World")]), encoding="utf-8")
+    settings = TranslationSettings(
+        enabled=True,
+        target_window_seconds=120,
+        target_max_events=10,
+        context_before_seconds=120,
+        context_before_max_events=25,
+        context_after_seconds=120,
+        context_after_max_events=25,
+        model_name="gemini-3.1-flash-lite",
+        engine="gemini_2_5_flash_lite",
+        fallback_engine="",
+        glossary="",
+        topic="",
+        prompt_template="",
+        google_project="",
+        provider_name="gemini_api",
+        provider_endpoint="",
+        provider_api_key="test-key",
+    )
+
+    async def worker(_payload: dict) -> dict:
+        return {
+            "subtitles": [{"id": 1, "text": "こんにちは"}],
+            "_usage": {"input_tokens": 100, "output_tokens": 40, "total_tokens": 140},
+        }
+
+    with pytest.raises(TranslationError) as raised:
+        asyncio.run(
+            translate_srt_with_local_worker(
+                subtitle_path=source,
+                output_path=output,
+                video_title="title",
+                channel_name="channel",
+                source_language="en",
+                target_language="ja",
+                settings=settings,
+                run_worker=worker,
+            )
+        )
+
+    assert raised.value.translation_usage == {
+        "engine": "gemini_2_5_flash_lite",
+        "model": "gemini-3.1-flash-lite",
+        "input_tokens": 100,
+        "output_tokens": 40,
+        "total_tokens": 140,
+        "requests": 1,
+    }
+
+
 def test_openai_request_uses_strict_json_schema(monkeypatch) -> None:
     requests: list[dict] = []
 

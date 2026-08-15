@@ -2513,6 +2513,7 @@ def llm_token_prices(engine: str) -> tuple[float, float]:
     return {
         "gemini_2_5_flash": (0.30, 2.50),
         "gemini_2_5_flash_lite": (0.10, 0.40),
+        "gemini_3_5_flash": (0.30, 2.50),
         "gpt_5_nano": (0.05, 0.40),
         "groq_gpt_oss_20b": (0.075, 0.30),
     }.get(engine, (0.0, 0.0))
@@ -2551,7 +2552,7 @@ def enrich_translation_metadata(metadata: dict) -> dict:
             "translation_overage_estimate_usd": usd,
             "translation_overage_estimate_jpy": jpy,
         }
-    if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gpt_5_nano", "groq_gpt_oss_20b"}:
+    if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash", "gpt_5_nano", "groq_gpt_oss_20b"}:
         return metadata
     input_tokens = int(metadata.get("translation_input_tokens") or 0)
     output_tokens = int(metadata.get("translation_output_tokens") or 0)
@@ -2560,12 +2561,14 @@ def enrich_translation_metadata(metadata: dict) -> dict:
     labels = {
         "gemini_2_5_flash": "Gemini Flash",
         "gemini_2_5_flash_lite": "Gemini Flash-Lite",
+        "gemini_3_5_flash": "Gemini 3.5 Flash",
         "gpt_5_nano": "GPT-5 nano",
         "groq_gpt_oss_20b": "Groq GPT-OSS 20B",
     }
     billing = {
         "gemini_2_5_flash": "Gemini API Free Tier" if settings.gemini_billing_mode == "free_tier" else "Gemini API Paid Tier",
         "gemini_2_5_flash_lite": "Gemini API Paid/Free Tier",
+        "gemini_3_5_flash": "Gemini API Free Tier" if settings.gemini_billing_mode == "free_tier" else "Gemini API Paid Tier",
         "gpt_5_nano": "OpenAI API Paid Tier",
         "groq_gpt_oss_20b": "Groq API Paid/Free Tier",
     }
@@ -2579,6 +2582,47 @@ def enrich_translation_metadata(metadata: dict) -> dict:
         "translation_overage_estimate_jpy": jpy,
         "translation_input_price_usd_per_million": input_price,
         "translation_output_price_usd_per_million": output_price,
+    }
+
+
+def failed_translation_usage(error: Exception, attempt_settings: TranslationSettings) -> dict | None:
+    usage = getattr(error, "translation_usage", None)
+    if not isinstance(usage, dict):
+        return None
+    input_tokens = max(0, int(usage.get("input_tokens") or 0))
+    output_tokens = max(0, int(usage.get("output_tokens") or 0))
+    total_tokens = max(0, int(usage.get("total_tokens") or input_tokens + output_tokens))
+    if not input_tokens and not output_tokens and not total_tokens:
+        return None
+    estimated_usd, estimated_jpy = llm_overage_estimate(attempt_settings.engine, input_tokens, output_tokens)
+    charged_usd = (
+        0.0
+        if attempt_settings.engine.startswith("gemini_") and settings.gemini_billing_mode == "free_tier"
+        else estimated_usd
+    )
+    return {
+        "engine": attempt_settings.engine,
+        "model": attempt_settings.model_name,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "estimated_usd": estimated_usd,
+        "estimated_jpy": estimated_jpy,
+        "charged_usd": charged_usd,
+        "charged_jpy": charged_usd * settings.usd_to_jpy_rate,
+    }
+
+
+def summarize_failed_translation_usage(attempts: list[dict]) -> dict:
+    return {
+        "attempts": attempts,
+        "input_tokens": sum(int(item.get("input_tokens") or 0) for item in attempts),
+        "output_tokens": sum(int(item.get("output_tokens") or 0) for item in attempts),
+        "total_tokens": sum(int(item.get("total_tokens") or 0) for item in attempts),
+        "estimated_usd": sum(float(item.get("estimated_usd") or 0.0) for item in attempts),
+        "estimated_jpy": sum(float(item.get("estimated_jpy") or 0.0) for item in attempts),
+        "charged_usd": sum(float(item.get("charged_usd") or 0.0) for item in attempts),
+        "charged_jpy": sum(float(item.get("charged_jpy") or 0.0) for item in attempts),
     }
 
 
@@ -3043,6 +3087,7 @@ async def translate_subtitle_if_needed(
             update_job_progress(job_id, "translate", pct, eta_seconds=remaining, details=details)
 
     result = None
+    failed_translation_attempts: list[dict] = []
     for attempt_index, (attempt_settings, thinking_level) in enumerate(attempt_plan):
         try:
             result = await translate_srt_with_local_worker(
@@ -3060,7 +3105,21 @@ async def translate_subtitle_if_needed(
             selected_settings = attempt_settings
             break
         except TranslationError as error:
+            usage = failed_translation_usage(error, attempt_settings)
+            if usage:
+                failed_translation_attempts.append(usage)
+                record_llm_translation_usage(
+                    settings.llm_translation_usage_file,
+                    attempt_settings.engine,
+                    usage["input_tokens"],
+                    usage["output_tokens"],
+                    usage["total_tokens"],
+                    usage["estimated_usd"],
+                    usage["charged_usd"],
+                )
             if not is_retryable_translation_failure(error) or attempt_index + 1 >= len(attempt_plan):
+                if failed_translation_attempts:
+                    error.translation_failure_usage = summarize_failed_translation_usage(failed_translation_attempts)
                 raise
             next_settings, next_thinking_level = attempt_plan[attempt_index + 1]
             if job_id:
@@ -4391,6 +4450,8 @@ def job_response_body(job_id: str, job: dict, request: Request) -> dict:
         body["url"] = job["url"]
     if job["status"] == "failed":
         body["error"] = job.get("error", "Prepare job failed")
+        if isinstance(job.get("translation_usage"), dict):
+            body["translation_usage"] = job["translation_usage"]
     notification = job_notification(job)
     if notification:
         body["notification"] = notification
@@ -4700,15 +4761,16 @@ async def run_prepare_job(
                     await asyncio.sleep(delay)
     except Exception as error:
         now = int(time.time())
-        _prepare_jobs[job_id].update(
-            {
-                "status": "failed",
-                "error": prepare_error_text(error),
-                "eta_seconds": 0,
-                "estimated_ready_at": now,
-                "completed_at": now,
-            }
-        )
+        failed_job = {
+            "status": "failed",
+            "error": prepare_error_text(error),
+            "eta_seconds": 0,
+            "estimated_ready_at": now,
+            "completed_at": now,
+        }
+        if isinstance(getattr(error, "translation_failure_usage", None), dict):
+            failed_job["translation_usage"] = error.translation_failure_usage
+        _prepare_jobs[job_id].update(failed_job)
     finally:
         async with _prepare_lock:
             if _prepare_by_key.get(job_key) == job_id:
