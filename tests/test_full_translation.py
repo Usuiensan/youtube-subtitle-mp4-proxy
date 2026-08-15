@@ -135,6 +135,8 @@ def test_llm_validation_failure_keeps_provider_usage(tmp_path) -> None:
         "model": "gemini-3.1-flash-lite",
         "input_tokens": 100,
         "output_tokens": 40,
+        "thinking_tokens": 0,
+        "billable_output_tokens": 40,
         "total_tokens": 140,
         "requests": 1,
     }

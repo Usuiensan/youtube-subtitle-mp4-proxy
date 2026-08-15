@@ -96,19 +96,29 @@ Subtitle list (id and original text only):
 
 def _usage_openai(data: dict[str, Any]) -> dict[str, int]:
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    output_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
     return {
         "input_tokens": int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
-        "output_tokens": int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
+        "output_tokens": output_tokens,
+        "thinking_tokens": 0,
+        "billable_output_tokens": output_tokens,
         "total_tokens": int(usage.get("total_tokens") or 0),
     }
 
 
 def _usage_gemini(data: dict[str, Any]) -> dict[str, int]:
     usage = data.get("usageMetadata") if isinstance(data.get("usageMetadata"), dict) else {}
+    input_tokens = int(usage.get("promptTokenCount") or 0)
+    output_tokens = int(usage.get("candidatesTokenCount") or 0)
+    thinking_tokens = int(usage.get("thoughtsTokenCount") or 0)
+    total_tokens = int(usage.get("totalTokenCount") or 0)
+    billable_output_tokens = max(output_tokens + thinking_tokens, total_tokens - input_tokens)
     return {
-        "input_tokens": int(usage.get("promptTokenCount") or 0),
-        "output_tokens": int(usage.get("candidatesTokenCount") or 0),
-        "total_tokens": int(usage.get("totalTokenCount") or 0),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "thinking_tokens": thinking_tokens,
+        "billable_output_tokens": billable_output_tokens,
+        "total_tokens": total_tokens,
     }
 
 

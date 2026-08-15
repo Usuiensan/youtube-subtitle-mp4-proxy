@@ -2055,8 +2055,12 @@ def translation_retry_fallback_settings(selected: TranslationSettings) -> Transl
     return None
 
 
-def next_gemini_thinking_level(level: str) -> str | None:
-    return {"minimal": "low", "low": "medium", "medium": "high"}.get(level)
+def gemini_thinking_levels() -> list[str]:
+    levels = ["minimal", "low", "medium", "high"]
+    maximum = os.getenv("GEMINI_THINKING_LEVEL", "high").strip().lower()
+    if maximum not in levels:
+        maximum = "high"
+    return levels[: levels.index(maximum) + 1]
 
 
 LONG_TRANSLATION_INPUT_TOKEN_THRESHOLD = 8000
@@ -2066,26 +2070,24 @@ def translation_attempt_plan(
     selected: TranslationSettings,
     input_token_estimate: int = 0,
 ) -> list[tuple[TranslationSettings, str]]:
+    attempt_settings = selected
     if selected.provider_name == "gemini_api" and input_token_estimate >= LONG_TRANSLATION_INPUT_TOKEN_THRESHOLD:
         # ponytail: fixed threshold; tune from audit data if the model mix changes.
         fallback = translation_settings("gemini_3_5_flash")
         if translation_settings_is_configured(fallback):
-            return [(fallback, "high")]
-        if selected.model_name.startswith("gemini-3"):
-            return [(selected, "high")]
+            attempt_settings = fallback
 
-    plan: list[tuple[TranslationSettings, str]] = [(selected, "")]
-    if selected.provider_name == "gemini_api" and selected.model_name.startswith("gemini-3"):
-        level = os.getenv("GEMINI_THINKING_LEVEL", "medium").strip().lower()
-        level = level if level in {"minimal", "low", "medium", "high"} else "medium"
-        plan = [(selected, level)]
-        if next_level := next_gemini_thinking_level(level):
-            plan.append((selected, next_level))
+    if attempt_settings.provider_name == "gemini_api" and attempt_settings.model_name.startswith("gemini-3"):
+        plan: list[tuple[TranslationSettings, str]] = [
+            (attempt_settings, level) for level in gemini_thinking_levels()
+        ]
+    else:
+        plan = [(attempt_settings, "")]
     if selected.engine == "gemini_2_5_flash_lite":
         fallback = translation_settings("gemini_3_5_flash")
-        if translation_settings_is_configured(fallback):
+        if translation_settings_is_configured(fallback) and fallback.model_name != attempt_settings.model_name:
             plan.append((fallback, "high"))
-    elif fallback := translation_retry_fallback_settings(selected):
+    elif attempt_settings == selected and (fallback := translation_retry_fallback_settings(selected)):
         plan.append((fallback, ""))
     return plan
 
@@ -2560,11 +2562,23 @@ def llm_overage_estimate(engine: str, input_tokens: int, output_tokens: int) -> 
     return usd, usd * settings.usd_to_jpy_rate
 
 
+def billable_output_token_count(usage: dict) -> int:
+    input_tokens = max(0, int(usage.get("input_tokens") or usage.get("translation_input_tokens") or 0))
+    output_tokens = max(0, int(usage.get("output_tokens") or usage.get("translation_output_tokens") or 0))
+    thinking_tokens = max(0, int(usage.get("thinking_tokens") or usage.get("translation_thinking_tokens") or 0))
+    total_tokens = max(0, int(usage.get("total_tokens") or usage.get("translation_total_tokens") or 0))
+    explicit = max(
+        0,
+        int(usage.get("billable_output_tokens") or usage.get("translation_billable_output_tokens") or 0),
+    )
+    return max(explicit, output_tokens + thinking_tokens, total_tokens - input_tokens)
+
+
 def llm_token_prices(engine: str) -> tuple[float, float]:
     return {
         "gemini_2_5_flash": (0.30, 2.50),
-        "gemini_2_5_flash_lite": (0.10, 0.40),
-        "gemini_3_5_flash": (0.30, 2.50),
+        "gemini_2_5_flash_lite": (0.25, 1.50),
+        "gemini_3_5_flash": (1.50, 9.00),
         "gpt_5_nano": (0.05, 0.40),
         "groq_gpt_oss_20b": (0.075, 0.30),
     }.get(engine, (0.0, 0.0))
@@ -2606,8 +2620,8 @@ def enrich_translation_metadata(metadata: dict) -> dict:
     if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash", "gpt_5_nano", "groq_gpt_oss_20b"}:
         return metadata
     input_tokens = int(metadata.get("translation_input_tokens") or 0)
-    output_tokens = int(metadata.get("translation_output_tokens") or 0)
-    usd, jpy = llm_overage_estimate(engine, input_tokens, output_tokens)
+    billable_output_tokens = billable_output_token_count(metadata)
+    usd, jpy = llm_overage_estimate(engine, input_tokens, billable_output_tokens)
     input_price, output_price = llm_token_prices(engine)
     labels = {
         "gemini_2_5_flash": "Gemini Flash",
@@ -2625,6 +2639,7 @@ def enrich_translation_metadata(metadata: dict) -> dict:
     }
     return {
         **metadata,
+        "translation_billable_output_tokens": billable_output_tokens,
         "translation_provider_label": labels[engine],
         "translation_billing_class": billing[engine],
         "translation_api_cost_jpy": 0.0 if engine.startswith("gemini_") and settings.gemini_billing_mode == "free_tier" else jpy,
@@ -2642,10 +2657,16 @@ def failed_translation_usage(error: Exception, attempt_settings: TranslationSett
         return None
     input_tokens = max(0, int(usage.get("input_tokens") or 0))
     output_tokens = max(0, int(usage.get("output_tokens") or 0))
-    total_tokens = max(0, int(usage.get("total_tokens") or input_tokens + output_tokens))
+    thinking_tokens = max(0, int(usage.get("thinking_tokens") or 0))
+    billable_output_tokens = billable_output_token_count(usage)
+    total_tokens = max(0, int(usage.get("total_tokens") or input_tokens + billable_output_tokens))
     if not input_tokens and not output_tokens and not total_tokens:
         return None
-    estimated_usd, estimated_jpy = llm_overage_estimate(attempt_settings.engine, input_tokens, output_tokens)
+    estimated_usd, estimated_jpy = llm_overage_estimate(
+        attempt_settings.engine,
+        input_tokens,
+        billable_output_tokens,
+    )
     charged_usd = (
         0.0
         if attempt_settings.engine.startswith("gemini_") and settings.gemini_billing_mode == "free_tier"
@@ -2656,6 +2677,8 @@ def failed_translation_usage(error: Exception, attempt_settings: TranslationSett
         "model": attempt_settings.model_name,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
+        "thinking_tokens": thinking_tokens,
+        "billable_output_tokens": billable_output_tokens,
         "total_tokens": total_tokens,
         "estimated_usd": estimated_usd,
         "estimated_jpy": estimated_jpy,
@@ -2669,6 +2692,8 @@ def summarize_failed_translation_usage(attempts: list[dict]) -> dict:
         "attempts": attempts,
         "input_tokens": sum(int(item.get("input_tokens") or 0) for item in attempts),
         "output_tokens": sum(int(item.get("output_tokens") or 0) for item in attempts),
+        "thinking_tokens": sum(int(item.get("thinking_tokens") or 0) for item in attempts),
+        "billable_output_tokens": sum(int(item.get("billable_output_tokens") or 0) for item in attempts),
         "total_tokens": sum(int(item.get("total_tokens") or 0) for item in attempts),
         "estimated_usd": sum(float(item.get("estimated_usd") or 0.0) for item in attempts),
         "estimated_jpy": sum(float(item.get("estimated_jpy") or 0.0) for item in attempts),
@@ -3163,7 +3188,7 @@ async def translate_subtitle_if_needed(
                     settings.llm_translation_usage_file,
                     attempt_settings.engine,
                     usage["input_tokens"],
-                    usage["output_tokens"],
+                    usage["billable_output_tokens"],
                     usage["total_tokens"],
                     usage["estimated_usd"],
                     usage["charged_usd"],
@@ -3196,7 +3221,7 @@ async def translate_subtitle_if_needed(
         settings.llm_translation_usage_file,
         selected_settings.engine,
         metadata.get("translation_input_tokens", 0),
-        metadata.get("translation_output_tokens", 0),
+        metadata.get("translation_billable_output_tokens", metadata.get("translation_output_tokens", 0)),
         metadata.get("translation_total_tokens", 0),
         metadata.get("translation_overage_estimate_usd", 0.0),
         metadata.get("translation_api_cost_usd", 0.0),

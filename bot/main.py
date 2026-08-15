@@ -691,7 +691,7 @@ def llm_monthly_usage_text(meta: Any) -> str:
     charged_jpy = float(usage.get("charged_jpy") or 0.0)
     return "\n".join([
         f"\n{label} 月間使用量 ({month})",
-        f"入力: {input_tokens:,} / 出力: {output_tokens:,} / 合計: {total_tokens:,} tokens",
+        f"入力: {input_tokens:,} / 課金対象出力: {output_tokens:,} / 合計: {total_tokens:,} tokens",
         f"通常料金換算: ${estimated_usd:,.6f} / ¥{estimated_jpy:,.2f}",
         f"課金見込み: ${charged_usd:,.6f} / ¥{charged_jpy:,.2f}",
     ])
@@ -756,6 +756,10 @@ def translation_usage_text(meta: Any) -> str:
     characters = int(meta.get("translation_characters") or 0)
     input_tokens = int(meta.get("translation_input_tokens") or 0)
     output_tokens = int(meta.get("translation_output_tokens") or 0)
+    thinking_tokens = int(meta.get("translation_thinking_tokens") or 0)
+    billable_output_tokens = int(
+        meta.get("translation_billable_output_tokens") or output_tokens + thinking_tokens
+    )
     api_cost_jpy = float(meta.get("translation_api_cost_jpy") or 0.0)
     api_cost_usd = float(meta.get("translation_api_cost_usd") or 0.0)
     overage_usd = float(meta.get("translation_overage_estimate_usd") or 0.0)
@@ -782,17 +786,23 @@ def translation_usage_text(meta: Any) -> str:
         lines.append(f"月間無料枠: {free_chars:,}文字")
     if overage_chars:
         lines.append(f"無料枠超過文字数: {overage_chars:,}文字")
-    if input_tokens or output_tokens:
+    if input_tokens or output_tokens or thinking_tokens:
         lines.extend([
             f"入力トークン: {input_tokens:,}",
             f"出力トークン: {output_tokens:,}",
-            f"合計トークン: {int(meta.get('translation_total_tokens') or input_tokens + output_tokens):,}",
+            *([f"推論トークン: {thinking_tokens:,}"] if thinking_tokens else []),
+            *(
+                [f"課金対象出力（推論込み）: {billable_output_tokens:,}"]
+                if thinking_tokens
+                else []
+            ),
+            f"合計トークン: {int(meta.get('translation_total_tokens') or input_tokens + billable_output_tokens):,}",
         ])
     if engine in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash", "gpt_5_nano", "groq_gpt_oss_20b"}:
         default_prices = {
             "gemini_2_5_flash": (0.30, 2.50),
-            "gemini_2_5_flash_lite": (0.10, 0.40),
-            "gemini_3_5_flash": (0.30, 2.50),
+            "gemini_2_5_flash_lite": (0.25, 1.50),
+            "gemini_3_5_flash": (1.50, 9.00),
             "gpt_5_nano": (0.05, 0.40),
             "groq_gpt_oss_20b": (0.075, 0.30),
         }
@@ -814,6 +824,19 @@ def translation_failure_usage_text(usage: Any) -> str:
         f"試行回数: {len(attempts)}",
         f"入力トークン: {int(usage.get('input_tokens') or 0):,}",
         f"出力トークン: {int(usage.get('output_tokens') or 0):,}",
+        *(
+            [f"推論トークン: {int(usage.get('thinking_tokens') or 0):,}"]
+            if int(usage.get('thinking_tokens') or 0)
+            else []
+        ),
+        *(
+            [
+                "課金対象出力（推論込み）: "
+                f"{int(usage.get('billable_output_tokens') or usage.get('output_tokens') or 0):,}"
+            ]
+            if int(usage.get('thinking_tokens') or 0)
+            else []
+        ),
         f"合計トークン: {int(usage.get('total_tokens') or 0):,}",
         f"通常料金換算: ${float(usage.get('estimated_usd') or 0.0):,.6f} / ¥{float(usage.get('estimated_jpy') or 0.0):,.2f}",
         f"課金見込み: ${float(usage.get('charged_usd') or 0.0):,.6f} / ¥{float(usage.get('charged_jpy') or 0.0):,.2f}",

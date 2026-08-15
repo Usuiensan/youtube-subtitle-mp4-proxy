@@ -162,6 +162,8 @@ async def translate_srt_with_local_worker(
     usage_totals = {
         "input_tokens": 0,
         "output_tokens": 0,
+        "thinking_tokens": 0,
+        "billable_output_tokens": 0,
         "total_tokens": 0,
         "requests": 1,
     }
@@ -174,11 +176,19 @@ async def translate_srt_with_local_worker(
         for source_key, target_key in (
             ("input_tokens", "input_tokens"),
             ("output_tokens", "output_tokens"),
+            ("thinking_tokens", "thinking_tokens"),
             ("total_tokens", "total_tokens"),
         ):
             value = usage.get(source_key)
             if isinstance(value, (int, float)):
                 usage_totals[target_key] += int(value)
+        billable_output_tokens = usage.get("billable_output_tokens")
+        if not isinstance(billable_output_tokens, (int, float)):
+            billable_output_tokens = max(
+                int(usage.get("output_tokens") or 0) + int(usage.get("thinking_tokens") or 0),
+                int(usage.get("total_tokens") or 0) - int(usage.get("input_tokens") or 0),
+            )
+        usage_totals["billable_output_tokens"] += max(0, int(billable_output_tokens))
 
     if on_progress:
         on_progress(0, total_subtitles, recent_pairs)
@@ -243,6 +253,8 @@ async def translate_srt_with_local_worker(
             "translation_characters": translation_characters,
             "translation_input_tokens": usage_totals["input_tokens"],
             "translation_output_tokens": usage_totals["output_tokens"],
+            "translation_thinking_tokens": usage_totals["thinking_tokens"],
+            "translation_billable_output_tokens": usage_totals["billable_output_tokens"],
             "translation_total_tokens": usage_totals["total_tokens"],
             "translation_request_count": usage_totals["requests"],
             "translation_billing_class": "local",

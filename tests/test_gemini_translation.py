@@ -130,7 +130,7 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertEqual(settings.model_name, "gemini-3.5-flash")
         self.assertEqual(settings.provider_name, "gemini_api")
 
-    def test_gemini_lite_attempts_35_flash_at_high(self) -> None:
+    def test_gemini_lite_attempts_from_minimal_to_high_then_flash(self) -> None:
         with patch.dict("os.environ", {"GEMINI_THINKING_LEVEL": "medium"}), patch.object(
             app_main.settings, "gemini_api_key", "test-key"
         ):
@@ -141,20 +141,29 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertEqual(
             [(setting.model_name, level) for setting, level in plan],
             [
+                ("gemini-3.1-flash-lite", "minimal"),
+                ("gemini-3.1-flash-lite", "low"),
                 ("gemini-3.1-flash-lite", "medium"),
-                ("gemini-3.1-flash-lite", "high"),
                 ("gemini-3.5-flash", "high"),
             ],
         )
 
-    def test_long_gemini_input_starts_with_35_flash_high_once(self) -> None:
+    def test_long_gemini_input_starts_with_35_flash_minimal(self) -> None:
         with patch.object(app_main.settings, "gemini_api_key", "test-key"):
             plan = app_main.translation_attempt_plan(
                 app_main.translation_settings("gemini_2_5_flash_lite"),
                 input_token_estimate=8000,
             )
 
-        self.assertEqual([(setting.model_name, level) for setting, level in plan], [("gemini-3.5-flash", "high")])
+        self.assertEqual(
+            [(setting.model_name, level) for setting, level in plan],
+            [
+                ("gemini-3.5-flash", "minimal"),
+                ("gemini-3.5-flash", "low"),
+                ("gemini-3.5-flash", "medium"),
+                ("gemini-3.5-flash", "high"),
+            ],
+        )
 
     def test_high_thinking_reserves_output_budget(self) -> None:
         budget = translation_worker._output_token_budget(
@@ -214,6 +223,23 @@ class GeminiTranslationTests(unittest.TestCase):
         subtitles_schema = requests[0]["generationConfig"]["responseSchema"]["properties"]["subtitles"]
         self.assertNotIn("minItems", subtitles_schema)
         self.assertNotIn("maxItems", subtitles_schema)
+
+    def test_gemini_usage_includes_thinking_tokens_in_billable_output(self) -> None:
+        usage = translation_worker._usage_gemini(
+            {
+                "usageMetadata": {
+                    "promptTokenCount": 100,
+                    "candidatesTokenCount": 40,
+                    "thoughtsTokenCount": 60,
+                    "totalTokenCount": 200,
+                }
+            }
+        )
+
+        self.assertEqual(usage["output_tokens"], 40)
+        self.assertEqual(usage["thinking_tokens"], 60)
+        self.assertEqual(usage["billable_output_tokens"], 100)
+        self.assertEqual(usage["total_tokens"], 200)
 
     def test_gemini_availability_does_not_require_remote_llm_endpoint(self) -> None:
         with patch.object(app_main.settings, "remote_llm_endpoint", ""), patch.object(
@@ -283,6 +309,22 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertGreater(metadata["translation_overage_estimate_usd"], 0.0)
         self.assertGreater(metadata["translation_overage_estimate_jpy"], 0.0)
 
+    def test_enrich_translation_metadata_prices_thinking_tokens_for_flash(self) -> None:
+        metadata = app_main.enrich_translation_metadata(
+            {
+                "translation_engine": "gemini_3_5_flash",
+                "translation_input_tokens": 1000,
+                "translation_output_tokens": 500,
+                "translation_thinking_tokens": 1500,
+                "translation_total_tokens": 3000,
+            }
+        )
+
+        self.assertEqual(metadata["translation_billable_output_tokens"], 2000)
+        self.assertEqual(metadata["translation_input_price_usd_per_million"], 1.50)
+        self.assertEqual(metadata["translation_output_price_usd_per_million"], 9.00)
+        self.assertAlmostEqual(metadata["translation_overage_estimate_usd"], 0.0195)
+
     def test_failed_translation_usage_estimates_response_cost(self) -> None:
         error = TranslationError("subtitle count mismatch")
         error.translation_usage = {
@@ -297,6 +339,24 @@ class GeminiTranslationTests(unittest.TestCase):
         assert usage is not None
         assert usage["estimated_usd"] > 0
         assert usage["estimated_jpy"] > 0
+
+    def test_gemini_thinking_tokens_are_in_billable_output(self) -> None:
+        error = TranslationError("subtitle count mismatch")
+        error.translation_usage = {
+            "input_tokens": 1000,
+            "output_tokens": 500,
+            "thinking_tokens": 1500,
+            "billable_output_tokens": 2000,
+            "total_tokens": 3000,
+        }
+        settings = app_main.translation_settings("gemini_3_5_flash")
+
+        usage = app_main.failed_translation_usage(error, settings)
+
+        assert usage is not None
+        self.assertEqual(usage["billable_output_tokens"], 2000)
+        self.assertEqual(usage["thinking_tokens"], 1500)
+        self.assertAlmostEqual(usage["estimated_usd"], 0.0195)
 
     def test_bot_translation_usage_text(self) -> None:
         text = bot_main.translation_usage_text(
