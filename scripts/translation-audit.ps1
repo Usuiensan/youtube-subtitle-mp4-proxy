@@ -20,6 +20,7 @@ foreach ($value in @($VideoId, $Model, $Provider)) {
 $remote = @('sudo -n /usr/local/sbin/youtube-proxy-audit')
 if ($DetailName) {
     $remote += "--detail-name $DetailName"
+    $remote += "--limit $Limit"
 } else {
     $remote += "--list --limit $Limit"
     if ($VideoId) { $remote += "--video-id $VideoId" }

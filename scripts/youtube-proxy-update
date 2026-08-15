@@ -28,7 +28,7 @@ chmod 700 "$INCOMING_DIR"
 install -o root -g root -m 600 "$ARCHIVE" "$SAFE_ARCHIVE"
 rm -f -- "$ARCHIVE"
 while IFS= read -r entry; do
-    [[ "$entry" != /* && "$entry" != ../* && "$entry" != */../* && "$entry" != *$'\n'* ]] || { echo "アーカイブ内パスが不正です"; exit 1; }
+    [[ "$entry" != /* && "$entry" != ../* && "$entry" != */../* && "$entry" != */.. && "$entry" != ".." && "$entry" != *$'\n'* ]] || { echo "アーカイブ内パスが不正です"; exit 1; }
 done < <(tar -tzf "$SAFE_ARCHIVE")
 tar -xzf "$SAFE_ARCHIVE" --no-same-owner --no-same-permissions -C "$STAGE"
 if find "$STAGE" -type l -print -quit | grep -q .; then

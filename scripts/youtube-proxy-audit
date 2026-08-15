@@ -5,8 +5,7 @@ SECRETS_FILE=/etc/youtube-mp4-proxy/secrets.env
 BASE_URL=http://127.0.0.1:8000/translation-audit
 [[ $(id -u) -eq 0 ]] || { echo 'root権限で実行してください' >&2; exit 1; }
 [[ -r "$SECRETS_FILE" ]] || { echo '監査設定が見つかりません' >&2; exit 1; }
-. "$SECRETS_FILE"
-AUDIT_TOKEN=${TRANSLATION_AUDIT_API_TOKEN:-}
+AUDIT_TOKEN=$(awk -F= '$1 == "TRANSLATION_AUDIT_API_TOKEN" { sub(/^[^=]*=/, ""); print; exit }' "$SECRETS_FILE")
 [[ -n "$AUDIT_TOKEN" ]] || { echo '監査設定が不完全です' >&2; exit 1; }
 
 OP=''

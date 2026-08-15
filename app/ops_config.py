@@ -155,7 +155,7 @@ def write_values(values: dict[str, int | float | str], expected_revision: str) -
 def append_audit(key: str, old_value: object, new_value: object, operator: str, result: str) -> None:
     path = config_audit_file()
     path.parent.mkdir(parents=True, exist_ok=True)
-    safe_operator = re.sub(r"[^A-Za-z0-9_.:@-]", "_", str(operator or "api"))[:80] or "api"
+    safe_operator = operator if operator in {"api", "agent", "human", "root-wrapper"} else "api"
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "key": key,

@@ -7,8 +7,7 @@ PROXY_SERVICE=youtube-mp4-proxy
 DISCORD_SERVICE=youtube-mp4-discord-bot
 [[ $(id -u) -eq 0 ]] || { echo 'root権限で実行してください' >&2; exit 1; }
 [[ -r "$SECRETS_FILE" ]] || { echo 'コンフィグ設定が見つかりません' >&2; exit 1; }
-. "$SECRETS_FILE"
-CONFIG_TOKEN=${TRANSLATION_CONFIG_API_TOKEN:-}
+CONFIG_TOKEN=$(awk -F= '$1 == "TRANSLATION_CONFIG_API_TOKEN" { sub(/^[^=]*=/, ""); print; exit }' "$SECRETS_FILE")
 [[ -n "$CONFIG_TOKEN" ]] || { echo 'コンフィグ設定が不完全です' >&2; exit 1; }
 
 curl_config() {
@@ -32,6 +31,10 @@ while (($#)); do
     esac
 done
 OP=${OP:-get}
+if [[ "$OP" != set && -n "$KEY$VALUE$REVISION" ]]; then
+    echo 'set以外の操作に引数は指定できません' >&2
+    exit 2
+fi
 case "$OP" in
     get) curl_config "$BASE_URL";;
     validate) curl_config "$BASE_URL";;
