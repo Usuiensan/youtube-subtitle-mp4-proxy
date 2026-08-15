@@ -107,6 +107,12 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertEqual(settings.model_name, app_main.settings.local_llm_profile_models["gemini_2_5_flash"])
         self.assertEqual(settings.provider_name, "gemini_api")
 
+    def test_translation_retry_skips_client_http_errors(self) -> None:
+        self.assertFalse(app_main.is_retryable_translation_failure(RuntimeError("translation api http error 404: missing")))
+        self.assertFalse(app_main.is_retryable_translation_failure(RuntimeError("translation api http error 400: bad request")))
+        self.assertTrue(app_main.is_retryable_translation_failure(RuntimeError("translation api http error 503: unavailable")))
+        self.assertTrue(app_main.is_retryable_translation_failure(RuntimeError("translation api returned invalid JSON")))
+
     def test_gemini_thinking_level_is_added_to_generation_config(self) -> None:
         requests: list[dict] = []
 

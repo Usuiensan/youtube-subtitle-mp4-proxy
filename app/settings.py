@@ -101,6 +101,7 @@ class Settings:
     translation_provider = os.getenv("TRANSLATION_PROVIDER", "qwen3_4b_instruct").strip().lower()
     translation_failure_dir = Path(os.getenv("TRANSLATION_FAILURE_DIR", str(cache_hot_dir / ".translation-attempts")))
     translation_audit_dir = Path(os.getenv("TRANSLATION_AUDIT_DIR", str(cache_hot_dir / ".translation-audit")))
+    translation_audit_api_token = os.getenv("TRANSLATION_AUDIT_API_TOKEN", "").strip()
     llm_translation_usage_file = Path(os.getenv("LLM_TRANSLATION_USAGE_FILE", str(cache_hot_dir / "llm-translation-usage.json")))
     google_translation_usage_file = Path(os.getenv("GOOGLE_TRANSLATION_USAGE_FILE", str(cache_hot_dir / "google-translation-usage.json")))
     system_metrics_enabled = os.getenv("SYSTEM_METRICS_ENABLED", "1") != "0"

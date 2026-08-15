@@ -1961,15 +1961,30 @@ def is_retryable_translation_api_503(error: Exception) -> bool:
     return "translation api http error 503:" in str(error).lower()
 
 
-def is_subtitle_count_mismatch(error: Exception) -> bool:
-    return str(error).startswith("subtitle count mismatch:")
+def is_retryable_translation_failure(error: Exception) -> bool:
+    return not re.search(r"translation api http error 4\d\d:", str(error).lower())
 
 
-def gemini_fallback_settings() -> TranslationSettings:
-    fallback_profile = normalize_translation_engine(settings.gemini_fallback_profile)
-    if fallback_profile == "gemini_2_5_flash" or fallback_profile == "google_cloud":
-        fallback_profile = "qwen3_4b_instruct"
-    return translation_settings(fallback_profile)
+def translation_retry_fallback_settings(selected: TranslationSettings) -> TranslationSettings | None:
+    profiles = [
+        selected.fallback_engine,
+        settings.gemini_fallback_profile,
+        "qwen3_8b",
+        "qwen3_14b",
+        "gemini_2_5_flash",
+    ]
+    for profile in profiles:
+        normalized = normalize_translation_engine(profile)
+        if normalized in {selected.engine, "google_cloud", "youtube_auto"}:
+            continue
+        candidate = translation_settings(normalized)
+        if candidate.model_name and candidate.model_name != selected.model_name:
+            return candidate
+    return None
+
+
+def next_gemini_thinking_level(level: str) -> str | None:
+    return {"minimal": "low", "low": "medium", "medium": "high"}.get(level)
 
 
 def chat_profile_options() -> list[dict]:
@@ -2891,14 +2906,18 @@ async def translate_subtitle_if_needed(
     translated_path = work_dir / f"{subtitle.stem}.ja.translated.srt"
     selected_settings = translation_settings(configured_translation_engine())
 
-    attempt_plan = [(selected_settings, "")]
+    attempt_plan: list[tuple[TranslationSettings, str]] = [(selected_settings, "")]
     if selected_settings.provider_name == "gemini_api" and selected_settings.model_name.startswith("gemini-3"):
         default_thinking_level = os.getenv("GEMINI_THINKING_LEVEL", "medium").strip().lower()
         if default_thinking_level not in {"minimal", "low", "medium", "high"}:
             default_thinking_level = "medium"
         attempt_plan = [(selected_settings, default_thinking_level)]
-        if default_thinking_level != "high":
-            attempt_plan.append((selected_settings, "high"))
+        next_level = next_gemini_thinking_level(default_thinking_level)
+        if next_level:
+            attempt_plan.append((selected_settings, next_level))
+    fallback_settings = translation_retry_fallback_settings(selected_settings)
+    if fallback_settings is not None:
+        attempt_plan.append((fallback_settings, ""))
 
     async def worker(payload: dict, attempt_settings: TranslationSettings, thinking_level: str) -> dict:
         payload["_work_dir"] = str(work_dir)
@@ -2981,18 +3000,19 @@ async def translate_subtitle_if_needed(
                 settings=attempt_settings,
                 run_worker=lambda payload, current=attempt_settings, level=thinking_level: worker(payload, current, level),
                 on_progress=on_prog,
+                video_id=str(info.get("id") or ""),
             )
             selected_settings = attempt_settings
             break
         except TranslationError as error:
-            if not is_subtitle_count_mismatch(error) or attempt_index + 1 >= len(attempt_plan):
+            if not is_retryable_translation_failure(error) or attempt_index + 1 >= len(attempt_plan):
                 raise
             next_settings, next_thinking_level = attempt_plan[attempt_index + 1]
             if job_id:
                 if next_thinking_level:
-                    details = "字幕件数不一致のため、推論レベルを上げて再試行します…"
+                    details = "翻訳結果異常のため、推論レベルを上げて再試行します…"
                 else:
-                    details = f"字幕件数不一致のため、{next_settings.model_name}へ切り替えて再試行します…"
+                    details = f"翻訳結果異常のため、{next_settings.model_name}へ切り替えて再試行します…"
                 update_job_progress(job_id, "translate", 0.0, details=details)
     assert result is not None
     end_t = time.time()
@@ -3002,7 +3022,11 @@ async def translate_subtitle_if_needed(
     except Exception:
         pass
         
-    metadata = enrich_translation_metadata({**selection, **result.metadata})
+    metadata = enrich_translation_metadata({
+        **selection,
+        **result.metadata,
+        "translation_fallback_used": selected_settings.engine != configured_translation_engine(),
+    })
     record_llm_translation_usage(
         settings.llm_translation_usage_file,
         selected_settings.engine,
@@ -7056,9 +7080,37 @@ def _translation_audit_files() -> list[Path]:
     root = settings.translation_audit_dir
     if not root.exists():
         return []
-    files = [path for path in root.glob("*.jsonl") if path.is_file()]
+    resolved_root = root.resolve()
+    files = [
+        path
+        for path in root.glob("*.jsonl")
+        if path.is_file() and path.resolve().parent == resolved_root
+    ]
     files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
     return files
+
+
+def require_translation_audit_auth(request: Request) -> None:
+    configured = settings.translation_audit_api_token
+    supplied = request.headers.get("x-translation-audit-token", "")
+    if configured:
+        if supplied and secrets.compare_digest(supplied, configured):
+            return
+        if supplied or not request.headers.get("authorization"):
+            raise HTTPException(status_code=401, detail="Invalid translation audit token")
+        require_prepare_auth(request)
+        return
+    require_prepare_auth(request)
+
+
+def translation_audit_file(name: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+\.jsonl", name):
+        raise HTTPException(status_code=400, detail="Invalid audit file name")
+    root = settings.translation_audit_dir.resolve()
+    path = (root / name).resolve()
+    if path.parent != root or not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Audit file not found")
+    return path
 
 
 def _read_jsonl_lines(path: Path, limit: int | None = None) -> list[dict]:
@@ -7176,30 +7228,49 @@ def _list_cached_variants_for_video(request: Request, video_id: str) -> list[dic
 
 
 @app.get("/translation-audit")
-async def translation_audit_index(request: Request) -> JSONResponse:
-    require_prepare_auth(request)
+async def translation_audit_index(
+    request: Request,
+    limit: int = Query(200, ge=1, le=1000),
+    video_id: str | None = Query(None),
+    model: str | None = Query(None),
+    provider: str | None = Query(None),
+) -> JSONResponse:
+    require_translation_audit_auth(request)
     items = []
     for path in _translation_audit_files():
-        records = _read_jsonl_lines(path)
+        records = _read_jsonl_lines(path, limit=2000)
         first = records[0] if records else {}
         last = records[-1] if records else {}
+        item_video_id = first.get("video_id") or last.get("video_id")
+        item_model = first.get("model_name") or last.get("model_name")
+        item_provider = first.get("provider") or last.get("provider")
+        if video_id and str(item_video_id or "") != video_id:
+            continue
+        if model and str(item_model or "") != model:
+            continue
+        if provider and str(item_provider or "") != provider:
+            continue
         items.append(
             {
                 "name": path.name,
-                "path": str(path),
                 "updated_at": int(path.stat().st_mtime),
                 "request_count": sum(1 for rec in records if str(rec.get("event") or "") == "request"),
                 "response_count": sum(1 for rec in records if str(rec.get("event") or "") == "response"),
                 "error_count": sum(1 for rec in records if str(rec.get("event") or "") == "error"),
-                "video_id": first.get("video_id") or last.get("video_id"),
+                "provider_request_count": sum(1 for rec in records if str(rec.get("event") or "") == "provider_request"),
+                "provider_response_count": sum(1 for rec in records if str(rec.get("event") or "") == "provider_response"),
+                "provider_error_count": sum(1 for rec in records if str(rec.get("event") or "") == "provider_error"),
+                "video_id": item_video_id,
                 "lang": first.get("target_language") or last.get("target_language"),
-                "model_name": first.get("model_name") or last.get("model_name"),
-                "provider": first.get("provider") or last.get("provider"),
+                "model_name": item_model,
+                "provider": item_provider,
                 "source_language": first.get("source_language") or last.get("source_language"),
                 "sample_prompt": first.get("prompt") or "",
                 "sample_response": last.get("response") or "",
             }
         )
+        if len(items) >= limit:
+            break
     return JSONResponse({"count": len(items), "items": items})
 
 
@@ -7218,14 +7289,10 @@ async def llm_translation_usage(engine: str | None = Query(None)) -> JSONRespons
 
 @app.get("/translation-audit/{name}")
 async def translation_audit_detail(request: Request, name: str, limit: int = Query(200, ge=1, le=2000)) -> JSONResponse:
-    require_prepare_auth(request)
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
-        raise HTTPException(status_code=400, detail="Invalid audit file name")
-    path = settings.translation_audit_dir / name
-    if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=404, detail="Audit file not found")
+    require_translation_audit_auth(request)
+    path = translation_audit_file(name)
     records = [_decode_translation_audit_record(record) for record in _read_jsonl_lines(path, limit=limit)]
-    return JSONResponse({"name": name, "path": str(path), "count": len(records), "records": records})
+    return JSONResponse({"name": name, "count": len(records), "records": records})
 
 
 @app.get("/prepare/youtube/{video_id}/variants")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -80,6 +81,35 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         with patch.object(app_main.settings, "discord_prepare_token", "token"):
             response = TestClient(app_main.app).get("/translation-audit")
         self.assertEqual(response.status_code, 401)
+
+    def test_translation_audit_api_token_is_read_only_and_hides_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            (audit_dir / "safe.jsonl").write_text(
+                json.dumps({"event": "request", "model_name": "test-model"}) + "\n",
+                encoding="utf-8",
+            )
+            original_dir = app_main.settings.translation_audit_dir
+            original_audit_token = app_main.settings.translation_audit_api_token
+            original_prepare_token = app_main.settings.discord_prepare_token
+            app_main.settings.translation_audit_dir = audit_dir
+            app_main.settings.translation_audit_api_token = "audit-token"
+            app_main.settings.discord_prepare_token = "prepare-token"
+            try:
+                client = TestClient(app_main.app)
+                headers = {"X-Translation-Audit-Token": "audit-token"}
+                response = client.get("/translation-audit", headers=headers)
+                self.assertEqual(response.status_code, 200)
+                self.assertNotIn("path", response.json()["items"][0])
+                detail = client.get("/translation-audit/safe.jsonl", headers=headers)
+                self.assertEqual(detail.status_code, 200)
+                self.assertNotIn("path", detail.json())
+                self.assertEqual(client.get("/translation-audit/../safe.jsonl", headers=headers).status_code, 404)
+                self.assertEqual(client.get("/translation-audit", headers={"X-Translation-Audit-Token": "wrong"}).status_code, 401)
+            finally:
+                app_main.settings.translation_audit_dir = original_dir
+                app_main.settings.translation_audit_api_token = original_audit_token
+                app_main.settings.discord_prepare_token = original_prepare_token
 
     def test_prepared_srt_download_does_not_require_prepare_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

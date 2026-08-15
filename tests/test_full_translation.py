@@ -120,3 +120,11 @@ def test_openai_request_uses_strict_json_schema(monkeypatch) -> None:
     assert schema["strict"] is True
     assert schema["schema"]["required"] == ["subtitles"]
     assert "00:00" not in requests[0]["body"]["messages"][0]["content"]
+
+
+def test_output_token_budget_grows_with_input_tokens(monkeypatch) -> None:
+    monkeypatch.setenv("LOCAL_LLM_MAX_OUTPUT_TOKENS", "65536")
+    short = {"subtitles": [{"id": 1, "text": "short"}]}
+    long = {"subtitles": [{"id": 1, "text": "字幕" * 10000}]}
+    assert translation_worker._output_token_budget("short", short) == 4096
+    assert translation_worker._output_token_budget("long" * 20000, long) > 4096

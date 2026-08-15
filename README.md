@@ -313,9 +313,9 @@ Google の API キーが必要なのは、YouTube Data API v3 を使う `/prepar
 
 `TRANSLATION_ENABLED=1` の場合、要求言語が `ja` で日本語の手動字幕がない動画は、Discord bot の単体 `/prepare` では翻訳元字幕をユーザーが選び、日本語へ翻訳してから焼き込みます。API から `subtitleSourceLang` を指定しない場合や一括準備では、動画の原言語、英語、韓国語、中国語、`TRANSLATION_SOURCE_LANGS` の順で自動選択します。
 
-LLM 翻訳は字幕IDと原文だけを動画1本分まとめて1回のAPIリクエストへ送り、動画全体の文脈で翻訳します。応答はStructured Output / JSON Schemaで `{"subtitles":[{"id":1,"text":"..."}]}` に固定し、プログラム側で件数・ID集合・重複・空文字を検証します。タイムコードは送信せず、検証済みIDを元SRTへ再結合します。長すぎてcontextまたは出力上限を超えた場合は自動分割せず失敗します。Gemini などのクラウドLLMは `REMOTE_LLM_ENDPOINT` なしでもAPIキー設定だけで候補に表示します。
+LLM 翻訳は字幕IDと原文だけを動画1本分まとめて1回のAPIリクエストへ送り、動画全体の文脈で翻訳します。入力トークンの推定値と字幕件数から出力トークン予算を決め、件数不足を予防します。応答はStructured Output / JSON Schemaで `{"subtitles":[{"id":1,"text":"..."}]}` に固定し、プログラム側で件数・ID集合・重複・空文字を検証します。タイムコードは送信せず、検証済みIDを元SRTへ再結合します。結果異常時は推論レベル変更後に別モデルへ再送し、404などの4xxエラーは再送しません。Gemini などのクラウドLLMは `REMOTE_LLM_ENDPOINT` なしでもAPIキー設定だけで候補に表示します。
 
-翻訳エンジンは `TRANSLATION_DEFAULT_PROFILE` で1つに固定します。Google Cloud Translation は使用しません。YouTube自動生成字幕・自動翻訳も使用しません。LLM APIの503（一時的な混雑）は最大3回まで指数バックオフで再試行し、Discordの進捗に表示します。
+翻訳エンジンは `TRANSLATION_DEFAULT_PROFILE` で1つに固定します。Google Cloud Translation は使用しません。YouTube自動生成字幕・自動翻訳も使用しません。LLM APIの503（一時的な混雑）は最大3回まで指数バックオフで再試行し、結果異常時は推論レベル変更・別モデル切り替えを行い、Discordの進捗に表示します。HTTP 4xxは再送しません。
 
 ```bash
 export TRANSLATION_ENABLED=1
@@ -327,6 +327,7 @@ export REMOTE_LLM_ENDPOINT=http://192.168.68.115:11434/v1/chat/completions
 export REMOTE_LLM_HEALTH_URL=http://192.168.68.115:11434/v1/models
 export REMOTE_LLM_MODEL=qwen3:4b-instruct
 export TRANSLATION_AUDIT_DIR=/var/lib/youtube-proxy/translation-audit
+export TRANSLATION_AUDIT_API_TOKEN=replace-with-a-random-read-only-token
 export LOCAL_LLM_MODEL_QWEN3_4B_INSTRUCT=qwen3:4b-instruct
 export LOCAL_LLM_MODEL_QWEN3_8B=qwen3:8b
 export LOCAL_LLM_MODEL_QWEN3_14B=qwen3:14b
@@ -345,6 +346,17 @@ export LOCAL_LLM_TIMEOUT_SECONDS=900
 export LOCAL_LLM_TEMPERATURE=0
 export TRANSLATION_FALLBACK_ENGINE=
 ```
+
+監査ログは準備キーまたは専用の読み取り専用トークンで確認できます。AIコーディングエージェントからは、トークンをURLやリポジトリへ書かず、ヘッダーで渡してください。
+
+```bash
+curl -H "X-Translation-Audit-Token: $TRANSLATION_AUDIT_API_TOKEN" \
+  "http://127.0.0.1:8000/translation-audit?limit=20&model=gemini-3.1-flash-lite"
+curl -H "X-Translation-Audit-Token: $TRANSLATION_AUDIT_API_TOKEN" \
+  "http://127.0.0.1:8000/translation-audit/監査ファイル名.jsonl?limit=200"
+```
+
+APIは監査ディレクトリ直下のJSONLだけを返し、ファイルシステムの絶対パスは返しません。監査本文には字幕原文・訳文が含まれるため、トークンは秘密として扱ってください。
 
 翻訳済み字幕は `source/subtitle.ja.translated.srt`、元字幕は `source/subtitle.SOURCE.original.srt`、翻訳メタデータは `source/translation.json` に保存します。翻訳設定とモデル名はキャッシュキーへ含まれるため、モデルやwindow設定を変えた場合に古いMP4を誤再利用しません。
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import threading
@@ -111,6 +112,14 @@ def _usage_gemini(data: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def _output_token_budget(prompt: str, payload: dict[str, Any]) -> int:
+    configured = max(1, int(os.getenv("LOCAL_LLM_MAX_OUTPUT_TOKENS", "65536")))
+    input_estimate = max(1, math.ceil(len(prompt.encode("utf-8")) / 3))
+    subtitle_count = len(payload.get("subtitles") or [])
+    required = max(4096, input_estimate * 2, subtitle_count * 32)
+    return min(configured, required)
+
+
 def _request_json(
     url: str,
     body: dict[str, Any],
@@ -154,12 +163,13 @@ def translate_batch_openai(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
         raise RuntimeError("LLM endpoint is not configured")
     model = str(payload.get("model_name") or "")
     timeout = int(payload.get("llm_timeout_seconds") or os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "900"))
-    max_tokens = int(os.getenv("LOCAL_LLM_MAX_OUTPUT_TOKENS", "65536"))
+    prompt = build_full_translation_prompt(payload)
+    max_tokens = _output_token_budget(prompt, payload)
     api_key = str(payload.get("llm_api_key") or "")
     provider = str(payload.get("translation_provider") or "openai_compatible")
     body = {
         "model": model,
-        "messages": [{"role": "user", "content": build_full_translation_prompt(payload)}],
+        "messages": [{"role": "user", "content": prompt}],
         ("max_completion_tokens" if provider == "openai_api" else "max_tokens"): max_tokens,
         "response_format": {
             "type": "json_schema",
@@ -206,6 +216,7 @@ def translate_batch_gemini(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
         or "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     ).format(model=urllib.parse.quote(model, safe=""))
     url = endpoint
+    prompt = build_full_translation_prompt(payload)
     schema = subtitle_schema()
     gemini_schema = {
         "type": "OBJECT",
@@ -225,10 +236,10 @@ def translate_batch_gemini(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
         "required": ["subtitles"],
     }
     body = {
-        "contents": [{"role": "user", "parts": [{"text": build_full_translation_prompt(payload)}]}],
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": float(os.getenv("LOCAL_LLM_TEMPERATURE", "0")),
-            "maxOutputTokens": int(os.getenv("LOCAL_LLM_MAX_OUTPUT_TOKENS", "65536")),
+            "maxOutputTokens": _output_token_budget(prompt, payload),
             "responseMimeType": "application/json",
             "responseSchema": gemini_schema,
         },
@@ -279,6 +290,8 @@ def main() -> int:
             "subtitle_count": len(payload.get("subtitles") or []),
             "source_language": payload.get("source_language"),
             "target_language": payload.get("target_language"),
+            "input_token_estimate": max(1, math.ceil(len(prompt.encode("utf-8")) / 3)),
+            "output_token_budget": _output_token_budget(prompt, payload),
         },
     )
     try:
