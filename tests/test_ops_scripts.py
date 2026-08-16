@@ -43,6 +43,7 @@ def test_storage_operator_uses_only_the_configured_mount_point() -> None:
     assert "CACHE_ARCHIVE_MOUNT_POINT が未設定" in operator
     assert 'umount "$ARCHIVE_MOUNT"' in operator
     assert "/prepare/storage-status" in operator
+    assert operator.count("sleep 2") == 2
     assert "eval " not in operator
 
 

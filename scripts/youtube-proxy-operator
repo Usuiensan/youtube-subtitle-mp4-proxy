@@ -94,6 +94,7 @@ attach() {
     mount "$ARCHIVE_MOUNT"
     storage_mounted || { echo 'HDDのマウント確認に失敗しました' >&2; exit 1; }
     systemctl start "$PROXY_SERVICE"
+    sleep 2
     curl --fail --silent --show-error http://127.0.0.1:8000/healthz >/dev/null
     echo 'HDDを検出して動画サービスを再開しました。'
 }
@@ -105,6 +106,7 @@ translation_profile() {
     "$CONFIG_HELPER" set --key TRANSLATION_DEFAULT_PROFILE --value "$profile" --expected-revision "$revision" >/dev/null
     if storage_mounted; then
         systemctl restart "$PROXY_SERVICE"
+        sleep 2
         curl --fail --silent --show-error http://127.0.0.1:8000/healthz >/dev/null
         echo "翻訳モデルを $profile に切り替え、動画サービスを再起動しました。"
     else
