@@ -48,6 +48,14 @@ def test_validate_translations_requires_contiguous_ranges_and_non_empty_text() -
         )
 
 
+def test_validate_translations_ignores_invisible_formatting_between_digits() -> None:
+    result = validate_translations(
+        [subtitle(4, "24\u2060 ft wide")],
+        {"subtitles": [{"from_id": 4, "to_id": 4, "text": "幅24フィート"}]},
+    )
+    assert result[0]["text"] == "幅24フィート"
+
+
 def test_llm_translation_calls_worker_once_for_the_whole_srt(tmp_path) -> None:
     source = tmp_path / "source.srt"
     output = tmp_path / "translated.srt"

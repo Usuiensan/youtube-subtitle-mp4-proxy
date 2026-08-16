@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -55,6 +56,12 @@ def normalize_subtitle_text(text: str, *, compact: bool = False) -> str:
     normalized = re.sub(r"\\+(?=\s)", " ", normalized)
     normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
     return " ".join(normalized.split()) if compact else normalized
+
+
+def subtitle_number_tokens(text: str) -> list[str]:
+    normalized = normalize_subtitle_text(text, compact=True)
+    normalized = "".join(char for char in normalized if unicodedata.category(char) != "Cf")
+    return re.findall(r"\d+", normalized)
 
 
 def save_srt(path: Path, subtitles: list[srt.Subtitle]) -> None:
@@ -187,9 +194,12 @@ def validate_translations(
         for url in re.findall(r"https?://\S+", original):
             if url not in text:
                 raise TranslationError(f"url disappeared: {from_id}-{to_id}")
-        original_numbers = re.findall(r"\d+", original)
-        if original_numbers and re.findall(r"\d+", text) != original_numbers:
-            raise TranslationError(f"numbers disappeared: {from_id}-{to_id}")
+        original_numbers = subtitle_number_tokens(original)
+        translated_numbers = subtitle_number_tokens(text)
+        if original_numbers and translated_numbers != original_numbers:
+            raise TranslationError(
+                f"numbers disappeared: {from_id}-{to_id} (source={original_numbers}, translated={translated_numbers})"
+            )
         output.append({"from_id": from_id, "to_id": to_id, "text": text})
         next_position = to_position + 1
 
