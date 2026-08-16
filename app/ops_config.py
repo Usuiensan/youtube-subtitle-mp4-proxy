@@ -99,7 +99,12 @@ def allowed_values() -> dict[str, int | float | str]:
     for key in (*CONFIG_SCHEMA, *ENUM_VALUES):
         raw = values.get(key, os.getenv(key))
         if raw is not None:
-            result[key] = _typed_value(key, raw)
+            try:
+                result[key] = _typed_value(key, raw)
+            except ConfigValidationError:
+                # Keep a malformed existing non-secret value observable so an
+                # operator can replace it through the same revision-checked API.
+                result[key] = str(raw).strip()
     return result
 
 
