@@ -196,6 +196,51 @@ def test_openai_request_uses_strict_json_schema(monkeypatch) -> None:
     assert requests[0]["body"]["reasoning_effort"] == "minimal"
 
 
+def test_openai_schema_requires_all_280_subtitle_ids(monkeypatch) -> None:
+    import json
+
+    requests: list[dict] = []
+    subtitles = [{"id": index, "text": f"source {index}"} for index in range(1, 281)]
+    translated = {str(index): f"訳 {index}" for index in range(1, 281)}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": json.dumps({"subtitles": translated})}}], "usage": {}}).encode()
+
+    def urlopen(request, timeout):
+        requests.append({"body": json.loads(request.data.decode("utf-8")), "timeout": timeout})
+        return Response()
+
+    monkeypatch.setattr(translation_worker.urllib.request, "urlopen", urlopen)
+    payload = {
+        "llm_endpoint": "https://example.invalid/v1/chat/completions",
+        "model_name": "test-model",
+        "translation_provider": "openai_api",
+        "source_language": "en",
+        "target_language": "ja",
+        "subtitles": subtitles,
+    }
+    result, _usage = translation_worker.translate_batch_openai(payload)
+
+    expected_ids = [str(index) for index in range(1, 281)]
+    schema = requests[0]["body"]["response_format"]["json_schema"]["schema"]["properties"]["subtitles"]
+    assert schema["required"] == expected_ids
+    assert list(schema["properties"]) == expected_ids
+    assert len(schema["properties"]) == 280
+    assert schema["additionalProperties"] is False
+    assert len(result["subtitles"]) == 280
+    assert result["subtitles"][0] == {"from_id": "1", "to_id": "1", "text": "訳 1"}
+    assert result["subtitles"][-1] == {"from_id": "280", "to_id": "280", "text": "訳 280"}
+    with pytest.raises(RuntimeError, match="omitted subtitle id: 280"):
+        translation_worker.normalize_openai_subtitles({"subtitles": {key: value for key, value in translated.items() if key != "280"}}, payload)
+
+
 def test_openai_truncation_is_identified_and_audited(tmp_path, monkeypatch) -> None:
     class Response:
         def __enter__(self):
