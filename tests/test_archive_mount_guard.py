@@ -35,3 +35,16 @@ def test_archive_storage_accepts_only_its_configured_mount(monkeypatch, tmp_path
 
     assert main.archive_storage_available() is True
     assert main.archive_entry_dir("item") == archive / "item"
+
+
+def test_storage_status_reports_active_jobs(monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(main.settings, "discord_prepare_token", "prepare-token")
+    monkeypatch.setattr(main, "current_job_summaries", lambda: [{"job_id": "active", "status": "running"}])
+    response = TestClient(main.app).get(
+        "/prepare/storage-status",
+        headers={"Authorization": "Bearer prepare-token"},
+    )
+    assert response.status_code == 200
+    assert response.json()["active_jobs"] == 1

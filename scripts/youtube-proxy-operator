@@ -14,11 +14,10 @@ config_value() {
 
 storage_config() {
     ARCHIVE_DIR=$(config_value CACHE_ARCHIVE_DIR)
-    [[ "$ARCHIVE_DIR" == /* ]] || { echo 'CACHE_ARCHIVE_DIR が未設定です' >&2; return 1; }
     ARCHIVE_MOUNT=$(config_value CACHE_ARCHIVE_MOUNT_POINT)
     [[ -n "$ARCHIVE_MOUNT" ]] || { echo 'CACHE_ARCHIVE_MOUNT_POINT が未設定です' >&2; return 1; }
     [[ "$ARCHIVE_MOUNT" == /* && "$ARCHIVE_MOUNT" != / ]] || { echo 'HDDマウント先が不正です' >&2; return 1; }
-    [[ "$ARCHIVE_DIR" == "$ARCHIVE_MOUNT" || "$ARCHIVE_DIR" == "$ARCHIVE_MOUNT/"* ]] || {
+    [[ -z "$ARCHIVE_DIR" || "$ARCHIVE_DIR" == "$ARCHIVE_MOUNT" || "$ARCHIVE_DIR" == "$ARCHIVE_MOUNT/"* ]] || {
         echo 'CACHE_ARCHIVE_DIR がHDDマウント先配下ではありません' >&2
         return 1
     }
@@ -60,9 +59,30 @@ if body.get("failed") or body.get("skipped"):
 '
 }
 
+storage_api() {
+    [[ -r "$SECRETS_FILE" ]] || { echo '準備API設定が見つかりません' >&2; return 1; }
+    local token
+    token=$(awk -F= '$1 == "DISCORD_PREPARE_TOKEN" { sub(/^[^=]*=/, ""); print; exit }' "$SECRETS_FILE")
+    [[ -n "$token" ]] || { echo '準備API設定が不完全です' >&2; return 1; }
+    curl --fail --silent --show-error --config - http://127.0.0.1:8000/prepare/storage-status <<EOF
+header = "Authorization: Bearer $token"
+EOF
+}
+
 detach() {
     storage_mounted || { echo 'HDDは既に未接続です' >&2; exit 1; }
-    archive_all
+    local storage_state archive_configured
+    storage_state=$(storage_api)
+    archive_configured=$(printf '%s' "$storage_state" | "$APP_PYTHON" -c '
+import json, sys
+body = json.load(sys.stdin)
+if body.get("active_jobs"):
+    raise SystemExit("実行中ジョブがあるためHDDを取り外せません")
+print("1" if body.get("archive_configured") else "0")
+')
+    if [[ "$archive_configured" == 1 ]]; then
+        archive_all
+    fi
     systemctl stop "$PROXY_SERVICE"
     sync
     umount "$ARCHIVE_MOUNT"

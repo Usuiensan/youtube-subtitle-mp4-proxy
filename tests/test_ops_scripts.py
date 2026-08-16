@@ -42,6 +42,7 @@ def test_storage_operator_uses_only_the_configured_mount_point() -> None:
     operator = (ROOT / "scripts" / "youtube-proxy-operator").read_text(encoding="utf-8")
     assert "CACHE_ARCHIVE_MOUNT_POINT が未設定" in operator
     assert 'umount "$ARCHIVE_MOUNT"' in operator
+    assert "/prepare/storage-status" in operator
     assert "eval " not in operator
 
 

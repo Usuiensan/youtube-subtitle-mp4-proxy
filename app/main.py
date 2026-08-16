@@ -8017,6 +8017,18 @@ async def archive_all_youtube(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok", "message": message, **result})
 
 
+@app.get("/prepare/storage-status")
+async def prepare_storage_status(request: Request) -> JSONResponse:
+    require_prepare_auth(request, allow_temp_key=False)
+    return JSONResponse(
+        {
+            "archive_configured": settings.cache_archive_dir is not None,
+            "archive_mounted": archive_storage_available(),
+            "active_jobs": len(current_job_summaries()),
+        }
+    )
+
+
 @app.post("/prepare/youtube-batch/{lang}")
 async def prepare_youtube_batch(
     lang: str,
