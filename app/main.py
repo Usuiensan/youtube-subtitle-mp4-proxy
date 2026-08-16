@@ -694,7 +694,7 @@ def render_profile_id(subtitle_font_size: int | None = None) -> str:
 def translation_profile_id() -> str:
     return json.dumps(
         {
-            "batch_translation_version": "full-srt-openai-chunked-v1",
+            "batch_translation_version": "full-srt-id-keyed-chunked-v2",
             "enabled": settings.translation_enabled,
             "target": "ja",
             "source_langs": settings.translation_source_langs,
@@ -2072,7 +2072,7 @@ def translation_attempt_plan(
     input_token_estimate: int = 0,
 ) -> list[tuple[TranslationSettings, str]]:
     attempt_settings = selected
-    if selected.provider_name == "gemini_api" and input_token_estimate >= LONG_TRANSLATION_INPUT_TOKEN_THRESHOLD:
+    if selected.provider_name == "gemini_api" and selected.engine != "gemini_2_5_flash_lite" and input_token_estimate >= LONG_TRANSLATION_INPUT_TOKEN_THRESHOLD:
         # ponytail: fixed threshold; tune from audit data if the model mix changes.
         fallback = translation_settings("gemini_3_5_flash")
         if translation_settings_is_configured(fallback):

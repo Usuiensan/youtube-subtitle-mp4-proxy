@@ -76,9 +76,33 @@ def openai_subtitle_schema(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def gemini_id_keyed_subtitle_schema(payload: dict[str, Any]) -> dict[str, Any]:
+    subtitles = payload.get("subtitles")
+    if not isinstance(subtitles, list) or not subtitles:
+        raise RuntimeError("subtitles must be a non-empty array")
+    ids = [str(item.get("id")) for item in subtitles if isinstance(item, dict)]
+    if len(ids) != len(subtitles) or any(not item_id for item_id in ids) or len(set(ids)) != len(ids):
+        raise RuntimeError("subtitle ids must be unique and non-empty")
+    return {
+        "type": "OBJECT",
+        "properties": {
+            "subtitles": {
+                "type": "OBJECT",
+                "properties": {item_id: {"type": "STRING"} for item_id in ids},
+                "required": ids,
+                "additionalProperties": False,
+            }
+        },
+        "required": ["subtitles"],
+        "additionalProperties": False,
+    }
+
+
 def normalize_openai_subtitles(result: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     subtitles = result.get("subtitles")
     if isinstance(subtitles, list):
+        if str(payload.get("translation_provider") or "").strip().lower() in {"openai_api", "gemini_api"}:
+            raise RuntimeError("translation api returned a non-id-keyed subtitle list")
         return result
     source = payload.get("subtitles")
     if not isinstance(subtitles, dict) or not isinstance(source, list):
@@ -133,7 +157,7 @@ def build_full_translation_prompt(payload: dict[str, Any]) -> str:
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    if str(payload.get("translation_provider") or "").strip().lower() == "openai_api":
+    if str(payload.get("translation_provider") or "").strip().lower() in {"openai_api", "gemini_api"}:
         output_contract = (
             f"Return the required id-keyed subtitle object with exactly {len(subtitles)} entries, one for every input id. "
             "Translate each id independently; do not combine adjacent ids or shift a translation to another id."
@@ -307,6 +331,7 @@ def translate_batch_openai(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
 
 
 def translate_batch_gemini(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, int]]:
+    payload = {**payload, "translation_provider": "gemini_api"}
     model = str(payload.get("model_name") or "gemini-3.1-flash-lite")
     api_key = str(payload.get("llm_api_key") or os.getenv("GEMINI_API_KEY") or "")
     if not api_key:
@@ -319,32 +344,13 @@ def translate_batch_gemini(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
     ).format(model=urllib.parse.quote(model, safe=""))
     url = endpoint
     prompt = build_full_translation_prompt(payload)
-    schema = subtitle_schema()
-    gemini_schema = {
-        "type": "OBJECT",
-        "properties": {
-            "subtitles": {
-                "type": "ARRAY",
-                "items": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "from_id": {"type": "INTEGER"},
-                        "to_id": {"type": "INTEGER"},
-                        "text": {"type": "STRING"},
-                    },
-                    "required": ["from_id", "to_id", "text"],
-                },
-            }
-        },
-        "required": ["subtitles"],
-    }
     body = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": float(os.getenv("LOCAL_LLM_TEMPERATURE", "0")),
             "maxOutputTokens": _output_token_budget(prompt, payload),
             "responseMimeType": "application/json",
-            "responseSchema": gemini_schema,
+            "responseSchema": gemini_id_keyed_subtitle_schema(payload),
         },
     }
     thinking_level = str(payload.get("gemini_thinking_level") or "").strip().lower()
@@ -372,7 +378,7 @@ def translate_batch_gemini(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
         raise RuntimeError(f"gemini api returned invalid JSON: {error}") from error
     if not isinstance(result, dict):
         raise RuntimeError("gemini api returned a non-object JSON value")
-    return result, _usage_gemini(data)
+    return normalize_openai_subtitles(result, payload), _usage_gemini(data)
 
 
 def main() -> int:

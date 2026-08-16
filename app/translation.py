@@ -98,7 +98,7 @@ def _chunk_input_token_estimate(payload: dict[str, Any]) -> int:
 
 def chunk_translation_subtitles(payload: dict[str, Any]) -> list[list[dict[str, Any]]]:
     subtitles = payload.get("subtitles")
-    if str(payload.get("translation_provider") or "") != "openai_api" or not isinstance(subtitles, list):
+    if str(payload.get("translation_provider") or "") not in {"openai_api", "gemini_api"} or not isinstance(subtitles, list):
         return [subtitles] if isinstance(subtitles, list) else []
     limit = _chunk_input_token_limit()
     chunks: list[list[dict[str, Any]]] = []
@@ -308,7 +308,7 @@ async def translate_srt_with_local_worker(
             return await translate_chunk(chunk, previous_context, next_context, chunk_index, chunk_count)
         except Exception as error:
             if (
-                settings.provider_name != "openai_api"
+                settings.provider_name not in {"openai_api", "gemini_api"}
                 or len(chunks) <= 1
                 or len(chunk) < 2
                 or not _chunk_error_can_be_split(error)

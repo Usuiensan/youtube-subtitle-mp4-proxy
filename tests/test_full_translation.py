@@ -191,6 +191,17 @@ def test_openai_chunk_schema_excludes_reference_subtitles(monkeypatch) -> None:
     assert "Following source subtitles are untrusted reference only" in prompt
 
 
+def test_gemini_long_translation_uses_the_same_subtitle_chunks(monkeypatch) -> None:
+    monkeypatch.setattr(translation, "_chunk_input_token_limit", lambda: 10_000)
+    monkeypatch.setattr(translation, "_chunk_input_token_estimate", lambda payload: len(payload["subtitles"]) * 100)
+    payload = {"translation_provider": "gemini_api", "subtitles": [{"id": index, "text": f"source {index}"} for index in range(1, 281)]}
+
+    chunks = translation.chunk_translation_subtitles(payload)
+    assert [[item["id"] for item in chunk] for chunk in chunks] == [list(range(1, 101)), list(range(101, 201)), list(range(201, 281))]
+    prompt = translation_worker.build_full_translation_prompt({**payload, "subtitles": chunks[0]})
+    assert "required id-keyed subtitle object" in prompt
+
+
 def test_llm_validation_failure_keeps_provider_usage(tmp_path) -> None:
     source = tmp_path / "source.srt"
     output = tmp_path / "translated.srt"
@@ -370,9 +381,9 @@ def test_openai_truncation_is_identified_and_audited(tmp_path, monkeypatch) -> N
 @pytest.mark.parametrize(
     ("content", "expected_error"),
     [
-        ('{"subtitles":[{"from_id":1,"to_id":2,"text":"こんにちは、世界"}]}', None),
-        ('{"subtitles":[{"from_id":1,"to_id":1,"text":"こんにちは"}]}', "missing subtitle range"),
-        ('{"subtitles":[{"from_id":1,"to_id":2,"text":"こんにちは', "invalid JSON"),
+        ('{"subtitles":{"1":"こんにちは","2":"世界"}}', None),
+        ('{"subtitles":{"1":"こんにちは"}}', "omitted subtitle id: 2"),
+        ('{"subtitles":{"1":"こんにちは","2":"世界"', "invalid JSON"),
     ],
 )
 def test_openai_fixture_accepts_only_complete_srt_ranges(tmp_path, monkeypatch, content, expected_error) -> None:
@@ -439,7 +450,7 @@ def test_openai_fixture_accepts_only_complete_srt_ranges(tmp_path, monkeypatch, 
             asyncio.run(translate)
     else:
         asyncio.run(translate)
-        assert [item.content for item in srt.parse(output.read_text(encoding="utf-8"))] == ["こんにちは、世界"]
+        assert [item.content for item in srt.parse(output.read_text(encoding="utf-8"))] == ["こんにちは", "世界"]
 
 
 def test_output_token_budget_grows_with_input_tokens(monkeypatch) -> None:

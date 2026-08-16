@@ -158,8 +158,9 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertEqual(
             [(setting.model_name, level) for setting, level in plan],
             [
-                ("gemini-3.5-flash", "minimal"),
-                ("gemini-3.5-flash", "low"),
+                ("gemini-3.1-flash-lite", "minimal"),
+                ("gemini-3.1-flash-lite", "low"),
+                ("gemini-3.5-flash", "high"),
             ],
         )
 
@@ -198,7 +199,7 @@ class GeminiTranslationTests(unittest.TestCase):
                 return False
 
             def read(self):
-                return b'{"candidates":[{"content":{"parts":[{"text":"{\\"subtitles\\":[{\\"from_id\\":1,\\"to_id\\":1,\\"text\\":\\"Hi\\"}]}"}]}}],"usageMetadata":{}}'
+                return b'{"candidates":[{"content":{"parts":[{"text":"{\\"subtitles\\":{\\"1\\":\\"Hi\\"}}"}]}}],"usageMetadata":{}}'
 
         def urlopen(request, timeout):
             requests.append(json.loads(request.data.decode("utf-8")))
@@ -219,10 +220,9 @@ class GeminiTranslationTests(unittest.TestCase):
 
         self.assertEqual(requests[0]["generationConfig"]["thinkingConfig"], {"thinkingLevel": "high"})
         subtitles_schema = requests[0]["generationConfig"]["responseSchema"]["properties"]["subtitles"]
-        item_schema = subtitles_schema["items"]
-        self.assertEqual(item_schema["required"], ["from_id", "to_id", "text"])
-        self.assertNotIn("minItems", subtitles_schema)
-        self.assertNotIn("maxItems", subtitles_schema)
+        self.assertEqual(subtitles_schema["required"], ["1"])
+        self.assertEqual(subtitles_schema["properties"], {"1": {"type": "STRING"}})
+        self.assertFalse(subtitles_schema["additionalProperties"])
 
     def test_gemini_max_tokens_is_reported_as_truncation(self) -> None:
         class Response:
@@ -546,7 +546,7 @@ class GeminiTranslationTests(unittest.TestCase):
     def test_gemini_request_and_raw_response_are_saved_without_api_key(self) -> None:
         with TemporaryDirectory() as temp_dir:
             audit_path = Path(temp_dir) / "translation.jsonl"
-            raw_response = '{"candidates": [{"content": {"parts": [{"text": "{\\"subtitles\\":[{\\"id\\":1,\\"text\\":\\"Hi\\"}]}"}]}}]}'
+            raw_response = '{"candidates": [{"content": {"parts": [{"text": "{\\"subtitles\\":{\\"1\\":\\"Hi\\"}}"}]}}]}'
 
             class Response:
                 def __enter__(self):
