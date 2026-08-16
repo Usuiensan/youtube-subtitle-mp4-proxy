@@ -40,6 +40,11 @@ def test_validate_translations_requires_contiguous_ranges_and_non_empty_text() -
     ):
         with pytest.raises(TranslationError):
             validate_translations(target, result)
+    with pytest.raises(TranslationError, match="numbers disappeared: 1-1"):
+        validate_translations(
+            [subtitle(1, "Route 66 celebrates 100 years")],
+            {"subtitles": [{"from_id": 1, "to_id": 1, "text": "ルート66の記念日"}]},
+        )
 
 
 def test_llm_translation_calls_worker_once_for_the_whole_srt(tmp_path) -> None:
@@ -158,7 +163,7 @@ def test_openai_request_uses_strict_json_schema(monkeypatch) -> None:
             return False
 
         def read(self):
-            return b'{"choices":[{"message":{"content":"{\\"subtitles\\":[{\\"from_id\\":1,\\"to_id\\":1,\\"text\\":\\"Hi\\"}]}"}}],"usage":{}}'
+            return b'{"choices":[{"message":{"content":"{\\"subtitles\\":{\\"1\\":\\"Hi\\",\\"2\\":\\"There\\"}}"}}],"usage":{}}'
 
     def urlopen(request, timeout):
         requests.append({"body": json.loads(request.data.decode("utf-8")), "timeout": timeout})
@@ -174,13 +179,19 @@ def test_openai_request_uses_strict_json_schema(monkeypatch) -> None:
             "translation_provider": "openai_api",
             "source_language": "en",
             "target_language": "ja",
-            "subtitles": [{"id": 1, "text": "Hi"}],
+            "subtitles": [{"id": 1, "text": "Hi"}, {"id": 2, "text": "There"}],
         }
     )
-    assert result == {"subtitles": [{"from_id": 1, "to_id": 1, "text": "Hi"}]}
+    assert result == {
+        "subtitles": [
+            {"from_id": "1", "to_id": "1", "text": "Hi"},
+            {"from_id": "2", "to_id": "2", "text": "There"},
+        ]
+    }
     schema = requests[0]["body"]["response_format"]["json_schema"]
     assert schema["strict"] is True
     assert schema["schema"]["required"] == ["subtitles"]
+    assert schema["schema"]["properties"]["subtitles"]["required"] == ["1", "2"]
     assert "00:00" not in requests[0]["body"]["messages"][0]["content"]
     assert requests[0]["body"]["reasoning_effort"] == "minimal"
 

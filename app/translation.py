@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html
-import math
 import re
 import shutil
 import time
@@ -122,10 +121,8 @@ def validate_translations(
             if url not in text:
                 raise TranslationError(f"url disappeared: {from_id}-{to_id}")
         original_numbers = re.findall(r"\d+", original)
-        if len(original_numbers) >= 2:
-            translated_numbers = re.findall(r"\d+", text)
-            if len(translated_numbers) < math.floor(len(original_numbers) / 2):
-                raise TranslationError(f"numbers disappeared: {from_id}-{to_id}")
+        if original_numbers and re.findall(r"\d+", text) != original_numbers:
+            raise TranslationError(f"numbers disappeared: {from_id}-{to_id}")
         output.append({"from_id": from_id, "to_id": to_id, "text": text})
         next_position = to_position + 1
 
