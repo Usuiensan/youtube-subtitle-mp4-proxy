@@ -345,6 +345,8 @@ def test_openai_schema_requires_all_280_subtitle_ids(monkeypatch) -> None:
     assert result["subtitles"][-1] == {"from_id": "280", "to_id": "280", "text": "訳 280"}
     with pytest.raises(RuntimeError, match="omitted subtitle id: 280"):
         translation_worker.normalize_openai_subtitles({"subtitles": {key: value for key, value in translated.items() if key != "280"}}, payload)
+    with pytest.raises(RuntimeError, match="unexpected subtitle id: extra"):
+        translation_worker.normalize_openai_subtitles({"subtitles": {**translated, "extra": "余分"}}, payload)
 
 
 def test_openai_truncation_is_identified_and_audited(tmp_path, monkeypatch) -> None:

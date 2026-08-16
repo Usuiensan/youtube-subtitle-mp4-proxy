@@ -90,11 +90,9 @@ def gemini_id_keyed_subtitle_schema(payload: dict[str, Any]) -> dict[str, Any]:
                 "type": "OBJECT",
                 "properties": {item_id: {"type": "STRING"} for item_id in ids},
                 "required": ids,
-                "additionalProperties": False,
             }
         },
         "required": ["subtitles"],
-        "additionalProperties": False,
     }
 
 
@@ -107,6 +105,10 @@ def normalize_openai_subtitles(result: dict[str, Any], payload: dict[str, Any]) 
     source = payload.get("subtitles")
     if not isinstance(subtitles, dict) or not isinstance(source, list):
         raise RuntimeError("translation api returned invalid subtitle object")
+    expected_ids = {str(item.get("id")) for item in source if isinstance(item, dict)}
+    unexpected_ids = sorted(str(item_id) for item_id in subtitles if str(item_id) not in expected_ids)
+    if unexpected_ids:
+        raise RuntimeError(f"translation api returned unexpected subtitle id: {unexpected_ids[0]}")
     translated = []
     for item in source:
         if not isinstance(item, dict):

@@ -222,7 +222,8 @@ class GeminiTranslationTests(unittest.TestCase):
         subtitles_schema = requests[0]["generationConfig"]["responseSchema"]["properties"]["subtitles"]
         self.assertEqual(subtitles_schema["required"], ["1"])
         self.assertEqual(subtitles_schema["properties"], {"1": {"type": "STRING"}})
-        self.assertFalse(subtitles_schema["additionalProperties"])
+        self.assertNotIn("additionalProperties", subtitles_schema)
+        self.assertNotIn("additionalProperties", requests[0]["generationConfig"]["responseSchema"])
 
     def test_gemini_max_tokens_is_reported_as_truncation(self) -> None:
         class Response:
