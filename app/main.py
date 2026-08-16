@@ -53,7 +53,11 @@ from app.ops_config import (
     write_values,
 )
 from app.google_translation_usage import summary as google_translation_usage_summary
-from app.llm_usage import record as record_llm_translation_usage, summary as llm_translation_usage_summary
+from app.llm_usage import (
+    TOKEN_PRICES,
+    record as record_llm_translation_usage,
+    summary as llm_translation_usage_summary,
+)
 from app.cache_layout import CacheLayout
 from app.config_files import (
     load_env_file,
@@ -2626,13 +2630,7 @@ def billable_output_token_count(usage: dict) -> int:
 
 
 def llm_token_prices(engine: str) -> tuple[float, float]:
-    return {
-        "gemini_2_5_flash": (0.30, 2.50),
-        "gemini_2_5_flash_lite": (0.25, 1.50),
-        "gemini_3_5_flash": (1.50, 9.00),
-        "gpt_5_nano": (0.05, 0.40),
-        "groq_gpt_oss_20b": (0.075, 0.30),
-    }.get(engine, (0.0, 0.0))
+    return TOKEN_PRICES.get(engine, (0.0, 0.0))
 
 
 def google_translate_overage_estimate(characters: int) -> tuple[int, float, float]:
@@ -3704,31 +3702,35 @@ def ass_text_width(text: str) -> float:
 
 
 def wrap_text_to_width(text: str, max_width: float) -> list[str]:
-    normalized = " ".join(text.replace("\r\n", "\n").replace("\r", "\n").split())
-    if not normalized:
+    source_lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    if not any(line.strip() for line in source_lines):
         return [""]
     lines: list[str] = []
-    remaining = normalized
     punctuation = "、。，．！？!?：；:;"
     closing = "）］｝」』】〉》"
-    while ass_text_width(remaining) > max_width:
-        punctuation_break = 0
-        word_break = 0
-        for index, character in enumerate(remaining):
-            if ass_text_width(remaining[: index + 1]) > max_width:
+    for source_line in source_lines:
+        remaining = " ".join(source_line.split())
+        if not remaining:
+            lines.append("")
+            continue
+        while ass_text_width(remaining) > max_width:
+            punctuation_break = 0
+            word_break = 0
+            for index, character in enumerate(remaining):
+                if ass_text_width(remaining[: index + 1]) > max_width:
+                    break
+                if character in punctuation:
+                    punctuation_break = index + 1
+                elif character.isspace():
+                    word_break = index
+            split_at = punctuation_break or word_break
+            if not split_at:
                 break
-            if character in punctuation:
-                punctuation_break = index + 1
-            elif character.isspace():
-                word_break = index
-        split_at = punctuation_break or word_break
-        if not split_at:
-            break
-        while split_at < len(remaining) and remaining[split_at] in closing:
-            split_at += 1
-        lines.append(remaining[:split_at].rstrip())
-        remaining = remaining[split_at:].lstrip()
-    lines.append(remaining)
+            while split_at < len(remaining) and remaining[split_at] in closing:
+                split_at += 1
+            lines.append(remaining[:split_at].rstrip())
+            remaining = remaining[split_at:].lstrip()
+        lines.append(remaining)
     return lines
 
 
