@@ -320,7 +320,7 @@ LLM 翻訳は字幕IDと原文だけを動画1本分まとめて1回のAPIリク
 ```bash
 export TRANSLATION_ENABLED=1
 export TRANSLATION_SOURCE_LANGS=en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW
-export TRANSLATION_DEFAULT_PROFILE=gemini_2_5_flash_lite
+export TRANSLATION_DEFAULT_PROFILE=gpt_5_nano
 export TRANSLATION_API_RETRY_MAX_ATTEMPTS=3
 export TRANSLATION_API_RETRY_BASE_SECONDS=5
 export REMOTE_LLM_ENDPOINT=http://192.168.68.115:11434/v1/chat/completions

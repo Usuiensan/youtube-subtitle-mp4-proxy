@@ -66,7 +66,7 @@ class Settings:
     translation_source_langs = os.getenv("TRANSLATION_SOURCE_LANGS", "en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW")
     local_llm_engine = os.getenv("LOCAL_LLM_ENGINE", "openai_compatible")
     local_llm_model = os.getenv("LOCAL_LLM_MODEL", "qwen3:4b-instruct")
-    translation_default_profile = "gemini_2_5_flash_lite"
+    translation_default_profile = os.getenv("TRANSLATION_DEFAULT_PROFILE", "gemini_2_5_flash_lite").strip().lower() or "gemini_2_5_flash_lite"
     local_llm_profile_models = profile_models(os.getenv)
     local_llm_profile_labels = profile_labels(os.getenv)
     local_llm_timeout_seconds = int(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "300"))

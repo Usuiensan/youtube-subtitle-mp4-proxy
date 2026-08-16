@@ -17,6 +17,17 @@ def test_translation_profile_uses_provider_compatibility_fallback(monkeypatch) -
         importlib.reload(settings_module)
 
 
+def test_translation_profile_uses_explicit_default_profile(monkeypatch) -> None:
+    import app.settings as settings_module
+
+    monkeypatch.setenv("TRANSLATION_DEFAULT_PROFILE", "gpt_5_nano")
+    importlib.reload(settings_module)
+    try:
+        assert settings_module.Settings.translation_default_profile == "gpt_5_nano"
+    finally:
+        importlib.reload(settings_module)
+
+
 def test_settings_load_env_local_before_reading_provider_settings(monkeypatch) -> None:
     import app.config_files as config_files
     import app.settings as settings_module
