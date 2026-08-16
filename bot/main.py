@@ -620,12 +620,13 @@ def subtitle_status_text(meta: Any) -> str:
     kind = meta.get("source_kind")
     engine = meta.get("translation_engine")
     model = meta.get("translation_model")
-    fallback = meta.get("translation_fallback_used")
     if translated:
-        if fallback:
-            engine_text = "Google翻訳フォールバック"
+        if engine == "google_cloud":
+            engine_text = "Google翻訳"
         elif engine == "gemini_2_5_flash":
             engine_text = "Gemini Flash"
+        elif engine == "gemini_3_5_flash":
+            engine_text = "Gemini 3.5 Flash"
         elif model:
             engine_label = {
                 "qwen3_4b_instruct": "Qwen 3 4B Instruct",

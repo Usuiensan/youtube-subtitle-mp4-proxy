@@ -197,3 +197,19 @@ def test_translation_overlay_uses_model_only() -> None:
             "translation_model": "gemini-3.1-flash-lite",
         }
     ) == "[翻訳]gemini-3.1-flash-lite"
+
+
+def test_translation_overlay_uses_actual_engine_after_fallback() -> None:
+    assert main.subtitle_translation_service_label(
+        {
+            "translation_engine": "gemini_3_5_flash",
+            "translation_model": "Gemini 3.5 Flash",
+            "translation_fallback_used": True,
+        }
+    ) == "[翻訳]Gemini 3.5 Flash"
+
+
+def test_wrap_text_to_width_prefers_punctuation_then_word_boundary() -> None:
+    assert main.wrap_text_to_width("一二三、四五六、七八九", 7) == ["一二三、", "四五六、七八九"]
+    assert main.wrap_text_to_width("one two three four", 4) == ["one two", "three", "four"]
+    assert main.wrap_text_to_width("句読点のない長い日本語", 4) == ["句読点のない長い日本語"]

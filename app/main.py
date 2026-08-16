@@ -687,7 +687,7 @@ def cache_key(
 
 def render_profile_id(subtitle_font_size: int | None = None) -> str:
     return hashlib.sha1(
-        "\n".join(["dual-subtitle-layout-v14-normalized-subtitle-escapes", "media-stream-selection-v2", f"source-height-{settings.max_height}", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
+        "\n".join(["dual-subtitle-layout-v15-punctuation-wrap", "media-stream-selection-v2", f"source-height-{settings.max_height}", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
     ).hexdigest()[:8]
 
 
@@ -2532,9 +2532,6 @@ def subtitle_translation_service_label(subtitle_meta: dict) -> str:
     engine = str(subtitle_meta.get("translation_engine") or "").strip()
     requested = str(subtitle_meta.get("translation_engine_requested") or "").strip()
     model = str(subtitle_meta.get("translation_model") or "").strip()
-    fallback = bool(subtitle_meta.get("translation_fallback_used"))
-    if fallback:
-        return "[翻訳]Google Cloud fallback"
     if engine == "google_cloud":
         return "[翻訳]Google Cloud"
     if model:
@@ -3625,19 +3622,29 @@ def wrap_text_to_width(text: str, max_width: float) -> list[str]:
     normalized = " ".join(text.replace("\r\n", "\n").replace("\r", "\n").split())
     if not normalized:
         return [""]
-    words = normalized.split(" ")
     lines: list[str] = []
-    current = ""
-    for word in words:
-        candidate = word if not current else f"{current} {word}"
-        if current and ass_text_width(candidate) > max_width:
-            lines.append(current)
-            current = word
-        else:
-            current = candidate
-    if current:
-        lines.append(current)
-    return lines or [normalized]
+    remaining = normalized
+    punctuation = "、。，．！？!?：；:;"
+    closing = "）］｝」』】〉》"
+    while ass_text_width(remaining) > max_width:
+        punctuation_break = 0
+        word_break = 0
+        for index, character in enumerate(remaining):
+            if ass_text_width(remaining[: index + 1]) > max_width:
+                break
+            if character in punctuation:
+                punctuation_break = index + 1
+            elif character.isspace():
+                word_break = index
+        split_at = punctuation_break or word_break
+        if not split_at:
+            break
+        while split_at < len(remaining) and remaining[split_at] in closing:
+            split_at += 1
+        lines.append(remaining[:split_at].rstrip())
+        remaining = remaining[split_at:].lstrip()
+    lines.append(remaining)
+    return lines
 
 
 def balance_line_counts(left_lines: list[str], right_lines: list[str]) -> tuple[list[str], list[str]]:

@@ -475,6 +475,21 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertIn("Qwen 3 8B", text)
         self.assertIn("qwen3:8b", text)
 
+    def test_bot_translation_status_uses_actual_engine_after_fallback(self) -> None:
+        text = bot_main.subtitle_status_text(
+            {
+                "translated": True,
+                "source_language": "en",
+                "requested_language": "ja",
+                "source_kind": "manual",
+                "translation_engine": "gemini_3_5_flash",
+                "translation_model": "Gemini 3.5 Flash",
+                "translation_fallback_used": True,
+            }
+        )
+        self.assertIn("日本語（Gemini 3.5 Flash）", text)
+        self.assertNotIn("Google翻訳", text)
+
     def test_translation_worker_prompt_contains_full_subtitle_context(self) -> None:
         payload = {
             "video_title": "Sample title",
