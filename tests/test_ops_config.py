@@ -75,6 +75,33 @@ def test_ops_config_allows_openai_chunk_token_limit(monkeypatch, tmp_path: Path)
     assert "TRANSLATION_CHUNK_INPUT_TOKENS=3500" in config.read_text(encoding="utf-8")
 
 
+def test_ops_config_allows_only_known_translation_profiles(monkeypatch, tmp_path: Path) -> None:
+    config = tmp_path / "config.env"
+    monkeypatch.setattr(app_main.settings, "translation_config_api_token", "config-token")
+    monkeypatch.setattr(ops_config, "config_file", lambda: config)
+    client = TestClient(app_main.app)
+    headers = {"X-Translation-Config-Token": "config-token"}
+    response = client.put(
+        "/ops/config",
+        headers=headers,
+        json={
+            "expected_revision": ops_config.revision(),
+            "values": {"TRANSLATION_DEFAULT_PROFILE": "gemini_2_5_flash_lite"},
+        },
+    )
+    assert response.status_code == 200
+    assert "TRANSLATION_DEFAULT_PROFILE=gemini_2_5_flash_lite" in config.read_text(encoding="utf-8")
+    response = client.put(
+        "/ops/config",
+        headers=headers,
+        json={
+            "expected_revision": response.json()["revision"],
+            "values": {"TRANSLATION_DEFAULT_PROFILE": "gemini_3_1_flash_lite"},
+        },
+    )
+    assert response.status_code == 400
+
+
 def test_ops_config_revision_is_sha256(tmp_path: Path, monkeypatch) -> None:
     config = tmp_path / "config.env"
     config.write_bytes(b"A=1\n")

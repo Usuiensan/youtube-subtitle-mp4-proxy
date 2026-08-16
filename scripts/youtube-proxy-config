@@ -44,7 +44,7 @@ case "$OP" in
         [[ ! -e /opt/youtube-mp4-proxy/.env ]] || { echo 'アプリ配下の旧envファイルが残っています' >&2; exit 1; }
         curl_config "$BASE_URL";;
     set)
-        [[ "$KEY" =~ ^(LOCAL_LLM_MAX_OUTPUT_TOKENS|TRANSLATION_API_RETRY_MAX_ATTEMPTS|TRANSLATION_API_RETRY_BASE_SECONDS|GEMINI_THINKING_LEVEL|SYSTEM_METRICS_INTERVAL_SECONDS|SYSTEM_METRICS_HISTORY_SECONDS)$ ]] || { echo 'key がallowlist外です' >&2; exit 2; }
+        [[ "$KEY" =~ ^(LOCAL_LLM_MAX_OUTPUT_TOKENS|TRANSLATION_CHUNK_INPUT_TOKENS|TRANSLATION_DEFAULT_PROFILE|TRANSLATION_API_RETRY_MAX_ATTEMPTS|TRANSLATION_API_RETRY_BASE_SECONDS|GEMINI_THINKING_LEVEL|SYSTEM_METRICS_INTERVAL_SECONDS|SYSTEM_METRICS_HISTORY_SECONDS)$ ]] || { echo 'key がallowlist外です' >&2; exit 2; }
         [[ "$VALUE" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo 'value が不正です' >&2; exit 2; }
         [[ "$REVISION" =~ ^[0-9a-f]{64}$ ]] || { echo 'revision が不正です' >&2; exit 2; }
         body="{\"expected_revision\":\"$REVISION\",\"values\":{\"$KEY\":\"$VALUE\"}}"

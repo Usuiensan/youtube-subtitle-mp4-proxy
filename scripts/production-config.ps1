@@ -22,7 +22,7 @@ function Invoke-ConfigWrapper([string[]]$Arguments) {
 }
 
 if ($Set) {
-    if ($Key -notmatch '^(LOCAL_LLM_MAX_OUTPUT_TOKENS|TRANSLATION_API_RETRY_MAX_ATTEMPTS|TRANSLATION_API_RETRY_BASE_SECONDS|GEMINI_THINKING_LEVEL|SYSTEM_METRICS_INTERVAL_SECONDS|SYSTEM_METRICS_HISTORY_SECONDS)$') { throw 'Key はallowlist内で指定してください。' }
+    if ($Key -notmatch '^(LOCAL_LLM_MAX_OUTPUT_TOKENS|TRANSLATION_CHUNK_INPUT_TOKENS|TRANSLATION_DEFAULT_PROFILE|TRANSLATION_API_RETRY_MAX_ATTEMPTS|TRANSLATION_API_RETRY_BASE_SECONDS|GEMINI_THINKING_LEVEL|SYSTEM_METRICS_INTERVAL_SECONDS|SYSTEM_METRICS_HISTORY_SECONDS)$') { throw 'Key はallowlist内で指定してください。' }
     if ($Value -notmatch '^[A-Za-z0-9_.-]+$') { throw 'Value が不正です。' }
     if ($ExpectedRevision -notmatch '^[0-9a-f]{64}$') { throw 'ExpectedRevision が不正です。' }
     Invoke-ConfigWrapper @('set', '--key', $Key, '--value', $Value, '--expected-revision', $ExpectedRevision)

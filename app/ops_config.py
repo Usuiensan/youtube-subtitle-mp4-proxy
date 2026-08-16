@@ -11,6 +11,8 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.translation_profiles import profile_models
+
 
 CONFIG_FILE = Path("/etc/youtube-mp4-proxy/config.env")
 
@@ -22,7 +24,10 @@ CONFIG_SCHEMA: dict[str, tuple[str, float, float]] = {
     "SYSTEM_METRICS_INTERVAL_SECONDS": ("float", 1, 3600),
     "SYSTEM_METRICS_HISTORY_SECONDS": ("int", 60, 31_536_000),
 }
-ENUM_VALUES = {"GEMINI_THINKING_LEVEL": {"minimal", "low", "medium", "high"}}
+ENUM_VALUES = {
+    "GEMINI_THINKING_LEVEL": {"minimal", "low", "medium", "high"},
+    "TRANSLATION_DEFAULT_PROFILE": set(profile_models(os.getenv)),
+}
 
 
 class ConfigValidationError(ValueError):
