@@ -48,6 +48,9 @@ rsync -a --delete \
     "$APP_DIR/" "$BACKUP/"
 systemctl stop "$DISCORD_SERVICE" "$PROXY_SERVICE"
 rsync -a --delete --exclude='.venv/' --exclude='.env*' --exclude='.pytest_cache/' --exclude='cache/' --exclude='data/' --exclude='.translation-audit/' --exclude='.translation-attempts/' "$STAGE/" "$APP_DIR/"
+install -o root -g root -m 755 "$STAGE/scripts/youtube-proxy-update" /usr/local/sbin/youtube-proxy-update
+install -o root -g root -m 755 "$STAGE/scripts/youtube-proxy-audit" /usr/local/sbin/youtube-proxy-audit
+install -o root -g root -m 755 "$STAGE/scripts/youtube-proxy-config" /usr/local/sbin/youtube-proxy-config
 systemctl start "$PROXY_SERVICE"
 systemctl start "$DISCORD_SERVICE"
 sleep 5

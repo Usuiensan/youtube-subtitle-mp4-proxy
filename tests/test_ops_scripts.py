@@ -27,10 +27,12 @@ def test_root_wrappers_have_fixed_local_endpoints_and_services() -> None:
 
 def test_update_script_excludes_local_env_and_checks_native_commands() -> None:
     text = (ROOT / "youtube-subtitles-update.ps1").read_text(encoding="utf-8")
+    root_wrapper = (ROOT / "scripts" / "youtube-proxy-update").read_text(encoding="utf-8")
     assert "archive --format=tar" in text
     assert ":(exclude).env" in text
     assert "scpに失敗しました" in text
     assert "本番更新に失敗しました" in text
+    assert '"$STAGE/scripts/youtube-proxy-config" /usr/local/sbin/youtube-proxy-config' in root_wrapper
 
 
 def test_provisioning_removes_legacy_app_env_only_after_backup() -> None:
