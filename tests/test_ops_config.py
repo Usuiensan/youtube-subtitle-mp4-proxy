@@ -129,3 +129,13 @@ def test_ops_config_revision_is_sha256(tmp_path: Path, monkeypatch) -> None:
     config.write_bytes(b"A=1\n")
     monkeypatch.setattr(ops_config, "config_file", lambda: config)
     assert ops_config.revision() == hashlib.sha256(b"A=1\n").hexdigest()
+
+
+def test_ops_config_uses_existing_file_permissions(monkeypatch, tmp_path: Path) -> None:
+    config = tmp_path / "config.env"
+    config.write_text("LOCAL_LLM_MAX_OUTPUT_TOKENS=100\n", encoding="utf-8")
+    monkeypatch.setattr(ops_config, "config_file", lambda: config)
+    mode = ops_config.stat.S_IMODE(config.stat().st_mode)
+    with patch.object(ops_config.os, "fchmod") as fchmod:
+        ops_config.write_values({"LOCAL_LLM_MAX_OUTPUT_TOKENS": 200}, ops_config.revision())
+    assert fchmod.call_args.args[1] == mode

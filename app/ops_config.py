@@ -147,10 +147,13 @@ def write_values(values: dict[str, int | float | str], expected_revision: str) -
     output.extend(f"{key}={_format_value(values[key])}\n" for key in values if key not in replaced)
     new_raw = "".join(output).encode("utf-8")
     path.parent.mkdir(parents=True, exist_ok=True)
-    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o640
+    metadata = path.stat() if path.exists() else None
+    mode = stat.S_IMODE(metadata.st_mode) if metadata else 0o640
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         os.fchmod(fd, mode)
+        if metadata and hasattr(os, "geteuid") and os.geteuid() == 0:
+            os.fchown(fd, metadata.st_uid, metadata.st_gid)
         with os.fdopen(fd, "wb") as file:
             file.write(new_raw)
         os.replace(temporary, path)

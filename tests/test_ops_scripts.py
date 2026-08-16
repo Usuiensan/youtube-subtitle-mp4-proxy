@@ -19,6 +19,8 @@ def test_root_wrappers_have_fixed_local_endpoints_and_services() -> None:
     assert "127.0.0.1:8000/ops/config" in config
     assert "youtube-mp4-proxy" in config and "youtube-mp4-discord-bot" in config
     assert "--config -" in audit and "--config -" in config
+    assert 'from app.ops_config import append_audit, validate_values, write_values' in config
+    assert 'curl_config -X PUT' not in config
     assert '. "$SECRETS_FILE"' not in audit
     assert '. "$SECRETS_FILE"' not in config
     assert 'TRANSLATION_AUDIT_API_TOKEN"' in audit

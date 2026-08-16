@@ -1,6 +1,7 @@
 #!/bin/bash
 set -Eeuo pipefail
 
+APP_DIR=/opt/youtube-mp4-proxy
 SECRETS_FILE=/etc/youtube-mp4-proxy/secrets.env
 BASE_URL=http://127.0.0.1:8000/ops/config
 PROXY_SERVICE=youtube-mp4-proxy
@@ -47,8 +48,21 @@ case "$OP" in
         [[ "$KEY" =~ ^(LOCAL_LLM_MAX_OUTPUT_TOKENS|TRANSLATION_CHUNK_INPUT_TOKENS|TRANSLATION_DEFAULT_PROFILE|TRANSLATION_API_RETRY_MAX_ATTEMPTS|TRANSLATION_API_RETRY_BASE_SECONDS|GEMINI_THINKING_LEVEL|SYSTEM_METRICS_INTERVAL_SECONDS|SYSTEM_METRICS_HISTORY_SECONDS)$ ]] || { echo 'key がallowlist外です' >&2; exit 2; }
         [[ "$VALUE" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo 'value が不正です' >&2; exit 2; }
         [[ "$REVISION" =~ ^[0-9a-f]{64}$ ]] || { echo 'revision が不正です' >&2; exit 2; }
-        body="{\"expected_revision\":\"$REVISION\",\"values\":{\"$KEY\":\"$VALUE\"}}"
-        curl_config -X PUT -H 'Content-Type: application/json' --data-raw "$body" "$BASE_URL"
+        (
+        cd "$APP_DIR"
+        "$APP_DIR/.venv/bin/python" - "$KEY" "$VALUE" "$REVISION" <<'PY'
+import json
+import sys
+
+from app.ops_config import append_audit, validate_values, write_values
+
+key, value, revision = sys.argv[1:]
+values = validate_values({key: value})
+old_values, new_revision = write_values(values, revision)
+append_audit(key, old_values.get(key), values[key], "root-wrapper", "updated")
+print(json.dumps({"values": values, "revision": new_revision, "restart_required": True}, separators=(",", ":")))
+PY
+        )
         ;;
     restart)
         systemctl restart "$PROXY_SERVICE" "$DISCORD_SERVICE"
