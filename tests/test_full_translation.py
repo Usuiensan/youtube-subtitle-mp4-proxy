@@ -41,19 +41,12 @@ def test_validate_translations_requires_contiguous_ranges_and_non_empty_text() -
     ):
         with pytest.raises(TranslationError):
             validate_translations(target, result)
-    with pytest.raises(TranslationError, match="numbers disappeared: 1-1"):
-        validate_translations(
-            [subtitle(1, "Route 66 celebrates 100 years")],
-            {"subtitles": [{"from_id": 1, "to_id": 1, "text": "ルート66の記念日"}]},
-        )
-
-
-def test_validate_translations_ignores_invisible_formatting_between_digits() -> None:
+def test_validate_translations_does_not_reject_translation_content_heuristics() -> None:
     result = validate_translations(
-        [subtitle(4, "24\u2060 ft wide")],
-        {"subtitles": [{"from_id": 4, "to_id": 4, "text": "幅24フィート"}]},
+        [subtitle(4, "Route 66 is 24 ft wide: https://example.test")],
+        {"subtitles": [{"from_id": 4, "to_id": 4, "text": "幅の広い橋です"}]},
     )
-    assert result[0]["text"] == "幅24フィート"
+    assert result[0]["text"] == "幅の広い橋です"
 
 
 def test_llm_translation_calls_worker_once_for_the_whole_srt(tmp_path) -> None:

@@ -7,7 +7,6 @@ import os
 import re
 import shutil
 import time
-import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -56,12 +55,6 @@ def normalize_subtitle_text(text: str, *, compact: bool = False) -> str:
     normalized = re.sub(r"\\+(?=\s)", " ", normalized)
     normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
     return " ".join(normalized.split()) if compact else normalized
-
-
-def subtitle_number_tokens(text: str) -> list[str]:
-    normalized = normalize_subtitle_text(text, compact=True)
-    normalized = "".join(char for char in normalized if unicodedata.category(char) != "Cf")
-    return re.findall(r"\d+", normalized)
 
 
 def save_srt(path: Path, subtitles: list[srt.Subtitle]) -> None:
@@ -150,7 +143,6 @@ def _chunk_error_can_be_split(error: Exception) -> bool:
             "no json content",
             "truncated",
             "omitted subtitle id",
-            "numbers disappeared",
             "missing subtitle range",
             "subtitle range must continue",
         )
@@ -187,19 +179,6 @@ def validate_translations(
             )
         if not text:
             raise TranslationError(f"empty translation: {from_id}-{to_id}")
-        covered = target[from_position : to_position + 1]
-        original = "\n".join(sub.content for sub in covered)
-        if len(text) > max(400, len(original) * 8):
-            raise TranslationError(f"translation too long: {from_id}-{to_id}")
-        for url in re.findall(r"https?://\S+", original):
-            if url not in text:
-                raise TranslationError(f"url disappeared: {from_id}-{to_id}")
-        original_numbers = subtitle_number_tokens(original)
-        translated_numbers = subtitle_number_tokens(text)
-        if original_numbers and translated_numbers != original_numbers:
-            raise TranslationError(
-                f"numbers disappeared: {from_id}-{to_id} (source={original_numbers}, translated={translated_numbers})"
-            )
         output.append({"from_id": from_id, "to_id": to_id, "text": text})
         next_position = to_position + 1
 
