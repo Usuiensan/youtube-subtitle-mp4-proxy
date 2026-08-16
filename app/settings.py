@@ -26,6 +26,11 @@ class Settings:
     cache_dir = Path(os.getenv("CACHE_DIR", "/tmp/youtube-mp4-cache"))
     cache_hot_dir = Path(os.getenv("CACHE_HOT_DIR", os.getenv("CACHE_DIR", "/tmp/youtube-mp4-cache")))
     cache_archive_dir = Path(os.environ["CACHE_ARCHIVE_DIR"]) if os.getenv("CACHE_ARCHIVE_DIR") else None
+    cache_archive_mount_point = (
+        Path(os.getenv("CACHE_ARCHIVE_MOUNT_POINT", str(cache_archive_dir.parent)))
+        if cache_archive_dir is not None
+        else None
+    )
     cache_archive_after_seconds = int(os.getenv("CACHE_ARCHIVE_AFTER_SECONDS", "604800"))
     cache_hot_min_free_bytes = int(os.getenv("CACHE_HOT_MIN_FREE_BYTES", "0"))
     cache_promote_archive_on_access = os.getenv("CACHE_PROMOTE_ARCHIVE_ON_ACCESS", "1") != "0"

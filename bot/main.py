@@ -68,6 +68,7 @@ load_env_file(ENV_FILE)
 class Settings:
     discord_bot_token = os.getenv("DISCORD_BOT_TOKEN", "")
     discord_prepare_token = os.getenv("DISCORD_PREPARE_TOKEN", "")
+    discord_operator_user_id = os.getenv("DISCORD_OPERATOR_USER_ID", "").strip()
     youtube_proxy_base_url = os.getenv("YOUTUBE_PROXY_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
     youtube_proxy_internal_base_url = os.getenv(
         "YOUTUBE_PROXY_INTERNAL_BASE_URL",
@@ -84,6 +85,33 @@ class Settings:
     url_intake_channel_id = os.getenv("DISCORD_URL_INTAKE_CHANNEL_ID", "").strip()
 settings = Settings()
 JST = timezone(timedelta(hours=9))
+
+
+def is_discord_operator(user_id: int) -> bool:
+    return settings.discord_operator_user_id.isdecimal() and user_id == int(settings.discord_operator_user_id)
+
+
+async def require_discord_operator(interaction: discord.Interaction) -> bool:
+    if is_discord_operator(interaction.user.id):
+        return True
+    await interaction.response.send_message("この管理コマンドは許可された運用者専用です。", ephemeral=True, silent=True)
+    return False
+
+
+async def run_operator_command(*arguments: str) -> str:
+    process = await asyncio.create_subprocess_exec(
+        "sudo",
+        "-n",
+        "/usr/local/sbin/youtube-proxy-operator",
+        *arguments,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    output = (stdout or stderr).decode("utf-8", errors="replace").strip()
+    if process.returncode:
+        raise RuntimeError(output or f"運用コマンドが失敗しました (exit={process.returncode})")
+    return output or "完了しました。"
 
 
 class PrepareApiError(Exception):
@@ -1557,6 +1585,60 @@ class YoutubeProxyBot(discord.Client):
             silent=True,
         )
 client = YoutubeProxyBot()
+
+
+STORAGE_ACTIONS = [
+    app_commands.Choice(name="状態確認", value="status"),
+    app_commands.Choice(name="安全に取り外す", value="detach"),
+    app_commands.Choice(name="再接続を確認する", value="attach"),
+]
+TRANSLATION_PROFILE_ACTIONS = [
+    app_commands.Choice(name="Google / Gemini 3.1 Flash-Lite", value="gemini_2_5_flash_lite"),
+    app_commands.Choice(name="Google / Gemini 2.5 Flash", value="gemini_2_5_flash"),
+    app_commands.Choice(name="Google / Gemini 3.5 Flash", value="gemini_3_5_flash"),
+    app_commands.Choice(name="OpenAI / GPT-5 nano", value="gpt_5_nano"),
+    app_commands.Choice(name="Groq / GPT-OSS 20B", value="groq_gpt_oss_20b"),
+    app_commands.Choice(name="Local / Qwen 3 4B Instruct", value="qwen3_4b_instruct"),
+    app_commands.Choice(name="Local / Qwen 3 8B", value="qwen3_8b"),
+    app_commands.Choice(name="Local / Qwen 3 14B", value="qwen3_14b"),
+    app_commands.Choice(name="Local / Aya Expanse 8B", value="aya_expanse_8b"),
+    app_commands.Choice(name="Local / Gemma 3 12B", value="gemma3_12b"),
+    app_commands.Choice(name="Local / TranslateGemma 12B", value="translategemma_12b"),
+]
+
+
+@client.tree.command(name="server-storage", description="運用者専用: 動画HDDの状態確認・安全な取り外し")
+@app_commands.describe(action="実行するHDD操作")
+@app_commands.choices(action=STORAGE_ACTIONS)
+async def server_storage_command(
+    interaction: discord.Interaction,
+    action: app_commands.Choice[str],
+) -> None:
+    if not await require_discord_operator(interaction):
+        return
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    try:
+        output = await run_operator_command(f"hdd-{action.value}")
+    except RuntimeError as error:
+        output = f"HDD操作に失敗しました。\n```text\n{error}\n```"
+    await interaction.edit_original_response(content=output[:1900])
+
+
+@client.tree.command(name="translation-model", description="運用者専用: 翻訳AI会社・モデルを切り替え")
+@app_commands.describe(profile="会社 / モデル")
+@app_commands.choices(profile=TRANSLATION_PROFILE_ACTIONS)
+async def translation_model_command(
+    interaction: discord.Interaction,
+    profile: app_commands.Choice[str],
+) -> None:
+    if not await require_discord_operator(interaction):
+        return
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    try:
+        output = await run_operator_command("translation-profile", profile.value)
+    except RuntimeError as error:
+        output = f"翻訳モデルの切り替えに失敗しました。\n```text\n{error}\n```"
+    await interaction.edit_original_response(content=output[:1900])
 
 
 @client.tree.command(name="prepare", description="YouTube動画を変換またはSSDへ準備します")

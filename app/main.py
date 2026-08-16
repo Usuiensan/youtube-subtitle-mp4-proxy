@@ -301,6 +301,8 @@ def read_disk_metrics() -> dict:
     def usage(path: Path | None) -> dict | None:
         if path is None:
             return None
+        if path == settings.cache_archive_dir and not archive_storage_available():
+            return {"path": str(path), "available": False}
         try:
             path.mkdir(parents=True, exist_ok=True)
             item = shutil.disk_usage(path)
@@ -718,6 +720,8 @@ def entry_dir(key: str) -> Path:
 
 
 def archive_entry_dir(key: str) -> Path | None:
+    if not archive_storage_available():
+        return None
     return current_cache_layout().archive_entry_dir(key)
 
 
@@ -823,7 +827,8 @@ def prepared_cache_entry_body(request: Request, key: str, base_dir: Path, storag
 
 def list_prepared_cache_entries(request: Request) -> list[dict]:
     items: dict[str, dict] = {}
-    for storage, root in (("hot", settings.cache_hot_dir), ("archive", settings.cache_archive_dir)):
+    archive_root = settings.cache_archive_dir if archive_storage_available() else None
+    for storage, root in (("hot", settings.cache_hot_dir), ("archive", archive_root)):
         if root is None or not root.exists():
             continue
         for child in root.iterdir():
@@ -869,7 +874,8 @@ def reburn_variant_for(video_id: str, lang: str, mode: str) -> tuple[str, str | 
 
 def reusable_source_entries() -> list[dict]:
     items: dict[str, dict] = {}
-    for storage, root in (("hot", settings.cache_hot_dir), ("archive", settings.cache_archive_dir)):
+    archive_root = settings.cache_archive_dir if archive_storage_available() else None
+    for storage, root in (("hot", settings.cache_hot_dir), ("archive", archive_root)):
         if root is None or not root.exists():
             continue
         for child in root.iterdir():
@@ -1026,6 +1032,20 @@ def hot_free_bytes() -> int:
     return shutil.disk_usage(settings.cache_hot_dir).free
 
 
+def archive_storage_available() -> bool:
+    archive_dir = settings.cache_archive_dir
+    mount_point = settings.cache_archive_mount_point
+    if archive_dir is None:
+        return True
+    if mount_point is None:
+        return False
+    try:
+        archive_dir.resolve().relative_to(mount_point.resolve())
+    except ValueError:
+        return False
+    return os.path.ismount(mount_point)
+
+
 def cache_entry_newest_mtime(path: Path) -> float:
     mp4 = path / "output.mp4"
     hls_playlist = path / "hls" / "index.m3u8"
@@ -1098,6 +1118,8 @@ def active_prepare_cache_keys() -> set[str]:
 def archive_all_hot_entries(active_keys: set[str]) -> dict:
     if settings.cache_archive_dir is None:
         raise HTTPException(status_code=400, detail="CACHE_ARCHIVE_DIR is not configured")
+    if not archive_storage_available():
+        raise HTTPException(status_code=503, detail="HDD archive storage is not mounted")
     settings.cache_hot_dir.mkdir(parents=True, exist_ok=True)
     moved = 0
     skipped = 0
@@ -1218,7 +1240,8 @@ def archived_ready_entry_exists(key: str, mode: str) -> bool:
 def candidate_cache_keys(video_id: str, lang: str) -> list[str]:
     profile = render_profile_id()
     names: set[str] = set()
-    for base in (settings.cache_hot_dir, settings.cache_archive_dir):
+    archive_root = settings.cache_archive_dir if archive_storage_available() else None
+    for base in (settings.cache_hot_dir, archive_root):
         if base is None or not base.exists():
             continue
         for child in base.glob(f"{video_id}_{lang}_*_{profile}"):
@@ -1378,6 +1401,8 @@ def is_hls_started(key: str) -> bool:
 
 def cleanup_expired_cache() -> None:
     settings.cache_hot_dir.mkdir(parents=True, exist_ok=True)
+    if settings.cache_archive_dir is not None and not archive_storage_available():
+        return
     now = time.time()
     expire_after = (
         settings.cache_archive_after_seconds
@@ -7341,7 +7366,10 @@ async def index() -> str:
 
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "archive": "mounted" if archive_storage_available() else "unavailable",
+    }
 
 
 @app.get("/prepared")
@@ -7523,7 +7551,7 @@ def _decode_translation_audit_record(record: dict) -> dict:
 
 def _list_cached_variants_for_video(request: Request, video_id: str) -> list[dict]:
     roots = [settings.cache_hot_dir]
-    if settings.cache_archive_dir is not None:
+    if settings.cache_archive_dir is not None and archive_storage_available():
         roots.append(settings.cache_archive_dir)
     by_key: dict[str, dict] = {}
     for root in roots:
@@ -8138,7 +8166,7 @@ async def clear_all_youtube(
             if child.is_dir() and not child.name.startswith("."):
                 dirs_to_clean.append(child)
 
-    if settings.cache_archive_dir and settings.cache_archive_dir.exists():
+    if settings.cache_archive_dir and archive_storage_available() and settings.cache_archive_dir.exists():
         for child in settings.cache_archive_dir.iterdir():
             if child.is_dir() and not child.name.startswith("."):
                 dirs_to_clean.append(child)

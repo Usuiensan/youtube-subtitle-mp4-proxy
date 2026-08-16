@@ -23,6 +23,8 @@ CONFIG_SCHEMA: dict[str, tuple[str, float, float]] = {
     "TRANSLATION_API_RETRY_BASE_SECONDS": ("float", 0, 300),
     "SYSTEM_METRICS_INTERVAL_SECONDS": ("float", 1, 3600),
     "SYSTEM_METRICS_HISTORY_SECONDS": ("int", 60, 31_536_000),
+    "DISCORD_OPERATOR_USER_ID": ("int", 1, 9_223_372_036_854_775_807),
+    "CACHE_ARCHIVE_MOUNT_POINT": ("path", 0, 0),
 }
 ENUM_VALUES = {
     "GEMINI_THINKING_LEVEL": {"minimal", "low", "medium", "high"},
@@ -82,6 +84,10 @@ def _typed_value(key: str, value: object) -> int | float | str:
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise ConfigValidationError(f"{key} has an invalid type")
     text = str(value).strip()
+    if kind == "path":
+        if not re.fullmatch(r"/(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+", text):
+            raise ConfigValidationError(f"{key} must be an absolute path")
+        return text
     try:
         parsed: int | float = int(text) if kind == "int" and re.fullmatch(r"[+-]?\d+", text) else float(text)
     except ValueError as error:

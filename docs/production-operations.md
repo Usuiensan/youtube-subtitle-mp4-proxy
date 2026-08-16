@@ -33,13 +33,37 @@ allowlist:
 - `GEMINI_THINKING_LEVEL` (`minimal`, `low`, `medium`, `high`)
 - `SYSTEM_METRICS_INTERVAL_SECONDS` (1..3600)
 - `SYSTEM_METRICS_HISTORY_SECONDS` (60..31536000)
+- `DISCORD_OPERATOR_USER_ID` (Discordの運用者ID)
+- `CACHE_ARCHIVE_MOUNT_POINT` (HDDの固定マウント点)
 
 ## sudoers
 
 接続ユーザーに許可するrootコマンドは次の3つだけです。
 
 ```text
-furukawa ALL=(root) NOPASSWD: /usr/local/sbin/youtube-proxy-update, /usr/local/sbin/youtube-proxy-audit, /usr/local/sbin/youtube-proxy-config
+furukawa ALL=(root) NOPASSWD: /usr/local/sbin/youtube-proxy-update, /usr/local/sbin/youtube-proxy-audit, /usr/local/sbin/youtube-proxy-config, /usr/local/sbin/youtube-proxy-operator
 ```
 
 `/usr/local/sbin/youtube-proxy-audit` はlocalhostの `/translation-audit` だけ、`youtube-proxy-config` はlocalhostの `/ops/config` と固定2サービスのrestart/statusだけを扱います。任意URL、任意shell、任意systemctlは受け付けません。
+
+## HDD とDiscordの運用
+
+最初に、HDDを実際にマウントしている固定パスとDiscord運用者IDを設定します。本番のHDDは `/mnt/video` です。
+
+```powershell
+$state = .\scripts\production-config.ps1 -Get | ConvertFrom-Json
+.\scripts\production-config.ps1 -Set -Key CACHE_ARCHIVE_MOUNT_POINT -Value /mnt/video -ExpectedRevision $state.revision
+$state = .\scripts\production-config.ps1 -Get | ConvertFrom-Json
+.\scripts\production-config.ps1 -Set -Key DISCORD_OPERATOR_USER_ID -Value 363466015683903488 -ExpectedRevision $state.revision
+```
+
+以後、Windowsからは次だけです。
+
+```powershell
+.\scripts\production-operator.ps1 -Action Status
+.\scripts\production-operator.ps1 -Action Detach
+.\scripts\production-operator.ps1 -Action Attach
+.\scripts\production-operator.ps1 -Action SetProfile -Profile gpt_5_nano
+```
+
+`Detach` は退避完了かつ実行中ジョブなしの場合だけproxyを停止してアンマウントします。成功表示の後にHDDを抜いてください。常駐watcherが5秒ごとに再接続を確認し、HDDが戻るとマウントしてproxyを自動再開します。Discordでは同じ操作を `/server-storage` と `/translation-model` から実行できます。いずれも設定したユーザーIDだけが実行でき、返答はephemeralです。

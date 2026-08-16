@@ -1,0 +1,124 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+CONFIG_FILE=/etc/youtube-mp4-proxy/config.env
+SECRETS_FILE=/etc/youtube-mp4-proxy/secrets.env
+CONFIG_HELPER=/usr/local/sbin/youtube-proxy-config
+PROXY_SERVICE=youtube-mp4-proxy
+
+[[ $(id -u) -eq 0 ]] || { echo 'root権限で実行してください' >&2; exit 1; }
+
+config_value() {
+    awk -F= -v key="$1" '$1 == key { sub(/^[^=]*=/, ""); gsub(/^"|"$/, ""); print; exit }' "$CONFIG_FILE"
+}
+
+storage_config() {
+    ARCHIVE_DIR=$(config_value CACHE_ARCHIVE_DIR)
+    [[ "$ARCHIVE_DIR" == /* ]] || { echo 'CACHE_ARCHIVE_DIR が未設定です' >&2; return 1; }
+    ARCHIVE_MOUNT=$(config_value CACHE_ARCHIVE_MOUNT_POINT)
+    [[ -n "$ARCHIVE_MOUNT" ]] || { echo 'CACHE_ARCHIVE_MOUNT_POINT が未設定です' >&2; return 1; }
+    [[ "$ARCHIVE_MOUNT" == /* && "$ARCHIVE_MOUNT" != / ]] || { echo 'HDDマウント先が不正です' >&2; return 1; }
+    [[ "$ARCHIVE_DIR" == "$ARCHIVE_MOUNT" || "$ARCHIVE_DIR" == "$ARCHIVE_MOUNT/"* ]] || {
+        echo 'CACHE_ARCHIVE_DIR がHDDマウント先配下ではありません' >&2
+        return 1
+    }
+}
+
+storage_mounted() {
+    storage_config
+    findmnt --mountpoint "$ARCHIVE_MOUNT" --noheadings >/dev/null 2>&1
+}
+
+status() {
+    storage_config
+    local mounted=false source=''
+    if storage_mounted; then
+        mounted=true
+        source=$(findmnt --mountpoint "$ARCHIVE_MOUNT" --noheadings --output SOURCE | xargs)
+    fi
+    "$APP_PYTHON" - "$ARCHIVE_DIR" "$ARCHIVE_MOUNT" "$mounted" "$source" <<'PY'
+import json
+import sys
+print(json.dumps({"archive_dir": sys.argv[1], "mount_point": sys.argv[2], "mounted": sys.argv[3] == "true", "source": sys.argv[4]}, ensure_ascii=False))
+PY
+}
+
+archive_all() {
+    [[ -r "$SECRETS_FILE" ]] || { echo '準備API設定が見つかりません' >&2; return 1; }
+    local token body
+    token=$(awk -F= '$1 == "DISCORD_PREPARE_TOKEN" { sub(/^[^=]*=/, ""); print; exit }' "$SECRETS_FILE")
+    [[ -n "$token" ]] || { echo '準備API設定が不完全です' >&2; return 1; }
+    body=$(curl --fail --silent --show-error --config - -X POST http://127.0.0.1:8000/prepare/archive-all <<EOF
+header = "Authorization: Bearer $token"
+EOF
+)
+    printf '%s' "$body" | "$APP_PYTHON" -c '
+import json, sys
+body = json.load(sys.stdin)
+if body.get("failed") or body.get("skipped"):
+    raise SystemExit("HDD退避を中止しました: 実行中ジョブまたは退避失敗があります")
+'
+}
+
+detach() {
+    storage_mounted || { echo 'HDDは既に未接続です' >&2; exit 1; }
+    archive_all
+    systemctl stop "$PROXY_SERVICE"
+    sync
+    umount "$ARCHIVE_MOUNT"
+    echo 'HDDを安全に取り外せます。Discord botは再接続待ちで稼働しています。'
+}
+
+attach() {
+    storage_config
+    mount "$ARCHIVE_MOUNT"
+    storage_mounted || { echo 'HDDのマウント確認に失敗しました' >&2; exit 1; }
+    systemctl start "$PROXY_SERVICE"
+    curl --fail --silent --show-error http://127.0.0.1:8000/healthz >/dev/null
+    echo 'HDDを検出して動画サービスを再開しました。'
+}
+
+translation_profile() {
+    local profile=$1 revision
+    [[ "$profile" =~ ^[a-z0-9_]+$ ]] || { echo '翻訳プロファイルが不正です' >&2; exit 2; }
+    revision=$("$CONFIG_HELPER" get | "$APP_PYTHON" -c 'import json,sys; print(json.load(sys.stdin)["revision"])')
+    "$CONFIG_HELPER" set --key TRANSLATION_DEFAULT_PROFILE --value "$profile" --expected-revision "$revision" >/dev/null
+    if storage_mounted; then
+        systemctl restart "$PROXY_SERVICE"
+        curl --fail --silent --show-error http://127.0.0.1:8000/healthz >/dev/null
+        echo "翻訳モデルを $profile に切り替え、動画サービスを再起動しました。"
+    else
+        systemctl stop "$PROXY_SERVICE"
+        echo "翻訳モデルを $profile に切り替えました。HDD再接続後に動画サービスを自動再開します。"
+    fi
+}
+
+watch() {
+    while true; do
+        if storage_config >/dev/null 2>&1; then
+            if storage_mounted; then
+                systemctl start "$PROXY_SERVICE" || true
+            else
+                mount "$ARCHIVE_MOUNT" >/dev/null 2>&1 || true
+                if storage_mounted; then
+                    systemctl start "$PROXY_SERVICE" || true
+                else
+                    systemctl stop "$PROXY_SERVICE" || true
+                fi
+            fi
+        fi
+        sleep 5
+    done
+}
+
+APP_PYTHON=/opt/youtube-mp4-proxy/.venv/bin/python
+[[ -x "$APP_PYTHON" ]] || { echo 'Python仮想環境が見つかりません' >&2; exit 1; }
+
+case "${1:-hdd-status}" in
+    hdd-status) [[ $# -eq 1 || $# -eq 0 ]] || exit 2; status ;;
+    hdd-detach) [[ $# -eq 1 ]] || exit 2; detach ;;
+    hdd-attach) [[ $# -eq 1 ]] || exit 2; attach ;;
+    translation-profile) [[ $# -eq 2 ]] || exit 2; translation_profile "$2" ;;
+    watch) [[ $# -eq 1 ]] || exit 2; watch ;;
+    *) echo '許可されていない操作です' >&2; exit 2 ;;
+esac

@@ -51,6 +51,14 @@ rsync -a --delete --exclude='.venv/' --exclude='.env*' --exclude='.pytest_cache/
 install -o root -g root -m 755 "$STAGE/scripts/youtube-proxy-update" /usr/local/sbin/youtube-proxy-update
 install -o root -g root -m 755 "$STAGE/scripts/youtube-proxy-audit" /usr/local/sbin/youtube-proxy-audit
 install -o root -g root -m 755 "$STAGE/scripts/youtube-proxy-config" /usr/local/sbin/youtube-proxy-config
+install -o root -g root -m 755 "$STAGE/scripts/youtube-proxy-operator" /usr/local/sbin/youtube-proxy-operator
+install -o root -g root -m 644 "$STAGE/deploy/youtube-proxy-storage-watch.service" /etc/systemd/system/youtube-proxy-storage-watch.service
+install -o root -g root -m 440 "$STAGE/deploy/youtube-proxy-sudoers" /etc/sudoers.d/youtube-proxy-deploy.new
+visudo -cf /etc/sudoers.d/youtube-proxy-deploy.new >/dev/null
+install -o root -g root -m 440 /etc/sudoers.d/youtube-proxy-deploy.new /etc/sudoers.d/youtube-proxy-deploy
+rm -f /etc/sudoers.d/youtube-proxy-deploy.new
+systemctl daemon-reload
+systemctl enable --now youtube-proxy-storage-watch.service
 systemctl start "$PROXY_SERVICE"
 systemctl start "$DISCORD_SERVICE"
 sleep 5

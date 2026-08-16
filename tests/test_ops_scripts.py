@@ -5,7 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_windows_ops_scripts_do_not_accept_or_print_tokens() -> None:
-    for name in ("translation-audit.ps1", "production-config.ps1"):
+    for name in ("translation-audit.ps1", "production-config.ps1", "production-operator.ps1"):
         text = (ROOT / "scripts" / name).read_text(encoding="utf-8")
         assert "TRANSLATION_AUDIT_API_TOKEN" not in text
         assert "TRANSLATION_CONFIG_API_TOKEN" not in text
@@ -35,6 +35,14 @@ def test_update_script_excludes_local_env_and_checks_native_commands() -> None:
     assert "scpに失敗しました" in text
     assert "本番更新に失敗しました" in text
     assert '"$STAGE/scripts/youtube-proxy-config" /usr/local/sbin/youtube-proxy-config' in root_wrapper
+    assert '"$STAGE/scripts/youtube-proxy-operator" /usr/local/sbin/youtube-proxy-operator' in root_wrapper
+
+
+def test_storage_operator_uses_only_the_configured_mount_point() -> None:
+    operator = (ROOT / "scripts" / "youtube-proxy-operator").read_text(encoding="utf-8")
+    assert "CACHE_ARCHIVE_MOUNT_POINT が未設定" in operator
+    assert 'umount "$ARCHIVE_MOUNT"' in operator
+    assert "eval " not in operator
 
 
 def test_provisioning_removes_legacy_app_env_only_after_backup() -> None:

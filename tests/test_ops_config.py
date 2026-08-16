@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from app import main as app_main
@@ -73,6 +75,19 @@ def test_ops_config_allows_openai_chunk_token_limit(monkeypatch, tmp_path: Path)
     )
     assert response.status_code == 200
     assert "TRANSLATION_CHUNK_INPUT_TOKENS=3500" in config.read_text(encoding="utf-8")
+
+
+def test_ops_config_allows_only_absolute_archive_mount_paths(monkeypatch, tmp_path: Path) -> None:
+    config = tmp_path / "config.env"
+    monkeypatch.setattr(ops_config, "config_file", lambda: config)
+    old_values, _revision = ops_config.write_values(
+        ops_config.validate_values({"CACHE_ARCHIVE_MOUNT_POINT": "/mnt/video"}),
+        ops_config.revision(),
+    )
+    assert old_values == {}
+    assert "CACHE_ARCHIVE_MOUNT_POINT=/mnt/video" in config.read_text(encoding="utf-8")
+    with pytest.raises(ops_config.ConfigValidationError):
+        ops_config.validate_values({"CACHE_ARCHIVE_MOUNT_POINT": "../../mnt/video"})
 
 
 def test_ops_config_allows_only_known_translation_profiles(monkeypatch, tmp_path: Path) -> None:
