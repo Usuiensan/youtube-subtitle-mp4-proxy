@@ -2078,9 +2078,10 @@ def translation_attempt_plan(
             attempt_settings = fallback
 
     if attempt_settings.provider_name == "gemini_api" and attempt_settings.model_name.startswith("gemini-3"):
-        plan: list[tuple[TranslationSettings, str]] = [
-            (attempt_settings, level) for level in gemini_thinking_levels()
-        ]
+        levels = gemini_thinking_levels()
+        if input_token_estimate >= LONG_TRANSLATION_INPUT_TOKEN_THRESHOLD:
+            levels = [level for level in levels if level in {"minimal", "low"}]
+        plan: list[tuple[TranslationSettings, str]] = [(attempt_settings, level) for level in levels]
     else:
         plan = [(attempt_settings, "")]
     if selected.engine == "gemini_2_5_flash_lite":

@@ -148,7 +148,7 @@ class GeminiTranslationTests(unittest.TestCase):
             ],
         )
 
-    def test_long_gemini_input_starts_with_35_flash_minimal(self) -> None:
+    def test_long_gemini_input_avoids_medium_and_high_thinking(self) -> None:
         with patch.object(app_main.settings, "gemini_api_key", "test-key"):
             plan = app_main.translation_attempt_plan(
                 app_main.translation_settings("gemini_2_5_flash_lite"),
@@ -160,8 +160,6 @@ class GeminiTranslationTests(unittest.TestCase):
             [
                 ("gemini-3.5-flash", "minimal"),
                 ("gemini-3.5-flash", "low"),
-                ("gemini-3.5-flash", "medium"),
-                ("gemini-3.5-flash", "high"),
             ],
         )
 
@@ -225,6 +223,29 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertEqual(item_schema["required"], ["from_id", "to_id", "text"])
         self.assertNotIn("minItems", subtitles_schema)
         self.assertNotIn("maxItems", subtitles_schema)
+
+    def test_gemini_max_tokens_is_reported_as_truncation(self) -> None:
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"candidates":[{"content":{"parts":[{"text":"{\\\"subtitles\\\":["}]},"finishReason":"MAX_TOKENS"}],"usageMetadata":{}}'
+
+        with patch.object(translation_worker.urllib.request, "urlopen", return_value=Response()):
+            with self.assertRaisesRegex(RuntimeError, "output was truncated at MAX_TOKENS"):
+                translation_worker.translate_batch_gemini(
+                    {
+                        "model_name": "gemini-3.5-flash",
+                        "llm_api_key": "test-key",
+                        "source_language": "en",
+                        "target_language": "ja",
+                        "subtitles": [{"id": 1, "text": "Hi"}],
+                    }
+                )
 
     def test_gemini_usage_includes_thinking_tokens_in_billable_output(self) -> None:
         usage = translation_worker._usage_gemini(

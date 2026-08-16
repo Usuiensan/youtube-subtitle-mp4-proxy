@@ -281,6 +281,8 @@ def translate_batch_gemini(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
     text = parts[0].get("text") if isinstance(parts, list) and parts and isinstance(parts[0], dict) else None
     if not isinstance(text, str) or not text.strip():
         raise RuntimeError("gemini api returned no JSON content")
+    if str(candidates[0].get("finishReason") or "").upper() == "MAX_TOKENS":
+        raise RuntimeError("gemini api output was truncated at MAX_TOKENS")
     try:
         result = json.loads(text)
     except json.JSONDecodeError as error:
