@@ -144,6 +144,7 @@ class GeminiTranslationTests(unittest.TestCase):
                 ("gemini-3.1-flash-lite", "minimal"),
                 ("gemini-3.1-flash-lite", "low"),
                 ("gemini-3.1-flash-lite", "medium"),
+                ("gemini-3.5-flash-lite", "minimal"),
                 ("gemini-3.5-flash", "high"),
             ],
         )
@@ -160,6 +161,7 @@ class GeminiTranslationTests(unittest.TestCase):
             [
                 ("gemini-3.1-flash-lite", "minimal"),
                 ("gemini-3.1-flash-lite", "low"),
+                ("gemini-3.5-flash-lite", "minimal"),
                 ("gemini-3.5-flash", "high"),
             ],
         )

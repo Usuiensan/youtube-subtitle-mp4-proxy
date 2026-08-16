@@ -12,6 +12,7 @@ _lock = threading.RLock()
 TOKEN_PRICES = {
     "gemini_2_5_flash": (0.30, 2.50),
     "gemini_2_5_flash_lite": (0.25, 1.50),
+    "gemini_3_5_flash_lite": (0.30, 2.50),
     "gemini_3_5_flash": (1.50, 9.00),
     "gpt_5_nano": (0.05, 0.40),
     "groq_gpt_oss_20b": (0.075, 0.30),

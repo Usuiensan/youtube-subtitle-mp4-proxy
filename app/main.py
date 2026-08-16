@@ -1759,7 +1759,7 @@ def remote_llm_health_url() -> str:
 def configured_cloud_models() -> set[str]:
     models: set[str] = set()
     if settings.gemini_api_key:
-        for profile in ("gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash"):
+        for profile in ("gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash_lite", "gemini_3_5_flash"):
             model = settings.local_llm_profile_models.get(profile)
             if model:
                 models.add(model)
@@ -1996,11 +1996,11 @@ def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
     provider_name = "openai_compatible"
     provider_endpoint = ""
     provider_api_key = ""
-    if normalized in settings.local_llm_profile_models and normalized not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash", "gpt_5_nano", "groq_gpt_oss_20b"}:
+    if normalized in settings.local_llm_profile_models and normalized not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash_lite", "gemini_3_5_flash", "gpt_5_nano", "groq_gpt_oss_20b"}:
         provider_name = "openai_compatible"
         provider_endpoint = settings.remote_llm_endpoint
         provider_api_key = settings.remote_llm_api_key
-    if normalized in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash"}:
+    if normalized in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash_lite", "gemini_3_5_flash"}:
         provider_name = "gemini_api"
         provider_endpoint = settings.gemini_api_endpoint
         provider_api_key = settings.gemini_api_key
@@ -2141,10 +2141,16 @@ def translation_attempt_plan(
         plan: list[tuple[TranslationSettings, str]] = [(attempt_settings, level) for level in levels]
     else:
         plan = [(attempt_settings, "")]
-    if selected.engine == "gemini_2_5_flash_lite":
-        fallback = translation_settings("gemini_3_5_flash")
-        if translation_settings_is_configured(fallback) and fallback.model_name != attempt_settings.model_name:
-            plan.append((fallback, "high"))
+    if selected.provider_name == "gemini_api":
+        planned_models = {item[0].model_name for item in plan}
+        for profile, thinking_level in (
+            ("gemini_3_5_flash_lite", "minimal"),
+            ("gemini_3_5_flash", "high"),
+        ):
+            fallback = translation_settings(profile)
+            if translation_settings_is_configured(fallback) and fallback.model_name not in planned_models:
+                plan.append((fallback, thinking_level))
+                planned_models.add(fallback.model_name)
     elif attempt_settings == selected and (fallback := translation_retry_fallback_settings(selected)):
         plan.append((fallback, ""))
     return plan
@@ -2666,7 +2672,7 @@ def enrich_translation_metadata(metadata: dict) -> dict:
             "translation_overage_estimate_usd": usd,
             "translation_overage_estimate_jpy": jpy,
         }
-    if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash", "gpt_5_nano", "groq_gpt_oss_20b"}:
+    if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash_lite", "gemini_3_5_flash", "gpt_5_nano", "groq_gpt_oss_20b"}:
         return metadata
     input_tokens = int(metadata.get("translation_input_tokens") or 0)
     billable_output_tokens = billable_output_token_count(metadata)
@@ -2675,6 +2681,7 @@ def enrich_translation_metadata(metadata: dict) -> dict:
     labels = {
         "gemini_2_5_flash": "Gemini Flash",
         "gemini_2_5_flash_lite": "Gemini Flash-Lite",
+        "gemini_3_5_flash_lite": "Gemini 3.5 Flash-Lite",
         "gemini_3_5_flash": "Gemini 3.5 Flash",
         "gpt_5_nano": "GPT-5 nano",
         "groq_gpt_oss_20b": "Groq GPT-OSS 20B",
@@ -2682,6 +2689,7 @@ def enrich_translation_metadata(metadata: dict) -> dict:
     billing = {
         "gemini_2_5_flash": "Gemini API Free Tier" if settings.gemini_billing_mode == "free_tier" else "Gemini API Paid Tier",
         "gemini_2_5_flash_lite": "Gemini API Paid/Free Tier",
+        "gemini_3_5_flash_lite": "Gemini API Free Tier" if settings.gemini_billing_mode == "free_tier" else "Gemini API Paid Tier",
         "gemini_3_5_flash": "Gemini API Free Tier" if settings.gemini_billing_mode == "free_tier" else "Gemini API Paid Tier",
         "gpt_5_nano": "OpenAI API Paid Tier",
         "groq_gpt_oss_20b": "Groq API Paid/Free Tier",
@@ -3187,6 +3195,8 @@ async def translate_subtitle_if_needed(
         try:
             return await worker(payload, current_settings, current_thinking_level)
         except RuntimeError as error:
+            if current_settings.provider_name == "gemini_api" and is_translation_provider_failover_error(error):
+                raise
             if provider_failover_used or provider_failover is None or not is_translation_provider_failover_error(error):
                 raise
             previous = current_settings
@@ -3245,7 +3255,10 @@ async def translate_subtitle_if_needed(
 
     result = None
     failed_translation_attempts: list[dict] = []
+    quota_exhausted_models: set[str] = set()
     for attempt_index, (attempt_settings, thinking_level) in enumerate(attempt_plan):
+        if attempt_settings.model_name in quota_exhausted_models:
+            continue
         try:
             result = await translate_srt_with_local_worker(
                 subtitle_path=subtitle,
@@ -3262,6 +3275,10 @@ async def translate_subtitle_if_needed(
             selected_settings = active_provider_settings if provider_failover_used else attempt_settings
             break
         except TranslationError as error:
+            quota_retry = (
+                attempt_settings.provider_name == "gemini_api"
+                and is_translation_provider_failover_error(error)
+            )
             usage = failed_translation_usage(error, attempt_settings)
             if usage:
                 failed_translation_attempts.append(usage)
@@ -3274,13 +3291,25 @@ async def translate_subtitle_if_needed(
                     usage["estimated_usd"],
                     usage["charged_usd"],
                 )
-            if getattr(error, "translation_chunk_failed", False) or not is_retryable_translation_failure(error) or attempt_index + 1 >= len(attempt_plan):
+            if quota_retry:
+                quota_exhausted_models.add(attempt_settings.model_name)
+            next_index = attempt_index + 1
+            if quota_retry:
+                while next_index < len(attempt_plan) and attempt_plan[next_index][0].model_name in quota_exhausted_models:
+                    next_index += 1
+            if (
+                (getattr(error, "translation_chunk_failed", False) and not quota_retry)
+                or (not quota_retry and not is_retryable_translation_failure(error))
+                or next_index >= len(attempt_plan)
+            ):
                 if failed_translation_attempts:
                     error.translation_failure_usage = summarize_failed_translation_usage(failed_translation_attempts)
                 raise
-            next_settings, next_thinking_level = attempt_plan[attempt_index + 1]
+            next_settings, next_thinking_level = attempt_plan[next_index]
             if job_id:
-                if next_settings.engine == attempt_settings.engine and next_thinking_level:
+                if quota_retry:
+                    details = f"{attempt_settings.model_name} の無料枠に達したため、{next_settings.model_name} へ切り替えて再試行します…"
+                elif next_settings.engine == attempt_settings.engine and next_thinking_level:
                     details = "翻訳結果異常のため、推論レベルを上げて再試行します…"
                 else:
                     details = f"翻訳結果異常のため、{next_settings.model_name}（推論レベル {next_thinking_level or '既定'}）へ切り替えて再試行します…"

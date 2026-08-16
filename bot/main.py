@@ -665,6 +665,7 @@ def subtitle_status_text(meta: Any) -> str:
                 "translategemma_12b": "TranslateGemma 12B",
                 "gemini_2_5_flash": "Gemini Flash",
                 "gemini_2_5_flash_lite": "Gemini Flash-Lite",
+                "gemini_3_5_flash_lite": "Gemini 3.5 Flash-Lite",
                 "gpt_5_nano": "GPT-5 nano",
                 "groq_gpt_oss_20b": "Groq GPT-OSS 20B",
             }.get(str(engine), str(engine or "LLM"))
@@ -702,7 +703,7 @@ def llm_monthly_usage_text(meta: Any) -> str:
     if not isinstance(meta, dict):
         return ""
     engine = str(meta.get("translation_engine") or "")
-    if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash", "gpt_5_nano", "groq_gpt_oss_20b"}:
+    if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash_lite", "gemini_3_5_flash", "gpt_5_nano", "groq_gpt_oss_20b"}:
         return ""
     try:
         query = urllib.parse.urlencode({"engine": engine})
@@ -778,7 +779,7 @@ def translation_usage_text(meta: Any) -> str:
         return ""
     engine = str(meta.get("translation_engine") or "")
     translation_skipped = bool(meta.get("translation_skipped"))
-    if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash", "gpt_5_nano", "groq_gpt_oss_20b"} and not translation_skipped:
+    if engine not in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash_lite", "gemini_3_5_flash", "gpt_5_nano", "groq_gpt_oss_20b"} and not translation_skipped:
         return ""
     provider_label = "出元字幕（翻訳なし）" if translation_skipped else str(meta.get("translation_provider_label") or "Gemini Flash")
     billing_class = "API利用なし" if translation_skipped else str(meta.get("translation_billing_class") or "Gemini API Free Tier")
@@ -834,10 +835,11 @@ def translation_usage_text(meta: Any) -> str:
             ),
             f"合計トークン: {int(meta.get('translation_total_tokens') or input_tokens + billable_output_tokens):,}",
         ])
-    if engine in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash", "gpt_5_nano", "groq_gpt_oss_20b"}:
+    if engine in {"gemini_2_5_flash", "gemini_2_5_flash_lite", "gemini_3_5_flash_lite", "gemini_3_5_flash", "gpt_5_nano", "groq_gpt_oss_20b"}:
         default_prices = {
             "gemini_2_5_flash": (0.30, 2.50),
             "gemini_2_5_flash_lite": (0.25, 1.50),
+            "gemini_3_5_flash_lite": (0.30, 2.50),
             "gemini_3_5_flash": (1.50, 9.00),
             "gpt_5_nano": (0.05, 0.40),
             "groq_gpt_oss_20b": (0.075, 0.30),
