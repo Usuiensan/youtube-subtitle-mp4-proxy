@@ -188,6 +188,32 @@ class GeminiTranslationTests(unittest.TestCase):
 
         self.assertIsNone(fallback)
 
+    def test_gemini_quota_failover_uses_openai(self) -> None:
+        with patch.object(app_main.settings, "gemini_api_key", "gemini-key"), patch.object(
+            app_main.settings, "openai_api_key", "openai-key"
+        ):
+            fallback = app_main.translation_provider_failover_settings(
+                app_main.translation_settings("gemini_2_5_flash_lite")
+            )
+        self.assertIsNotNone(fallback)
+        self.assertEqual(fallback.provider_name, "openai_api")
+        self.assertEqual(fallback.engine, "gpt_5_nano")
+
+    def test_openai_quota_failover_uses_gemini(self) -> None:
+        with patch.object(app_main.settings, "gemini_api_key", "gemini-key"), patch.object(
+            app_main.settings, "openai_api_key", "openai-key"
+        ):
+            fallback = app_main.translation_provider_failover_settings(
+                app_main.translation_settings("gpt_5_nano")
+            )
+        self.assertIsNotNone(fallback)
+        self.assertEqual(fallback.provider_name, "gemini_api")
+        self.assertEqual(fallback.engine, "gemini_2_5_flash_lite")
+
+    def test_only_quota_errors_trigger_provider_failover(self) -> None:
+        self.assertTrue(app_main.is_translation_provider_failover_error(RuntimeError("translation api http error 429: RESOURCE_EXHAUSTED")))
+        self.assertFalse(app_main.is_translation_provider_failover_error(RuntimeError("translation api http error 400: bad schema")))
+
     def test_gemini_thinking_level_is_added_to_generation_config(self) -> None:
         requests: list[dict] = []
 
@@ -406,6 +432,17 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertIn("合計トークン: 30,939", text)
         self.assertIn("翻訳チャンク: 3 / APIリクエスト: 4", text)
         self.assertIn("入力 $0.30 / 出力 $2.50", text)
+
+    def test_bot_translation_usage_text_shows_provider_failover(self) -> None:
+        text = bot_main.translation_usage_text(
+            {
+                "translation_engine": "gpt_5_nano",
+                "translation_provider_label": "GPT-5 nano",
+                "translation_fallback_used": True,
+                "translation_failover_from": "gemini-3.1-flash-lite",
+            }
+        )
+        self.assertIn("自動フォールバック: gemini-3.1-flash-lite から切替", text)
 
     def test_bot_translation_failure_usage_text(self) -> None:
         text = bot_main.translation_failure_usage_text(

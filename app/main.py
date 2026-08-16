@@ -2028,6 +2028,21 @@ def is_retryable_translation_failure(error: Exception) -> bool:
     return not re.search(r"translation api http error 4\d\d:", str(error).lower())
 
 
+def is_translation_provider_failover_error(error: Exception) -> bool:
+    text = str(error).lower()
+    return bool(re.search(r"translation api http error 429:", text)) or any(
+        marker in text
+        for marker in (
+            "resource_exhausted",
+            "insufficient_quota",
+            "rate limit",
+            "daily quota",
+            "monthly spending cap",
+            "spending cap",
+        )
+    )
+
+
 def translation_settings_is_configured(candidate: TranslationSettings) -> bool:
     if not candidate.model_name:
         return False
@@ -2052,6 +2067,18 @@ def translation_retry_fallback_settings(selected: TranslationSettings) -> Transl
             candidate.model_name != selected.model_name
             and translation_settings_is_configured(candidate)
         ):
+            return candidate
+    return None
+
+
+def translation_provider_failover_settings(selected: TranslationSettings) -> TranslationSettings | None:
+    automatic = "gpt_5_nano" if selected.provider_name == "gemini_api" else "gemini_2_5_flash_lite"
+    for profile in (selected.fallback_engine, automatic):
+        normalized = normalize_translation_engine(profile)
+        if normalized in {selected.engine, "google_cloud", "youtube_auto"}:
+            continue
+        candidate = translation_settings(normalized)
+        if candidate.provider_name != selected.provider_name and translation_settings_is_configured(candidate):
             return candidate
     return None
 
@@ -3094,6 +3121,10 @@ async def translate_subtitle_if_needed(
         selected_settings,
         estimate_translation_input_tokens(estimate_payload),
     )
+    provider_failover = translation_provider_failover_settings(selected_settings)
+    active_provider_settings = selected_settings
+    provider_failover_used = False
+    provider_failover_from = ""
 
     async def worker(payload: dict, attempt_settings: TranslationSettings, thinking_level: str) -> dict:
         payload["_work_dir"] = str(work_dir)
@@ -3125,6 +3156,32 @@ async def translate_subtitle_if_needed(
                         details=f"API再試行中… {retry_number}/{retry_total}（503、一時的な混雑）",
                     )
                 await asyncio.sleep(delay)
+
+    async def worker_with_provider_failover(payload: dict, attempt_settings: TranslationSettings, thinking_level: str) -> dict:
+        nonlocal active_provider_settings, provider_failover_used, provider_failover_from
+        current_settings = active_provider_settings if provider_failover_used else attempt_settings
+        current_thinking_level = "minimal" if provider_failover_used and current_settings.provider_name == "gemini_api" else thinking_level
+        try:
+            return await worker(payload, current_settings, current_thinking_level)
+        except RuntimeError as error:
+            if provider_failover_used or provider_failover is None or not is_translation_provider_failover_error(error):
+                raise
+            previous = current_settings
+            active_provider_settings = provider_failover
+            provider_failover_used = True
+            provider_failover_from = previous.model_name
+            if job_id:
+                update_job_progress(
+                    job_id,
+                    "translate",
+                    0.0,
+                    details=f"{previous.model_name} の利用枠に達したため、{provider_failover.model_name} へ切り替えて継続します…",
+                )
+            return await worker(
+                payload,
+                provider_failover,
+                "minimal" if provider_failover.provider_name == "gemini_api" else "",
+            )
 
     on_prog = None
     start_t = time.time()
@@ -3175,11 +3232,11 @@ async def translate_subtitle_if_needed(
                 source_language=selection["source_language"],
                 target_language=selection["requested_language"],
                 settings=attempt_settings,
-                run_worker=lambda payload, current=attempt_settings, level=thinking_level: worker(payload, current, level),
+                run_worker=lambda payload, current=attempt_settings, level=thinking_level: worker_with_provider_failover(payload, current, level),
                 on_progress=on_prog,
                 video_id=str(info.get("id") or ""),
             )
-            selected_settings = attempt_settings
+            selected_settings = active_provider_settings if provider_failover_used else attempt_settings
             break
         except TranslationError as error:
             usage = failed_translation_usage(error, attempt_settings)
@@ -3217,6 +3274,7 @@ async def translate_subtitle_if_needed(
         **selection,
         **result.metadata,
         "translation_fallback_used": selected_settings.engine != configured_translation_engine(),
+        "translation_failover_from": provider_failover_from,
     })
     record_llm_translation_usage(
         settings.llm_translation_usage_file,

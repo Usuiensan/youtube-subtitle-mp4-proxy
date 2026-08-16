@@ -770,6 +770,9 @@ def translation_usage_text(meta: Any) -> str:
     lines = [
         f"\n翻訳エンジン: {provider_label}"
     ]
+    if meta.get("translation_fallback_used"):
+        origin = str(meta.get("translation_failover_from") or "既定エンジン")
+        lines.append(f"自動フォールバック: {origin} から切替")
     if translation_skipped:
         if str(meta.get("translation_skipped_reason") or "") == "youtube_automatic_translation":
             lines.append("API料金: 追加費用なし（YouTube自動翻訳字幕を使用）")
