@@ -171,6 +171,7 @@ def test_openai_request_uses_strict_json_schema(monkeypatch) -> None:
         {
             "llm_endpoint": "https://example.invalid/v1/chat/completions",
             "model_name": "test-model",
+            "translation_provider": "openai_api",
             "source_language": "en",
             "target_language": "ja",
             "subtitles": [{"id": 1, "text": "Hi"}],
@@ -181,6 +182,38 @@ def test_openai_request_uses_strict_json_schema(monkeypatch) -> None:
     assert schema["strict"] is True
     assert schema["schema"]["required"] == ["subtitles"]
     assert "00:00" not in requests[0]["body"]["messages"][0]["content"]
+    assert requests[0]["body"]["reasoning_effort"] == "minimal"
+
+
+def test_openai_truncation_is_identified_and_audited(tmp_path, monkeypatch) -> None:
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"choices":[{"finish_reason":"length","message":{"content":null}}],"usage":{}}'
+
+    monkeypatch.setattr(translation_worker.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    audit_path = tmp_path / "audit.jsonl"
+    with pytest.raises(RuntimeError, match="truncated at length"):
+        translation_worker.translate_batch_openai(
+            {
+                "llm_endpoint": "https://example.invalid/v1/chat/completions",
+                "model_name": "test-model",
+                "translation_provider": "openai_api",
+                "source_language": "en",
+                "target_language": "ja",
+                "subtitles": [{"id": 1, "text": "Hi"}],
+                "_translation_audit_path": str(audit_path),
+            }
+        )
+    import json
+
+    events = [json.loads(line)["event"] for line in audit_path.read_text(encoding="utf-8").splitlines()]
+    assert events == ["provider_request", "provider_response"]
 
 
 @pytest.mark.parametrize(

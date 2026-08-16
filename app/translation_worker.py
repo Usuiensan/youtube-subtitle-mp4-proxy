@@ -199,12 +199,22 @@ def translate_batch_openai(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
             },
         },
     }
-    if provider != "openai_api":
+    if provider == "openai_api":
+        # Subtitle translation is extraction work; reserve the completion budget for JSON.
+        body["reasoning_effort"] = "minimal"
+    else:
         body["temperature"] = float(os.getenv("LOCAL_LLM_TEMPERATURE", "0"))
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    data = _request_json(endpoint, body, headers, timeout)
+    data = _request_json(
+        endpoint,
+        body,
+        headers,
+        timeout,
+        audit_payload=payload,
+        audit_context={"provider": provider, "model_name": model, "endpoint": endpoint},
+    )
     choices = data.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
         raise RuntimeError("translation api returned no choices")
@@ -213,6 +223,12 @@ def translate_batch_openai(payload: dict[str, Any]) -> tuple[dict[str, Any], dic
     if isinstance(content, list):
         content = "".join(str(part.get("text") or "") for part in content if isinstance(part, dict))
     if not isinstance(content, str) or not content.strip():
+        finish_reason = str(choices[0].get("finish_reason") or "").strip().lower()
+        refusal = message.get("refusal") if isinstance(message, dict) else None
+        if finish_reason == "length":
+            raise RuntimeError("translation api output was truncated at length")
+        if isinstance(refusal, str) and refusal.strip():
+            raise RuntimeError("translation api refused to produce JSON")
         raise RuntimeError("translation api returned no JSON content")
     try:
         result = json.loads(content)
