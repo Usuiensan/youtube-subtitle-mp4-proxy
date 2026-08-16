@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import html
+import json
+import math
+import os
 import re
 import shutil
 import time
@@ -83,6 +86,70 @@ def build_worker_payload(
     }
 
 
+def _chunk_input_token_limit() -> int:
+    return max(512, int(os.getenv("TRANSLATION_CHUNK_INPUT_TOKENS", "3500")))
+
+
+def _chunk_input_token_estimate(payload: dict[str, Any]) -> int:
+    # Keep a conservative fixed allowance for the prompt instructions and OpenAI schema.
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return math.ceil((len(encoded) + 3072) / 3)
+
+
+def chunk_translation_subtitles(payload: dict[str, Any]) -> list[list[dict[str, Any]]]:
+    subtitles = payload.get("subtitles")
+    if str(payload.get("translation_provider") or "") != "openai_api" or not isinstance(subtitles, list):
+        return [subtitles] if isinstance(subtitles, list) else []
+    limit = _chunk_input_token_limit()
+    chunks: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    for item in subtitles:
+        if not isinstance(item, dict):
+            raise TranslationError("subtitles must be an array of objects")
+        candidate = [*current, item]
+        if current and _chunk_input_token_estimate({**payload, "subtitles": candidate}) > limit:
+            chunks.append(current)
+            current = [item]
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _recent_translation_pairs(
+    subtitles: list[srt.Subtitle],
+    segments: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    positions = {str(sub.index): position for position, sub in enumerate(subtitles)}
+    return [
+        {
+            "source": " ".join(
+                sub.content
+                for sub in subtitles[positions[segment["from_id"]] : positions[segment["to_id"]] + 1]
+            ),
+            "translated": segment["text"],
+        }
+        for segment in segments
+    ]
+
+
+def _chunk_error_can_be_split(error: Exception) -> bool:
+    text = str(error).lower()
+    return any(
+        marker in text
+        for marker in (
+            "invalid json",
+            "no json content",
+            "truncated",
+            "omitted subtitle id",
+            "numbers disappeared",
+            "missing subtitle range",
+            "subtitle range must continue",
+        )
+    )
+
+
 def validate_translations(
     target: list[srt.Subtitle],
     result: dict[str, Any],
@@ -163,9 +230,8 @@ async def translate_srt_with_local_worker(
         "thinking_tokens": 0,
         "billable_output_tokens": 0,
         "total_tokens": 0,
-        "requests": 1,
+        "requests": 0,
     }
-    result: dict[str, Any] | None = None
 
     def add_usage(result: dict[str, Any]) -> None:
         usage = result.get("_usage")
@@ -188,10 +254,7 @@ async def translate_srt_with_local_worker(
             )
         usage_totals["billable_output_tokens"] += max(0, int(billable_output_tokens))
 
-    if on_progress:
-        on_progress(0, total_subtitles, recent_pairs)
-
-    payload = build_worker_payload(
+    base_payload = build_worker_payload(
         video_title=video_title,
         channel_name=channel_name,
         source_language=source_language,
@@ -200,26 +263,99 @@ async def translate_srt_with_local_worker(
         settings=settings,
         video_id=video_id,
     )
-    try:
+    chunks = chunk_translation_subtitles(base_payload)
+    context_limit = min(5, max(0, settings.context_before_max_events, settings.context_after_max_events))
+    subtitle_by_id = {str(sub.index): sub for sub in subtitles}
+
+    def source_subtitles(chunk: list[dict[str, Any]]) -> list[srt.Subtitle]:
+        return [subtitle_by_id[str(item["id"])] for item in chunk]
+
+    def limited_context(pairs: list[dict[str, str]]) -> list[dict[str, str]]:
+        return pairs[-context_limit:] if context_limit else []
+
+    async def translate_chunk(
+        chunk: list[dict[str, Any]],
+        previous_context: list[dict[str, str]],
+        next_context: list[dict[str, str]],
+        chunk_index: int,
+        chunk_count: int,
+    ) -> list[dict[str, Any]]:
+        payload = {
+            **base_payload,
+            "subtitles": chunk,
+            "previous_context": previous_context,
+            "next_context": next_context,
+            "translation_chunk_index": chunk_index,
+            "translation_chunk_count": chunk_count,
+            "translation_chunk_from_id": chunk[0]["id"],
+            "translation_chunk_to_id": chunk[-1]["id"],
+        }
+        usage_totals["requests"] += 1
         result = await run_worker(payload)
         add_usage(result)
-        translated_segments = validate_translations(subtitles, result)
+        translated = validate_translations(source_subtitles(chunk), result)
+        discard_successful_attempt(result)
+        return translated
+
+    async def translate_chunk_once_with_split(
+        chunk: list[dict[str, Any]],
+        previous_context: list[dict[str, str]],
+        next_context: list[dict[str, str]],
+        chunk_index: int,
+        chunk_count: int,
+    ) -> list[dict[str, Any]]:
+        try:
+            return await translate_chunk(chunk, previous_context, next_context, chunk_index, chunk_count)
+        except Exception as error:
+            if (
+                settings.provider_name != "openai_api"
+                or len(chunks) <= 1
+                or len(chunk) < 2
+                or not _chunk_error_can_be_split(error)
+            ):
+                raise
+            midpoint = len(chunk) // 2
+            left, right = chunk[:midpoint], chunk[midpoint:]
+            left_next = [{"source": str(item["text"])} for item in right[:context_limit]]
+            left_translated = await translate_chunk(left, previous_context, left_next, chunk_index, chunk_count)
+            right_context = limited_context(previous_context + _recent_translation_pairs(source_subtitles(left), left_translated))
+            right_translated = await translate_chunk(right, right_context, next_context, chunk_index, chunk_count)
+            return [*left_translated, *right_translated]
+
+    if on_progress:
+        on_progress(0, total_subtitles, recent_pairs)
+    try:
+        translated_segments: list[dict[str, Any]] = []
+        completed = 0
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            following = chunks[chunk_index] if chunk_index < len(chunks) else []
+            next_context = [{"source": str(item["text"])} for item in following[:context_limit]]
+            translated = await translate_chunk_once_with_split(
+                chunk,
+                limited_context(recent_pairs),
+                next_context,
+                chunk_index,
+                len(chunks),
+            )
+            translated_segments.extend(translated)
+            recent_pairs = limited_context(recent_pairs + _recent_translation_pairs(source_subtitles(chunk), translated))
+            completed += len(chunk)
+            if on_progress:
+                on_progress(completed, total_subtitles, recent_pairs)
+        translated_segments = validate_translations(subtitles, {"subtitles": translated_segments})
     except Exception as error:
-        if isinstance(error, TranslationError) and result is not None:
-            error.translation_usage = {
-                "engine": settings.engine,
-                "model": settings.model_name,
-                **usage_totals,
-            }
-            error.translation_attempt_dir = result.get("_translation_attempt_dir")
         if isinstance(error, TranslationError):
+            error.translation_usage = {"engine": settings.engine, "model": settings.model_name, **usage_totals}
+            error.translation_chunk_failed = len(chunks) > 1
             raise
-        raise TranslationError(
+        translation_error = TranslationError(
             "remote LLM translation failed: "
             f"source={source_language} target={target_language} "
             f"error={type(error).__name__}: {error}"
-        ) from error
-    discard_successful_attempt(result)
+        )
+        translation_error.translation_usage = {"engine": settings.engine, "model": settings.model_name, **usage_totals}
+        translation_error.translation_chunk_failed = len(chunks) > 1
+        raise translation_error from error
 
     subtitle_positions = {str(sub.index): position for position, sub in enumerate(subtitles)}
     for segment_index, segment in enumerate(translated_segments, start=1):
@@ -235,18 +371,6 @@ async def translate_srt_with_local_worker(
                 proprietary=start_subtitle.proprietary,
             )
         )
-        recent_pairs.append(
-            {
-                "source": " ".join(
-                    sub.content
-                    for sub in subtitles[
-                        subtitle_positions[segment["from_id"]] : subtitle_positions[segment["to_id"]] + 1
-                    ]
-                ),
-                "translated": translated_text,
-            }
-        )
-        recent_pairs = recent_pairs[-5:]
     if on_progress:
         on_progress(total_subtitles, total_subtitles, recent_pairs)
 
@@ -268,6 +392,7 @@ async def translate_srt_with_local_worker(
             "translation_billable_output_tokens": usage_totals["billable_output_tokens"],
             "translation_total_tokens": usage_totals["total_tokens"],
             "translation_request_count": usage_totals["requests"],
+            "translation_chunk_count": len(chunks),
             "translation_billing_class": "local",
         },
     )

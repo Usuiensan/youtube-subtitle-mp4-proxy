@@ -694,7 +694,7 @@ def render_profile_id(subtitle_font_size: int | None = None) -> str:
 def translation_profile_id() -> str:
     return json.dumps(
         {
-            "batch_translation_version": "full-srt-range-v1",
+            "batch_translation_version": "full-srt-openai-chunked-v1",
             "enabled": settings.translation_enabled,
             "target": "ja",
             "source_langs": settings.translation_source_langs,
@@ -707,6 +707,7 @@ def translation_profile_id() -> str:
             "context_before_max_events": settings.local_llm_context_before_max_events,
             "context_after_seconds": settings.local_llm_context_after_seconds,
             "context_after_max_events": settings.local_llm_context_after_max_events,
+            "chunk_input_tokens": os.getenv("TRANSLATION_CHUNK_INPUT_TOKENS", "3500"),
         },
         sort_keys=True,
     )
@@ -3193,7 +3194,7 @@ async def translate_subtitle_if_needed(
                     usage["estimated_usd"],
                     usage["charged_usd"],
                 )
-            if not is_retryable_translation_failure(error) or attempt_index + 1 >= len(attempt_plan):
+            if getattr(error, "translation_chunk_failed", False) or not is_retryable_translation_failure(error) or attempt_index + 1 >= len(attempt_plan):
                 if failed_translation_attempts:
                     error.translation_failure_usage = summarize_failed_translation_usage(failed_translation_attempts)
                 raise

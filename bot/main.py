@@ -783,6 +783,10 @@ def translation_usage_text(meta: Any) -> str:
         f"課金区分: {billing_class}",
         f"翻訳文字数: {characters:,}文字",
     ])
+    chunk_count = int(meta.get("translation_chunk_count") or 1)
+    request_count = int(meta.get("translation_request_count") or chunk_count)
+    if chunk_count > 1:
+        lines.append(f"翻訳チャンク: {chunk_count} / APIリクエスト: {request_count}")
     if free_chars:
         lines.append(f"月間無料枠: {free_chars:,}文字")
     if overage_chars:

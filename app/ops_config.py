@@ -16,6 +16,7 @@ CONFIG_FILE = Path("/etc/youtube-mp4-proxy/config.env")
 
 CONFIG_SCHEMA: dict[str, tuple[str, float, float]] = {
     "LOCAL_LLM_MAX_OUTPUT_TOKENS": ("int", 1, 1_000_000),
+    "TRANSLATION_CHUNK_INPUT_TOKENS": ("int", 512, 100_000),
     "TRANSLATION_API_RETRY_MAX_ATTEMPTS": ("int", 1, 10),
     "TRANSLATION_API_RETRY_BASE_SECONDS": ("float", 0, 300),
     "SYSTEM_METRICS_INTERVAL_SECONDS": ("float", 1, 3600),

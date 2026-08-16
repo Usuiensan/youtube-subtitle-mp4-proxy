@@ -390,6 +390,8 @@ class GeminiTranslationTests(unittest.TestCase):
                 "translation_characters": 18420,
                 "translation_input_tokens": 14208,
                 "translation_output_tokens": 16731,
+                "translation_chunk_count": 3,
+                "translation_request_count": 4,
                 "translation_api_cost_jpy": 0.0,
                 "translation_overage_estimate_usd": 0.0461,
                 "translation_overage_estimate_jpy": 7.38,
@@ -401,6 +403,7 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertIn("入力トークン: 14,208", text)
         self.assertIn("出力トークン: 16,731", text)
         self.assertIn("合計トークン: 30,939", text)
+        self.assertIn("翻訳チャンク: 3 / APIリクエスト: 4", text)
         self.assertIn("入力 $0.30 / 出力 $2.50", text)
 
     def test_bot_translation_failure_usage_text(self) -> None:
