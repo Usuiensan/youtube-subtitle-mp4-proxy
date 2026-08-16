@@ -11,6 +11,7 @@ def test_profile_models_preserve_defaults_and_aliases() -> None:
     assert models["qwen3_4b_instruct"] == "qwen3:4b-instruct"
     assert models["local_llm"] == "qwen3:4b-instruct"
     assert models["remote_llm"] == "qwen3:4b-instruct"
+    assert models["gpt_5_nano"] == "gpt-5-nano-2025-08-07"
 
     values["REMOTE_LLM_MODEL"] = "remote:model"
     values["LOCAL_LLM_MODEL_QWEN3_4B_INSTRUCT"] = "local:model"

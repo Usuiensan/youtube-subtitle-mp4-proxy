@@ -19,7 +19,7 @@ def profile_models(getenv: EnvGetter) -> dict[str, str]:
         "gemini_2_5_flash": (getenv("LOCAL_LLM_MODEL_GEMINI_2_5_FLASH", "gemini-2.5-flash") or "").strip(),
         "gemini_2_5_flash_lite": "gemini-3.1-flash-lite",
         "gemini_3_5_flash": "gemini-3.5-flash",
-        "gpt_5_nano": (getenv("OPENAI_MODEL", "gpt-5-nano") or "").strip(),
+        "gpt_5_nano": (getenv("OPENAI_MODEL", "gpt-5-nano-2025-08-07") or "").strip(),
         "groq_gpt_oss_20b": (getenv("GROQ_MODEL", "openai/gpt-oss-20b") or "").strip(),
         "local_llm": (getenv("LOCAL_LLM_MODEL", "qwen3:4b-instruct") or "").strip(),
         "remote_llm": (getenv("REMOTE_LLM_MODEL", getenv("LOCAL_LLM_MODEL", "qwen3:4b-instruct")) or "").strip(),

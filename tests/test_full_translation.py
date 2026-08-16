@@ -183,6 +183,81 @@ def test_openai_request_uses_strict_json_schema(monkeypatch) -> None:
     assert "00:00" not in requests[0]["body"]["messages"][0]["content"]
 
 
+@pytest.mark.parametrize(
+    ("content", "expected_error"),
+    [
+        ('{"subtitles":[{"from_id":1,"to_id":2,"text":"こんにちは、世界"}]}', None),
+        ('{"subtitles":[{"from_id":1,"to_id":1,"text":"こんにちは"}]}', "missing subtitle range"),
+        ('{"subtitles":[{"from_id":1,"to_id":2,"text":"こんにちは', "invalid JSON"),
+    ],
+)
+def test_openai_fixture_accepts_only_complete_srt_ranges(tmp_path, monkeypatch, content, expected_error) -> None:
+    source = tmp_path / "source.srt"
+    output = tmp_path / "translated.srt"
+    source.write_text(srt.compose([subtitle(1, "Hello"), subtitle(2, "World")]), encoding="utf-8")
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            import json
+
+            return json.dumps({"choices": [{"message": {"content": content}}], "usage": {}}).encode()
+
+    monkeypatch.setattr(translation_worker.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+
+    async def worker(payload: dict) -> dict:
+        result, usage = translation_worker.translate_batch_openai(
+            {
+                **payload,
+                "llm_endpoint": "https://example.invalid/v1/chat/completions",
+                "llm_api_key": "fixture-key",
+            }
+        )
+        result["_usage"] = usage
+        return result
+
+    settings = TranslationSettings(
+        enabled=True,
+        target_window_seconds=120,
+        target_max_events=10,
+        context_before_seconds=120,
+        context_before_max_events=25,
+        context_after_seconds=120,
+        context_after_max_events=25,
+        model_name="gpt-5-nano-2025-08-07",
+        engine="gpt_5_nano",
+        fallback_engine="",
+        glossary="",
+        topic="",
+        prompt_template="",
+        google_project="",
+        provider_name="openai_api",
+        provider_endpoint="https://example.invalid/v1/chat/completions",
+        provider_api_key="fixture-key",
+    )
+    translate = translate_srt_with_local_worker(
+        subtitle_path=source,
+        output_path=output,
+        video_title="title",
+        channel_name="channel",
+        source_language="en",
+        target_language="ja",
+        settings=settings,
+        run_worker=worker,
+    )
+    if expected_error:
+        with pytest.raises(TranslationError, match=expected_error):
+            asyncio.run(translate)
+    else:
+        asyncio.run(translate)
+        assert [item.content for item in srt.parse(output.read_text(encoding="utf-8"))] == ["こんにちは、世界"]
+
+
 def test_output_token_budget_grows_with_input_tokens(monkeypatch) -> None:
     monkeypatch.setenv("LOCAL_LLM_MAX_OUTPUT_TOKENS", "65536")
     short = {"subtitles": [{"id": 1, "text": "short"}]}
