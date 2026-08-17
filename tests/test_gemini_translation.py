@@ -130,7 +130,7 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertEqual(settings.model_name, "gemini-3.5-flash")
         self.assertEqual(settings.provider_name, "gemini_api")
 
-    def test_gemini_lite_attempts_from_minimal_to_high_then_flash(self) -> None:
+    def test_gemini_lite_attempts_from_minimal_to_configured_cap_then_flash(self) -> None:
         with patch.dict("os.environ", {"GEMINI_THINKING_LEVEL": "medium"}), patch.object(
             app_main.settings, "gemini_api_key", "test-key"
         ):
@@ -145,7 +145,7 @@ class GeminiTranslationTests(unittest.TestCase):
                 ("gemini-3.1-flash-lite", "low"),
                 ("gemini-3.1-flash-lite", "medium"),
                 ("gemini-3.5-flash-lite", "minimal"),
-                ("gemini-3.5-flash", "high"),
+                ("gemini-3.5-flash", "medium"),
             ],
         )
 
@@ -162,7 +162,7 @@ class GeminiTranslationTests(unittest.TestCase):
                 ("gemini-3.1-flash-lite", "minimal"),
                 ("gemini-3.1-flash-lite", "low"),
                 ("gemini-3.5-flash-lite", "minimal"),
-                ("gemini-3.5-flash", "high"),
+                ("gemini-3.5-flash", "low"),
             ],
         )
 

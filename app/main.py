@@ -2143,9 +2143,10 @@ def translation_attempt_plan(
         plan = [(attempt_settings, "")]
     if selected.provider_name == "gemini_api":
         planned_models = {item[0].model_name for item in plan}
+        fallback_thinking_level = "low" if input_token_estimate >= LONG_TRANSLATION_INPUT_TOKEN_THRESHOLD else gemini_thinking_levels()[-1]
         for profile, thinking_level in (
             ("gemini_3_5_flash_lite", "minimal"),
-            ("gemini_3_5_flash", "high"),
+            ("gemini_3_5_flash", fallback_thinking_level),
         ):
             fallback = translation_settings(profile)
             if translation_settings_is_configured(fallback) and fallback.model_name not in planned_models:
