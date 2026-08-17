@@ -196,14 +196,19 @@ def validate_translations(
             )
         if not text:
             raise TranslationError(f"empty translation: {from_id}-{to_id}")
-        source_window = " ".join(
-            subtitle.content.lower() for subtitle in target[max(0, from_position - 1) : min(len(target), to_position + 2)]
+        source_text = " ".join(subtitle.content.lower() for subtitle in target[from_position : to_position + 1])
+        source_phrase_window = " ".join(
+            subtitle.content.lower()
+            for subtitle in target[max(0, from_position - 1) : min(len(target), to_position + 2)]
         )
         for token in _ASCII_NUMBER_RE.findall(text):
             token_digits = [digit for digit in token if digit.isdigit()]
             if token.isdigit() and any(
                 value == int(token)
-                and re.search(rf"\b{re.escape(word)}\b", source_window)
+                and (
+                    re.search(rf"\b{re.escape(word)}\b", source_text)
+                    or (value == 1 and re.search(r"\ba\s+week\b", source_phrase_window))
+                )
                 for word, value in _NUMBER_WORDS.items()
             ):
                 continue
