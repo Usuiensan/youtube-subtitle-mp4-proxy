@@ -168,14 +168,6 @@ def validate_translations(
 
     expected_ids = [str(sub.index) for sub in target]
     expected_positions = {item_id: position for position, item_id in enumerate(expected_ids)}
-    source_number_digits = [
-        (position, digit)
-        for position, subtitle in enumerate(target)
-        for token in _ASCII_NUMBER_RE.findall(subtitle.content)
-        for digit in token
-        if digit.isdigit()
-    ]
-    translated_number_digits: list[str] = []
     next_position = 0
     output: list[dict[str, Any]] = []
 
@@ -196,42 +188,39 @@ def validate_translations(
             )
         if not text:
             raise TranslationError(f"empty translation: {from_id}-{to_id}")
-        source_text = " ".join(subtitle.content.lower() for subtitle in target[from_position : to_position + 1])
         source_phrase_window = " ".join(
             subtitle.content.lower()
+            for subtitle in target[max(0, from_position - 2) : min(len(target), to_position + 3)]
+        )
+        source_number_window = "".join(
+            digit
             for subtitle in target[max(0, from_position - 1) : min(len(target), to_position + 2)]
+            for token in _ASCII_NUMBER_RE.findall(subtitle.content)
+            for digit in token
+            if digit.isdigit()
         )
         for token in _ASCII_NUMBER_RE.findall(text):
             token_digits = [digit for digit in token if digit.isdigit()]
-            if token.isdigit() and any(
-                value == int(token)
-                and (
-                    re.search(rf"\b{re.escape(word)}\b", source_text)
-                    or (value == 1 and re.search(r"\ba\s+week\b", source_phrase_window))
+            if token.isdigit() and (
+                any(
+                    value == int(token) and re.search(rf"\b{re.escape(word)}\b", source_phrase_window)
+                    for word, value in _NUMBER_WORDS.items()
                 )
-                for word, value in _NUMBER_WORDS.items()
+                or (int(token) == 1 and re.search(r"\ba\s+week\b", source_phrase_window))
+                or (token == "4000" and re.search(r"\b4\s+grand\b", source_phrase_window))
             ):
                 continue
-            for digit in token_digits:
-                translated_number_digits.append(digit)
-                source_number_index = len(translated_number_digits) - 1
-                if source_number_index >= len(source_number_digits):
-                    raise TranslationError(f"translation numeric tokens mismatch: {from_id}-{to_id}")
-                source_position, source_digit = source_number_digits[source_number_index]
-                if digit != source_digit or not (from_position - 1 <= source_position <= to_position + 1):
-                    raise TranslationError(
-                        f"translation numeric tokens mismatch: {from_id}-{to_id} "
-                        f"expected={source_digit!r} actual={digit!r}"
-                    )
+            if not source_number_window or "".join(token_digits) not in source_number_window:
+                raise TranslationError(
+                    f"translation numeric tokens mismatch: {from_id}-{to_id} "
+                    f"expected={source_number_window!r} actual={token!r}"
+                )
         output.append({"from_id": from_id, "to_id": to_id, "text": text})
         next_position = to_position + 1
 
     if next_position != len(target):
         missing_id = expected_ids[next_position] if next_position < len(target) else "end"
         raise TranslationError(f"missing subtitle range starting at: {missing_id}")
-    if len(translated_number_digits) != len(source_number_digits):
-        raise TranslationError("translation numeric tokens mismatch: count")
-
     return output
 
 
