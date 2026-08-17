@@ -24,6 +24,7 @@ CONFIG_SCHEMA: dict[str, tuple[str, float, float]] = {
     "SYSTEM_METRICS_INTERVAL_SECONDS": ("float", 1, 3600),
     "SYSTEM_METRICS_HISTORY_SECONDS": ("int", 60, 31_536_000),
     "DISCORD_OPERATOR_USER_ID": ("int", 1, 9_223_372_036_854_775_807),
+    "DISCORD_URL_INTAKE_CHANNEL_ID": ("int", 1, 9_223_372_036_854_775_807),
     "CACHE_ARCHIVE_MOUNT_POINT": ("path", 0, 0),
 }
 ENUM_VALUES = {

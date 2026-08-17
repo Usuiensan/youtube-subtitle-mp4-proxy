@@ -77,6 +77,24 @@ def test_ops_config_allows_openai_chunk_token_limit(monkeypatch, tmp_path: Path)
     assert "TRANSLATION_CHUNK_INPUT_TOKENS=3500" in config.read_text(encoding="utf-8")
 
 
+def test_ops_config_allows_discord_url_intake_channel(monkeypatch, tmp_path: Path) -> None:
+    config = tmp_path / "config.env"
+    monkeypatch.setattr(app_main.settings, "translation_config_api_token", "config-token")
+    monkeypatch.setattr(ops_config, "config_file", lambda: config)
+    client = TestClient(app_main.app)
+    headers = {"X-Translation-Config-Token": "config-token"}
+    response = client.put(
+        "/ops/config",
+        headers=headers,
+        json={
+            "expected_revision": ops_config.revision(),
+            "values": {"DISCORD_URL_INTAKE_CHANNEL_ID": 1524938453924712630},
+        },
+    )
+    assert response.status_code == 200
+    assert "DISCORD_URL_INTAKE_CHANNEL_ID=1524938453924712630" in config.read_text(encoding="utf-8")
+
+
 def test_ops_config_allows_only_absolute_archive_mount_paths(monkeypatch, tmp_path: Path) -> None:
     config = tmp_path / "config.env"
     monkeypatch.setattr(ops_config, "config_file", lambda: config)
