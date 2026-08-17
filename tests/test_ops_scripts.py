@@ -30,7 +30,7 @@ def test_root_wrappers_have_fixed_local_endpoints_and_services() -> None:
 def test_operator_can_reprepare_one_video_without_exposing_the_token() -> None:
     operator = (ROOT / "scripts" / "youtube-proxy-operator").read_text(encoding="utf-8")
     assert "reprepare-video)" in operator
-    assert "/prepare/youtube/$video_id/$lang/$source_lang/clear" in operator
+    assert "/prepare/youtube/$video_id/$lang/$source_lang/$translation_engine/clear" in operator
     assert "DISCORD_PREPARE_TOKEN" in operator
     assert "printf '%s\\n' \"$status_body\"" in operator
 

@@ -60,16 +60,18 @@ if body.get("failed") or body.get("skipped"):
 }
 
 reprepare_video() {
-    local video_id=$1 lang=$2 source_lang=$3 mode=$4 token body clear_response clear_status job_id status_body state
+    local video_id=$1 lang=$2 source_lang=$3 mode=$4 token translation_engine body clear_response clear_status job_id status_body state
     [[ "$video_id" =~ ^[A-Za-z0-9_-]{11}$ ]] || { echo 'video_id が不正です' >&2; return 2; }
     [[ "$lang" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || { echo 'lang が不正です' >&2; return 2; }
     [[ "$source_lang" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || { echo 'source_lang が不正です' >&2; return 2; }
     [[ "$mode" == mp4 || "$mode" == hls ]] || { echo 'mode が不正です' >&2; return 2; }
+    translation_engine=$(config_value TRANSLATION_DEFAULT_PROFILE)
+    [[ "$translation_engine" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || { echo 'TRANSLATION_DEFAULT_PROFILE が不正です' >&2; return 1; }
     token=$(awk -F= '$1 == "DISCORD_PREPARE_TOKEN" { sub(/^[^=]*=/, ""); print; exit }' "$SECRETS_FILE")
     [[ -n "$token" ]] || { echo '準備API設定が不完全です' >&2; return 1; }
     clear_response=$(curl --silent --show-error --config - -X POST \
         --write-out $'\n%{http_code}' \
-        "http://127.0.0.1:8000/prepare/youtube/$video_id/$lang/$source_lang/clear" <<EOF
+        "http://127.0.0.1:8000/prepare/youtube/$video_id/$lang/$source_lang/$translation_engine/clear" <<EOF
 header = "Authorization: Bearer $token"
 EOF
     )
