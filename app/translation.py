@@ -162,6 +162,12 @@ def validate_translations(
 
     expected_ids = [str(sub.index) for sub in target]
     expected_positions = {item_id: position for position, item_id in enumerate(expected_ids)}
+    source_number_tokens = [
+        (position, token)
+        for position, subtitle in enumerate(target)
+        for token in _ASCII_NUMBER_RE.findall(subtitle.content)
+    ]
+    translated_number_tokens: list[str] = []
     next_position = 0
     output: list[dict[str, Any]] = []
 
@@ -182,22 +188,26 @@ def validate_translations(
             )
         if not text:
             raise TranslationError(f"empty translation: {from_id}-{to_id}")
-        source_text = " ".join(
-            subtitle.content for subtitle in target[from_position : to_position + 1]
-        )
-        expected_numbers = _ASCII_NUMBER_RE.findall(source_text)
         actual_numbers = _ASCII_NUMBER_RE.findall(text)
-        if actual_numbers != expected_numbers:
-            raise TranslationError(
-                f"translation numeric tokens mismatch: {from_id}-{to_id} "
-                f"expected={expected_numbers} actual={actual_numbers}"
-            )
+        for token in actual_numbers:
+            translated_number_tokens.append(token)
+            source_number_index = len(translated_number_tokens) - 1
+            if source_number_index >= len(source_number_tokens):
+                raise TranslationError(f"translation numeric tokens mismatch: {from_id}-{to_id}")
+            source_position, source_token = source_number_tokens[source_number_index]
+            if token != source_token or not (from_position - 1 <= source_position <= to_position + 1):
+                raise TranslationError(
+                    f"translation numeric tokens mismatch: {from_id}-{to_id} "
+                    f"expected={source_token!r} actual={token!r}"
+                )
         output.append({"from_id": from_id, "to_id": to_id, "text": text})
         next_position = to_position + 1
 
     if next_position != len(target):
         missing_id = expected_ids[next_position] if next_position < len(target) else "end"
         raise TranslationError(f"missing subtitle range starting at: {missing_id}")
+    if len(translated_number_tokens) != len(source_number_tokens):
+        raise TranslationError("translation numeric tokens mismatch: count")
 
     return output
 

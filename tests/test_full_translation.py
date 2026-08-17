@@ -44,7 +44,7 @@ def test_validate_translations_requires_contiguous_ranges_and_non_empty_text() -
 
 
 def test_validate_translations_rejects_numbers_shifted_into_another_id() -> None:
-    target = [subtitle(1, "Cash registers"), subtitle(2, "appeared in 1879")]
+    target = [subtitle(1, "Cash registers"), subtitle(2, "appeared"), subtitle(3, "in 1879")]
     with pytest.raises(TranslationError, match="numeric tokens mismatch"):
         validate_translations(
             target,
@@ -52,6 +52,7 @@ def test_validate_translations_rejects_numbers_shifted_into_another_id() -> None
                 "subtitles": [
                     {"from_id": 1, "to_id": 1, "text": "レジは1879年に登場しました"},
                     {"from_id": 2, "to_id": 2, "text": "登場しました"},
+                    {"from_id": 3, "to_id": 3, "text": "登場しました"},
                 ]
             },
         )
