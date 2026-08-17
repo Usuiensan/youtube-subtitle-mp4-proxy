@@ -15,6 +15,12 @@ import srt
 
 
 _ASCII_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*")
+_NUMBER_WORDS = {
+    "one": 1, "ones": 1, "two": 2, "twos": 2, "three": 3, "four": 4, "five": 5,
+    "fives": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "tens": 10,
+    "twenty": 20, "twenties": 20, "fifty": 50, "hundred": 100, "hundreds": 100,
+    "thousand": 1000, "thousands": 1000, "grand": 1000,
+}
 
 
 @dataclass
@@ -190,18 +196,28 @@ def validate_translations(
             )
         if not text:
             raise TranslationError(f"empty translation: {from_id}-{to_id}")
-        actual_digits = [digit for token in _ASCII_NUMBER_RE.findall(text) for digit in token if digit.isdigit()]
-        for digit in actual_digits:
-            translated_number_digits.append(digit)
-            source_number_index = len(translated_number_digits) - 1
-            if source_number_index >= len(source_number_digits):
-                raise TranslationError(f"translation numeric tokens mismatch: {from_id}-{to_id}")
-            source_position, source_digit = source_number_digits[source_number_index]
-            if digit != source_digit or not (from_position - 1 <= source_position <= to_position + 1):
-                raise TranslationError(
-                    f"translation numeric tokens mismatch: {from_id}-{to_id} "
-                    f"expected={source_digit!r} actual={digit!r}"
-                )
+        source_window = " ".join(
+            subtitle.content.lower() for subtitle in target[max(0, from_position - 1) : min(len(target), to_position + 2)]
+        )
+        for token in _ASCII_NUMBER_RE.findall(text):
+            token_digits = [digit for digit in token if digit.isdigit()]
+            if token.isdigit() and any(
+                value == int(token)
+                and re.search(rf"\b{re.escape(word)}\b", source_window)
+                for word, value in _NUMBER_WORDS.items()
+            ):
+                continue
+            for digit in token_digits:
+                translated_number_digits.append(digit)
+                source_number_index = len(translated_number_digits) - 1
+                if source_number_index >= len(source_number_digits):
+                    raise TranslationError(f"translation numeric tokens mismatch: {from_id}-{to_id}")
+                source_position, source_digit = source_number_digits[source_number_index]
+                if digit != source_digit or not (from_position - 1 <= source_position <= to_position + 1):
+                    raise TranslationError(
+                        f"translation numeric tokens mismatch: {from_id}-{to_id} "
+                        f"expected={source_digit!r} actual={digit!r}"
+                    )
         output.append({"from_id": from_id, "to_id": to_id, "text": text})
         next_position = to_position + 1
 
