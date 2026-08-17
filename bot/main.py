@@ -1203,10 +1203,15 @@ async def notify_when_done(
             content = content.replace("http://localhost:8000", settings.youtube_proxy_base_url)
             if progress_message is not None:
                 try:
-                    await progress_message.delete()
+                    await progress_message.edit(
+                        content=content,
+                        view=None,
+                        allowed_mentions=discord.AllowedMentions(users=True),
+                    )
                 except discord.HTTPException:
-                    pass
-            await send_notification(content, public=True)
+                    await send_notification(content, public=True)
+            else:
+                await send_notification(content, public=True)
             return
         if latest:
             content = status_message(latest, owner_id)
