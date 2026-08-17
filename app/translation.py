@@ -162,12 +162,14 @@ def validate_translations(
 
     expected_ids = [str(sub.index) for sub in target]
     expected_positions = {item_id: position for position, item_id in enumerate(expected_ids)}
-    source_number_tokens = [
-        (position, token)
+    source_number_digits = [
+        (position, digit)
         for position, subtitle in enumerate(target)
         for token in _ASCII_NUMBER_RE.findall(subtitle.content)
+        for digit in token
+        if digit.isdigit()
     ]
-    translated_number_tokens: list[str] = []
+    translated_number_digits: list[str] = []
     next_position = 0
     output: list[dict[str, Any]] = []
 
@@ -188,17 +190,17 @@ def validate_translations(
             )
         if not text:
             raise TranslationError(f"empty translation: {from_id}-{to_id}")
-        actual_numbers = _ASCII_NUMBER_RE.findall(text)
-        for token in actual_numbers:
-            translated_number_tokens.append(token)
-            source_number_index = len(translated_number_tokens) - 1
-            if source_number_index >= len(source_number_tokens):
+        actual_digits = [digit for token in _ASCII_NUMBER_RE.findall(text) for digit in token if digit.isdigit()]
+        for digit in actual_digits:
+            translated_number_digits.append(digit)
+            source_number_index = len(translated_number_digits) - 1
+            if source_number_index >= len(source_number_digits):
                 raise TranslationError(f"translation numeric tokens mismatch: {from_id}-{to_id}")
-            source_position, source_token = source_number_tokens[source_number_index]
-            if token != source_token or not (from_position - 1 <= source_position <= to_position + 1):
+            source_position, source_digit = source_number_digits[source_number_index]
+            if digit != source_digit or not (from_position - 1 <= source_position <= to_position + 1):
                 raise TranslationError(
                     f"translation numeric tokens mismatch: {from_id}-{to_id} "
-                    f"expected={source_token!r} actual={token!r}"
+                    f"expected={source_digit!r} actual={digit!r}"
                 )
         output.append({"from_id": from_id, "to_id": to_id, "text": text})
         next_position = to_position + 1
@@ -206,7 +208,7 @@ def validate_translations(
     if next_position != len(target):
         missing_id = expected_ids[next_position] if next_position < len(target) else "end"
         raise TranslationError(f"missing subtitle range starting at: {missing_id}")
-    if len(translated_number_tokens) != len(source_number_tokens):
+    if len(translated_number_digits) != len(source_number_digits):
         raise TranslationError("translation numeric tokens mismatch: count")
 
     return output
