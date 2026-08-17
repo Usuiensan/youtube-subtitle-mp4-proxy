@@ -1091,9 +1091,12 @@ class SubtitleChoiceView(discord.ui.View):
 
 
 async def notify_when_done(
-    interaction: discord.Interaction,
+    interaction: discord.Interaction | None,
     status_url: str,
     progress_message: discord.Message | None = None,
+    *,
+    channel: discord.abc.Messageable | None = None,
+    user: discord.User | discord.Member | None = None,
 ) -> None:
     timeout_seconds = (
         settings.batch_poll_timeout_seconds
@@ -1104,18 +1107,20 @@ async def notify_when_done(
     latest: dict[str, Any] | None = None
     reported_ready_items: set[str] = set()
 
+    target_channel = interaction.channel if interaction is not None else channel
+    owner_id = interaction.user.id if interaction is not None else user.id if user is not None else None
+    if target_channel is None and interaction is not None and interaction.channel_id is not None:
+        try:
+            fetched = await interaction.client.fetch_channel(interaction.channel_id)
+            if isinstance(fetched, discord.abc.Messageable):
+                target_channel = fetched
+        except Exception:
+            pass
+
     async def send_notification(content: str, *, public: bool) -> None:
-        channel = interaction.channel
-        if channel is None and interaction.channel_id is not None:
+        if public and target_channel is not None:
             try:
-                fetched = await interaction.client.fetch_channel(interaction.channel_id)
-                if isinstance(fetched, discord.abc.Messageable):
-                    channel = fetched
-            except Exception:
-                pass
-        if public and channel is not None:
-            try:
-                await channel.send(
+                await target_channel.send(
                     content,
                     allowed_mentions=discord.AllowedMentions(users=True),
                     silent=True,
@@ -1123,16 +1128,20 @@ async def notify_when_done(
                 return
             except discord.HTTPException:
                 pass
-        try:
-            await interaction.followup.send(
-                content,
-                allowed_mentions=discord.AllowedMentions(users=True),
-                silent=True,
-                ephemeral=not public,
-            )
-        except discord.HTTPException:
+        if interaction is not None:
             try:
-                await interaction.user.send(
+                await interaction.followup.send(
+                    content,
+                    allowed_mentions=discord.AllowedMentions(users=True),
+                    silent=True,
+                    ephemeral=not public,
+                )
+                return
+            except discord.HTTPException:
+                pass
+        if user is not None:
+            try:
+                await user.send(
                     content,
                     allowed_mentions=discord.AllowedMentions(users=True),
                     silent=True,
@@ -1141,7 +1150,7 @@ async def notify_when_done(
                 pass
 
     async def report_batch_item_completions(body: dict[str, Any]) -> None:
-        if not isinstance(body.get("counts"), dict):
+        if interaction is None or not isinstance(body.get("counts"), dict):
             return
         items = body.get("items") if isinstance(body.get("items"), list) else []
         for item in items:
@@ -1184,9 +1193,9 @@ async def notify_when_done(
         if latest.get("status") in {"ready", "failed"}:
             notification = latest.get("notification") or {}
             if isinstance(latest.get("counts"), dict):
-                content = notification.get("content") or status_message(latest, interaction.user.id)
+                content = notification.get("content") or status_message(latest, owner_id)
             else:
-                content = status_message(latest, interaction.user.id)
+                content = status_message(latest, owner_id)
             subtitle_part = subtitle_status_text(latest.get("subtitle"))
             if subtitle_part and subtitle_part not in content:
                 content += subtitle_part
@@ -1198,10 +1207,10 @@ async def notify_when_done(
                 except discord.HTTPException:
                     await send_notification(content, public=latest.get("status") in {"ready", "failed"})
             else:
-                await send_notification(content, public=latest.get("status") in {"ready", "failed"})
+                await send_notification(content, public=True)
             return
         if latest:
-            content = status_message(latest, interaction.user.id)
+            content = status_message(latest, owner_id)
             if content != last_content:
                 now = time.monotonic()
                 elapsed = now - last_edit_time
@@ -1210,16 +1219,17 @@ async def notify_when_done(
                 try:
                     if progress_message is not None:
                         await progress_message.edit(content=content)
-                    else:
+                    elif interaction is not None:
                         await interaction.edit_original_response(content=content)
                     last_content = content
                     last_edit_time = time.monotonic()
                 except discord.HTTPException:
                     pass
-    await send_notification(
-        f"<@{interaction.user.id}> 準備ジョブの確認がタイムアウトしました。ジョブ自体はサーバー側で継続している可能性があります。Web UIのMonitorまたは準備済み一覧で確認してください。",
-        public=False,
-    )
+    if owner_id is not None:
+        await send_notification(
+            f"<@{owner_id}> 準備ジョブの確認がタイムアウトしました。ジョブ自体はサーバー側で継続している可能性があります。Web UIのMonitorまたは準備済み一覧で確認してください。",
+            public=False,
+        )
 
 
 async def send_public_message(interaction: discord.Interaction, content: str) -> discord.Message | None:
@@ -1548,21 +1558,8 @@ class YoutubeProxyBot(discord.Client):
             await message.channel.send(subtitle_options_error_message(error), silent=True)
             return
         title = options_body.get("title") or video_id
-        if options_body.get("requires_choice"):
-            view = SubtitleChoiceView(
-                requester_id=message.author.id,
-                video_id=video_id,
-                lang="ja",
-                mode="mp4",
-                options_body=options_body,
-                archive_immediately=False,
-            )
-            await message.channel.send(
-                subtitle_choice_prompt(title, view),
-                view=view,
-                mention_author=False,
-                silent=True,
-            )
+        if options_body.get("error"):
+            await message.channel.send(str(options_body["error"]), silent=True)
             return
         candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
         if not candidates:
@@ -1572,20 +1569,36 @@ class YoutubeProxyBot(discord.Client):
                 silent=True,
             )
             return
-        view = SubtitleChoiceView(
-            requester_id=message.author.id,
-            video_id=video_id,
-            lang="ja",
-            mode="mp4",
-            options_body=options_body,
-            archive_immediately=False,
+        source_lang = (
+            default_source_language(candidates)
+            if options_body.get("requires_choice")
+            else None
         )
-        await message.channel.send(
-            subtitle_choice_prompt(title, view),
-            view=view,
-            mention_author=False,
-            silent=True,
-        )
+        progress_message = await message.channel.send("準備を受け付けました。", silent=True)
+        try:
+            _status, body = await prepare_video(
+                video_id,
+                "ja",
+                "mp4",
+                message.author.id,
+                subtitle_source_lang=source_lang,
+            )
+        except PrepareApiError as error:
+            await progress_message.edit(content=f"準備APIエラー ({error.status_code}): {error.detail}")
+            return
+        content = status_message(body, message.author.id)
+        await progress_message.edit(content=content)
+        status_url = body.get("status_url")
+        if body.get("status") in {"queued", "running"} and isinstance(status_url, str):
+            asyncio.create_task(
+                notify_when_done(
+                    None,
+                    status_url,
+                    progress_message=progress_message,
+                    channel=message.channel,
+                    user=message.author,
+                )
+            )
 client = YoutubeProxyBot()
 
 

@@ -255,6 +255,8 @@ prepare https://www.youtube.com/watch?v=dQw4w9WgXcQ lang=ja mode=mp4
 reburn https://www.youtube.com/watch?v=dQw4w9WgXcQ lang=ja mode=mp4
 ```
 
+`DISCORD_URL_INTAKE_CHANNEL_ID` に特定チャンネルの ID を設定すると、そのチャンネルへ YouTube 動画 URL を貼るだけで、`lang=ja`・MP4 として準備を開始します。日本語字幕がない場合も、`TRANSLATION_SOURCE_LANGS` の優先順で翻訳元字幕を自動選択します。
+
 `url` にプレイリスト URL やチャンネル URL を渡した場合は、YouTube Data API v3 で一覧を展開して一括準備します。`max_items` の既定値は `DISCORD_PREPARE_BATCH_MAX_ITEMS`、未設定時は 5000 件です。
 `url` に動画URLまたは動画IDを複数入れた場合も、手動動画リストとして一括準備できます。区切りは改行、空白、カンマに対応します。Web UI の動画準備欄も同じ形式を受け付け、複数件の場合は `/prepare/youtube-batch` に `sourceType=videos` で送信します。
 
