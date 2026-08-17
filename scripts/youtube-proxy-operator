@@ -59,6 +59,43 @@ if body.get("failed") or body.get("skipped"):
 '
 }
 
+reprepare_video() {
+    local video_id=$1 lang=$2 source_lang=$3 mode=$4 token body job_id status_body state
+    [[ "$video_id" =~ ^[A-Za-z0-9_-]{11}$ ]] || { echo 'video_id が不正です' >&2; return 2; }
+    [[ "$lang" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || { echo 'lang が不正です' >&2; return 2; }
+    [[ "$source_lang" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || { echo 'source_lang が不正です' >&2; return 2; }
+    [[ "$mode" == mp4 || "$mode" == hls ]] || { echo 'mode が不正です' >&2; return 2; }
+    token=$(awk -F= '$1 == "DISCORD_PREPARE_TOKEN" { sub(/^[^=]*=/, ""); print; exit }' "$SECRETS_FILE")
+    [[ -n "$token" ]] || { echo '準備API設定が不完全です' >&2; return 1; }
+    curl --fail --silent --show-error --config - -X POST \
+        "http://127.0.0.1:8000/prepare/youtube/$video_id/$lang/$source_lang/clear" <<EOF >/dev/null
+header = "Authorization: Bearer $token"
+EOF
+    body=$(curl --fail --silent --show-error --config - -X POST \
+        "http://127.0.0.1:8000/prepare/youtube/$video_id/$lang/$source_lang?mode=$mode" <<EOF
+header = "Authorization: Bearer $token"
+EOF
+    )
+    job_id=$(printf '%s' "$body" | "$APP_PYTHON" -c 'import json,sys; print(json.load(sys.stdin).get("job_id", ""))')
+    [[ -n "$job_id" ]] || { printf '%s\n' "$body"; return 0; }
+    for _ in $(seq 1 720); do
+        status_body=$(curl --fail --silent --show-error --config - \
+            "http://127.0.0.1:8000/prepare/jobs/$job_id" <<EOF
+header = "Authorization: Bearer $token"
+EOF
+        )
+        state=$(printf '%s' "$status_body" | "$APP_PYTHON" -c 'import json,sys; print(json.load(sys.stdin).get("status", ""))')
+        if [[ "$state" == ready || "$state" == failed ]]; then
+            printf '%s\n' "$status_body"
+            [[ "$state" == ready ]]
+            return
+        fi
+        sleep 5
+    done
+    echo '再準備ジョブの待機がタイムアウトしました' >&2
+    return 1
+}
+
 storage_api() {
     [[ -r "$SECRETS_FILE" ]] || { echo '準備API設定が見つかりません' >&2; return 1; }
     local token
@@ -141,6 +178,7 @@ case "${1:-hdd-status}" in
     hdd-detach) [[ $# -eq 1 ]] || exit 2; detach ;;
     hdd-attach) [[ $# -eq 1 ]] || exit 2; attach ;;
     translation-profile) [[ $# -eq 2 ]] || exit 2; translation_profile "$2" ;;
+    reprepare-video) [[ $# -eq 5 ]] || exit 2; reprepare_video "$2" "$3" "$4" "$5" ;;
     watch) [[ $# -eq 1 ]] || exit 2; watch ;;
     *) echo '許可されていない操作です' >&2; exit 2 ;;
 esac

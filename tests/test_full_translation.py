@@ -41,12 +41,28 @@ def test_validate_translations_requires_contiguous_ranges_and_non_empty_text() -
     ):
         with pytest.raises(TranslationError):
             validate_translations(target, result)
+
+
+def test_validate_translations_rejects_numbers_shifted_into_another_id() -> None:
+    target = [subtitle(1, "Cash registers"), subtitle(2, "appeared in 1879")]
+    with pytest.raises(TranslationError, match="numeric tokens mismatch"):
+        validate_translations(
+            target,
+            {
+                "subtitles": [
+                    {"from_id": 1, "to_id": 1, "text": "レジは1879年に登場しました"},
+                    {"from_id": 2, "to_id": 2, "text": "登場しました"},
+                ]
+            },
+        )
+
+
 def test_validate_translations_does_not_reject_translation_content_heuristics() -> None:
     result = validate_translations(
         [subtitle(4, "Route 66 is 24 ft wide: https://example.test")],
-        {"subtitles": [{"from_id": 4, "to_id": 4, "text": "幅の広い橋です"}]},
+        {"subtitles": [{"from_id": 4, "to_id": 4, "text": "Route 66は24フィート幅です: https://example.test"}]},
     )
-    assert result[0]["text"] == "幅の広い橋です"
+    assert result[0]["text"] == "Route 66は24フィート幅です: https://example.test"
 
 
 def test_llm_translation_calls_worker_once_for_the_whole_srt(tmp_path) -> None:

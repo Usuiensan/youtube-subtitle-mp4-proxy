@@ -14,6 +14,9 @@ from typing import Any, Callable
 import srt
 
 
+_ASCII_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*")
+
+
 @dataclass
 class TranslationSettings:
     enabled: bool
@@ -179,6 +182,16 @@ def validate_translations(
             )
         if not text:
             raise TranslationError(f"empty translation: {from_id}-{to_id}")
+        source_text = " ".join(
+            subtitle.content for subtitle in target[from_position : to_position + 1]
+        )
+        expected_numbers = _ASCII_NUMBER_RE.findall(source_text)
+        actual_numbers = _ASCII_NUMBER_RE.findall(text)
+        if actual_numbers != expected_numbers:
+            raise TranslationError(
+                f"translation numeric tokens mismatch: {from_id}-{to_id} "
+                f"expected={expected_numbers} actual={actual_numbers}"
+            )
         output.append({"from_id": from_id, "to_id": to_id, "text": text})
         next_position = to_position + 1
 
