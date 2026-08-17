@@ -83,6 +83,12 @@ class Settings:
     translation_source_langs = os.getenv("TRANSLATION_SOURCE_LANGS", "en,ko,zh-Hans,zh-Hant,zh,zh-CN,zh-TW")
     webui_temp_key_secret = os.getenv("WEBUI_TEMP_KEY_SECRET", os.getenv("DISCORD_PREPARE_TOKEN", ""))
     url_intake_channel_id = os.getenv("DISCORD_URL_INTAKE_CHANNEL_ID", "").strip()
+    discord_scan_state_file = Path(
+        os.getenv(
+            "DISCORD_SCAN_STATE_FILE",
+            str(Path(__file__).resolve().parent.parent / ".cache" / "discord-scan-state.json"),
+        )
+    )
 settings = Settings()
 JST = timezone(timedelta(hours=9))
 
@@ -191,6 +197,71 @@ def looks_like_playlist_or_channel(value: str) -> bool:
         return True
     parts = [part for part in parsed.path.split("/") if part]
     return bool(parts and (parts[0] in {"channel", "c", "user"} or parts[0].startswith("@")))
+
+
+def extract_video_ids_from_text(content: str) -> set[str]:
+    ids: set[str] = set()
+    for value in re.findall(r"(?:https?://|www\.)[^\s<>]+|(?<!\S)(?:youtube\.com|youtu\.be)/[^\s<>]+", content):
+        try:
+            ids.add(extract_video_id(value.rstrip(".,!?)]}")))
+        except ValueError:
+            continue
+    return ids
+
+
+def scan_state_has_been_run(guild_id: int) -> bool:
+    try:
+        body = json.loads(settings.discord_scan_state_file.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return False
+    return str(guild_id) in body.get("scanned_guilds", [])
+
+
+def mark_scan_state(guild_id: int) -> None:
+    path = settings.discord_scan_state_file
+    try:
+        body = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, json.JSONDecodeError):
+        body = {}
+    scanned_guilds = set(str(value) for value in body.get("scanned_guilds", []))
+    scanned_guilds.add(str(guild_id))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"scanned_guilds": sorted(scanned_guilds)}, ensure_ascii=False), encoding="utf-8")
+
+
+async def scan_guild_video_ids(guild: discord.Guild, days: int | None) -> tuple[set[str], int, int]:
+    after = datetime.now(timezone.utc) - timedelta(days=days) if days is not None else None
+    video_ids: set[str] = set()
+    message_count = 0
+    skipped_channel_count = 0
+    for channel in guild.text_channels:
+        try:
+            async for message in channel.history(limit=None, after=after):
+                message_count += 1
+                video_ids.update(extract_video_ids_from_text(message.content or ""))
+        except (discord.Forbidden, discord.HTTPException):
+            skipped_channel_count += 1
+    return video_ids, message_count, skipped_channel_count
+
+
+def scan_result_message(
+    days: int | None,
+    video_count: int,
+    channel_count: int,
+    message_count: int,
+    skipped_channel_count: int,
+    prior_scan_completed: bool,
+) -> str:
+    scope = "累計" if days is None else f"直近{days}日"
+    lines = [
+        f"{scope}の動画: {video_count}件",
+        f"走査: {channel_count}チャンネル / {message_count}メッセージ",
+    ]
+    if skipped_channel_count:
+        lines.append(f"権限不足で未走査: {skipped_channel_count}チャンネル")
+    if days is not None and not prior_scan_completed:
+        lines.append("注意: 初回から部分走査のため、この件数はサーバー全期間の件数ではありません。")
+    return "\n".join(lines)
 
 
 def split_manual_video_values(value: str) -> list[str]:
@@ -1604,6 +1675,7 @@ class YoutubeProxyBot(discord.Client):
                 )
             )
 client = YoutubeProxyBot()
+scan_lock = asyncio.Lock()
 
 
 STORAGE_ACTIONS = [
@@ -1624,6 +1696,46 @@ TRANSLATION_PROFILE_ACTIONS = [
     app_commands.Choice(name="Local / Gemma 3 12B", value="gemma3_12b"),
     app_commands.Choice(name="Local / TranslateGemma 12B", value="translategemma_12b"),
 ]
+
+
+@client.tree.command(name="scan", description="運用者専用: DiscordサーバーのYouTube動画リンクを再走査します")
+@app_commands.describe(days="指定時は直近N日だけを再走査。1以上")
+async def scan_command(
+    interaction: discord.Interaction,
+    days: int | None = None,
+) -> None:
+    if not await require_discord_operator(interaction):
+        return
+    if days is not None and days < 1:
+        await interaction.response.send_message("days は 1 以上で指定してください。", ephemeral=True, silent=True)
+        return
+    guild = interaction.guild
+    if guild is None:
+        await interaction.response.send_message("このコマンドは Discord サーバー内で実行してください。", ephemeral=True, silent=True)
+        return
+    if scan_lock.locked():
+        await interaction.response.send_message("別の再走査が実行中です。", ephemeral=True, silent=True)
+        return
+
+    await interaction.response.defer(thinking=True, ephemeral=False)
+    prior_scan_completed = scan_state_has_been_run(guild.id)
+    async with scan_lock:
+        video_ids, message_count, skipped_channel_count = await scan_guild_video_ids(guild, days)
+    if skipped_channel_count == 0:
+        try:
+            mark_scan_state(guild.id)
+        except OSError:
+            pass
+    await interaction.edit_original_response(
+        content=scan_result_message(
+            days,
+            len(video_ids),
+            len(guild.text_channels),
+            message_count,
+            skipped_channel_count,
+            prior_scan_completed,
+        )
+    )
 
 
 @client.tree.command(name="server-storage", description="運用者専用: 動画HDDの状態確認・安全な取り外し")

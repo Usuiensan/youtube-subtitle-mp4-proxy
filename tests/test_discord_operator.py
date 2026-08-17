@@ -69,3 +69,22 @@ def test_intake_channel_starts_prepare_without_a_command(monkeypatch) -> None:
     assert prepared["args"] == ("dQw4w9WgXcQ", "ja", "mp4", 42)
     assert prepared["kwargs"]["subtitle_source_lang"] == "ko"
     assert message.channel.messages[0].content == "準備開始"
+
+
+def test_scan_days_result_does_not_call_count_cumulative() -> None:
+    message = main.scan_result_message(30, 12, 3, 100, 0, False)
+
+    assert "直近30日の動画: 12件" in message
+    assert "累計" not in message
+    assert "初回から部分走査" in message
+    assert "注意" not in main.scan_result_message(30, 12, 3, 100, 0, True)
+
+
+def test_extract_video_ids_from_text_deduplicates_links() -> None:
+    content = (
+        "https://youtu.be/dQw4w9WgXcQ "
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ and "
+        "https://youtube.com/shorts/9bZkp7q19f0"
+    )
+
+    assert main.extract_video_ids_from_text(content) == {"dQw4w9WgXcQ", "9bZkp7q19f0"}
