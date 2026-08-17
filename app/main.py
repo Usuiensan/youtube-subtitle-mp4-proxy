@@ -42,6 +42,7 @@ from app.translation import (
     translate_srt_with_local_worker,
 )
 from app.translation_worker import estimate_translation_input_tokens
+from app.subtitle_preprocess import preprocess_downloaded_subtitle, raw_subtitle_sidecar
 from app.metrics import MetricsManager
 from app.ops_config import (
     ConfigValidationError,
@@ -992,6 +993,7 @@ def write_source_meta(
     subtitle: Path,
     subtitle_meta: dict | None = None,
 ) -> None:
+    raw_original_subtitle = raw_subtitle_sidecar(original_subtitle)
     source_meta_path(key).write_text(
         json.dumps(
             {
@@ -1006,6 +1008,11 @@ def write_source_meta(
                 or f"https://www.youtube.com/watch?v={video_id}",
                 "source_video": str(video.relative_to(entry_dir(key))).replace("\\", "/"),
                 "original_subtitle": str(original_subtitle.relative_to(entry_dir(key))).replace("\\", "/"),
+                "raw_original_subtitle": (
+                    str(raw_original_subtitle.relative_to(entry_dir(key))).replace("\\", "/")
+                    if raw_original_subtitle.exists()
+                    else None
+                ),
                 "subtitle": str(subtitle.relative_to(entry_dir(key))).replace("\\", "/"),
                 "subtitle_meta": subtitle_meta or {},
                 "downloaded_at": int(time.time()),
@@ -1029,6 +1036,12 @@ def move_replace(source: Path, destination: Path) -> None:
     if destination.exists():
         destination.unlink()
     shutil.move(str(source), destination)
+
+
+def move_raw_subtitle_sidecar(source: Path, destination: Path) -> None:
+    raw_source = raw_subtitle_sidecar(source)
+    if raw_source.exists():
+        move_replace(raw_source, raw_subtitle_sidecar(destination))
 
 
 def hot_free_bytes() -> int:
@@ -1688,10 +1701,21 @@ def subtitle_lang_available(subtitles: dict, lang: str) -> str | None:
     if lang in subtitles:
         return lang
     wanted = normalize_lang(lang)
-    for candidate in subtitles.keys():
-        if normalize_lang(candidate) == wanted:
-            return candidate
-    return None
+    candidates = [candidate for candidate in subtitles.keys() if normalize_lang(candidate) == wanted]
+    if not candidates:
+        return None
+
+    def track_score(candidate: str) -> tuple[int, str]:
+        entries = subtitles.get(candidate) or []
+        names = " ".join(
+            str(entry.get("name") or "")
+            for entry in entries
+            if isinstance(entry, dict)
+        ).lower()
+        preferred = 1 if "dtvcc" in names or "dvd" in names else 0
+        return preferred, str(candidate)
+
+    return max(candidates, key=track_score)
 
 
 def configured_translation_source_langs() -> list[str]:
@@ -3423,6 +3447,7 @@ async def download_sources(
     
     video = find_downloaded_video(work_dir)
     original_subtitle = find_subtitle(work_dir, source_lang)
+    preprocess_downloaded_subtitle(original_subtitle)
     metrics_manager.record_download(video.stat().st_size, end_t - start_t)
     subtitle, subtitle_meta = await translate_subtitle_if_needed(
         key=cache_key(video_id, lang, subtitle_source_lang, translation_engine),
@@ -3473,6 +3498,7 @@ async def download_subtitle_only(
     else:
         await run_command(dl_args, cwd=work_dir)
     original_subtitle = find_subtitle(work_dir, source_lang)
+    preprocess_downloaded_subtitle(original_subtitle)
     metrics_manager.record_download(original_subtitle.stat().st_size, time.time() - start_t)
     subtitle, subtitle_meta = await translate_subtitle_if_needed(
         key=cache_key(video_id, lang, subtitle_source_lang, translation_engine),
@@ -3952,6 +3978,7 @@ def cached_original_subtitle_path(key: str) -> Path | None:
     source_meta = get_cached_video_info(key)
     if not source_meta:
         return None
+    original_rel = source_meta.get("original_subtitle")
     subtitle_meta = source_meta.get("subtitle_meta") or {}
     source_lang = subtitle_meta.get("source_language")
     if not isinstance(source_lang, str) or not source_lang:
@@ -3959,8 +3986,14 @@ def cached_original_subtitle_path(key: str) -> Path | None:
     for base_dir in (entry_dir(key), archive_entry_dir(key)):
         if not base_dir or not base_dir.exists():
             continue
+        if isinstance(original_rel, str) and original_rel:
+            original_path = base_dir / original_rel
+            if original_path.exists() and original_path.stat().st_size > 0:
+                return original_path
         candidates = sorted((base_dir / "source").glob(f"subtitle.{source_lang}.original.*"))
         for subtitle_path in candidates:
+            if ".original.raw." in subtitle_path.name:
+                continue
             if subtitle_path.exists() and subtitle_path.stat().st_size > 0:
                 return subtitle_path
     return None
@@ -4131,9 +4164,11 @@ async def prepare_sources(
                 if subtitle_meta.get("translated")
                 else source_dir(key) / f"subtitle.{lang}{subtitle.suffix.lower()}"
             )
+            same_subtitle = subtitle == original_subtitle
             move_replace(original_subtitle, saved_original_subtitle)
+            move_raw_subtitle_sidecar(original_subtitle, saved_original_subtitle)
             original_subtitle = saved_original_subtitle
-            if subtitle != original_subtitle:
+            if not same_subtitle:
                 move_replace(subtitle, saved_subtitle)
             else:
                 saved_subtitle = original_subtitle
@@ -4167,10 +4202,12 @@ async def prepare_sources(
     move_replace(video, saved_video)
     if original_subtitle != subtitle:
         move_replace(original_subtitle, saved_original_subtitle)
+        move_raw_subtitle_sidecar(original_subtitle, saved_original_subtitle)
         original_subtitle = saved_original_subtitle
         move_replace(subtitle, saved_subtitle)
     else:
         move_replace(subtitle, saved_original_subtitle)
+        move_raw_subtitle_sidecar(subtitle, saved_original_subtitle)
         original_subtitle = saved_original_subtitle
         saved_subtitle = saved_original_subtitle
     if subtitle_meta.get("translated"):

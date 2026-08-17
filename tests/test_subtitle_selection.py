@@ -72,6 +72,19 @@ def test_variant_japanese_track_is_recognized_as_requested_language(monkeypatch)
     assert "error" not in body
 
 
+def test_subtitle_language_prefers_stable_dtvcc_track_over_cc_track() -> None:
+    info = {
+        "subtitles": {
+            "en-uYU-mmqFLq8": [{"name": "English - CC1", "ext": "json3"}],
+            "en-JkeT_87f4cc": [{"name": "English - DTVCC1", "ext": "json3"}],
+        }
+    }
+
+    selection = main.select_subtitle_language(info, "ja")
+
+    assert selection["source_language"] == "en-JkeT_87f4cc"
+
+
 def test_ass_builder_preserves_srt_line_breaks(tmp_path) -> None:
     source = tmp_path / "subtitle.srt"
     output = tmp_path / "subtitle.ass"
