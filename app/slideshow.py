@@ -48,11 +48,12 @@ def validate_total_duration(
 
 
 def estimate_workspace_bytes(
-    input_bytes: int, slide_count: int, duration_seconds: float
+    input_bytes: int, slide_count: int, slide_seconds: float
 ) -> int:
     # ponytail: fixed conservative estimate; use measured encoder output only if this becomes a storage bottleneck.
     temporary_png_bytes = slide_count * SLIDESHOW_WIDTH * SLIDESHOW_HEIGHT * 4
-    output_mp4_bytes = max(64 * 1024 * 1024, int(duration_seconds * 2 * 1024 * 1024))
+    total_seconds = slide_count * slide_seconds
+    output_mp4_bytes = max(64 * 1024 * 1024, int(total_seconds * 2 * 1024 * 1024))
     return input_bytes + temporary_png_bytes + output_mp4_bytes + 64 * 1024 * 1024
 
 

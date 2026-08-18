@@ -196,4 +196,5 @@ async def _noop() -> None:
 def test_slideshow_workspace_estimate_includes_input_png_and_mp4_space() -> None:
     estimate = estimate_workspace_bytes(100, 2, 10)
     assert estimate > 100 + 2 * 1920 * 1080 * 4
+    assert estimate_workspace_bytes(100, 10, 10) > estimate_workspace_bytes(100, 1, 10)
     validate_total_duration(2, 2, 4)
