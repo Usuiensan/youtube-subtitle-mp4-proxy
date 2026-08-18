@@ -10,6 +10,17 @@ def _fake_image(name: str = "slide.png") -> tuple[str, tuple[str, bytes, str]]:
     return ("images", (name, b"\x89PNG\r\n\x1a\nimage", "image/png"))
 
 
+def test_index_contains_slideshow_form() -> None:
+    with TestClient(app_main.app) as client:
+        response = client.get("/")
+    assert response.status_code == 200
+    assert 'id="slideshowForm"' in response.text
+    assert 'id="slideshowPdf"' in response.text
+    assert 'id="slideshowImages"' in response.text
+    assert 'id="slideshowDuration"' in response.text
+    assert "VRChatに貼るURL" in response.text
+
+
 def test_slideshow_upload_job_public_range_and_ttl(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(app_main.settings, "discord_prepare_token", "token")
     monkeypatch.setattr(app_main.settings, "slideshow_dir", tmp_path / "slideshows")

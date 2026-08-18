@@ -5955,6 +5955,29 @@ async def index() -> str:
       grid-template-columns: 1fr 1fr;
       gap: calc(24 / 16 * 1rem);
     }}
+    .slideshow-files {{
+      display: grid;
+      gap: calc(12 / 16 * 1rem);
+      padding: calc(16 / 16 * 1rem);
+      background: var(--color-gray-50);
+      border-left: calc(8 / 16 * 1rem) solid var(--color-blue-900);
+    }}
+    .slideshow-result {{
+      display: grid;
+      gap: calc(12 / 16 * 1rem);
+      margin-top: calc(16 / 16 * 1rem);
+      padding: calc(16 / 16 * 1rem);
+      background: var(--color-gray-50);
+    }}
+    .slideshow-result a {{
+      font-size: calc(20 / 16 * 1rem);
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }}
+    .slideshow-result video {{
+      width: min(100%, 720px);
+      background: #000;
+    }}
     button, a.button {{
       min-width: calc(96 / 16 * 1rem);
       min-height: calc(48 / 16 * 1rem);
@@ -6204,6 +6227,7 @@ async def index() -> str:
       <h2 id="toolsTitle">ツール</h2>
       <div class="tabs" role="tablist" aria-label="Tool">
         <button type="button" id="videoTab" role="tab" aria-controls="converter" aria-selected="true">動画準備</button>
+        <button type="button" id="slideshowTab" role="tab" aria-controls="slideshowForm" aria-selected="false">スライドショー作成</button>
         <button type="button" id="jsonTab" role="tab" aria-controls="jsonExporter" aria-selected="false">JSON 書き出し</button>
         <button type="button" id="preparedTab" role="tab" aria-controls="preparedPanel" aria-selected="false">準備済み</button>
         <button type="button" id="monitorTab" role="tab" aria-controls="monitorPanel" aria-selected="false">監視</button>
@@ -6251,6 +6275,30 @@ async def index() -> str:
         準備済みURL
         <output id="result"></output>
       </label>
+    </form>
+    <form id="slideshowForm" class="tool" aria-labelledby="slideshowTab" hidden>
+      <p>PDFまたは画像から、VRChatに貼るURL用のMP4を作成します。</p>
+      <div class="slideshow-files">
+        <label>
+          PDF（画像とは同時に選択しない）
+          <input id="slideshowPdf" name="pdf" type="file" accept="application/pdf,.pdf">
+        </label>
+        <label>
+          画像（複数選択可）
+          <input id="slideshowImages" name="images" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" multiple>
+        </label>
+        <output id="slideshowOrder" aria-live="polite">画像を選択すると、送信順を表示します。</output>
+      </div>
+      <label>
+        1枚あたりの表示時間（秒）
+        <input id="slideshowDuration" name="slide_duration" type="number" min="0.1" max="300" step="0.1" value="10" required>
+      </label>
+      <div class="actions">
+        <button type="submit" id="slideshowButton">MP4を作成</button>
+      </div>
+      <output id="slideshowStatus" aria-live="polite"></output>
+      <output id="slideshowMessage" class="error" aria-live="assertive"></output>
+      <div id="slideshowResult" class="slideshow-result" hidden></div>
     </form>
     <form id="jsonExporter" class="tool" aria-labelledby="jsonTab" hidden>
       <label>
@@ -6441,10 +6489,12 @@ async def index() -> str:
     const defaultLang = {default_lang};
     const translationOptions = {translation_options_json};
     const form = document.getElementById("converter");
+    const slideshowForm = document.getElementById("slideshowForm");
     const jsonForm = document.getElementById("jsonExporter");
     const monitorPanel = document.getElementById("monitorPanel");
     const comparePanel = document.getElementById("comparePanel");
     const videoTab = document.getElementById("videoTab");
+    const slideshowTab = document.getElementById("slideshowTab");
     const jsonTab = document.getElementById("jsonTab");
     const preparedTab = document.getElementById("preparedTab");
     const monitorTab = document.getElementById("monitorTab");
@@ -6538,6 +6588,14 @@ async def index() -> str:
     const auditDetailCloseButton = document.getElementById("auditDetailCloseButton");
     const auditDetailTitle = document.getElementById("auditDetailTitle");
     const auditDetail = document.getElementById("auditDetail");
+    const slideshowPdf = document.getElementById("slideshowPdf");
+    const slideshowImages = document.getElementById("slideshowImages");
+    const slideshowDuration = document.getElementById("slideshowDuration");
+    const slideshowButton = document.getElementById("slideshowButton");
+    const slideshowOrder = document.getElementById("slideshowOrder");
+    const slideshowStatus = document.getElementById("slideshowStatus");
+    const slideshowMessage = document.getElementById("slideshowMessage");
+    const slideshowResult = document.getElementById("slideshowResult");
 
     lang.value = defaultLang;
     jsonLang.value = defaultLang;
@@ -6545,19 +6603,22 @@ async def index() -> str:
 
     function selectTool(tool) {{
       const jsonSelected = tool === "json";
+      const slideshowSelected = tool === "slideshow";
       const preparedSelected = tool === "prepared";
       const monitorSelected = tool === "monitor";
       const compareSelected = tool === "compare";
       const chatSelected = tool === "chat";
       const auditSelected = tool === "audit";
-      form.hidden = jsonSelected || preparedSelected || monitorSelected || compareSelected || chatSelected || auditSelected;
+      form.hidden = jsonSelected || slideshowSelected || preparedSelected || monitorSelected || compareSelected || chatSelected || auditSelected;
+      slideshowForm.hidden = !slideshowSelected;
       jsonForm.hidden = !jsonSelected;
       preparedPanel.hidden = !preparedSelected;
       monitorPanel.hidden = !monitorSelected;
       comparePanel.hidden = !compareSelected;
       chatPanel.hidden = !chatSelected;
       auditPanel.hidden = !auditSelected;
-      videoTab.setAttribute("aria-selected", String(!jsonSelected && !preparedSelected && !monitorSelected && !compareSelected && !chatSelected && !auditSelected));
+      videoTab.setAttribute("aria-selected", String(!jsonSelected && !slideshowSelected && !preparedSelected && !monitorSelected && !compareSelected && !chatSelected && !auditSelected));
+      slideshowTab.setAttribute("aria-selected", String(slideshowSelected));
       jsonTab.setAttribute("aria-selected", String(jsonSelected));
       preparedTab.setAttribute("aria-selected", String(preparedSelected));
       monitorTab.setAttribute("aria-selected", String(monitorSelected));
@@ -7441,6 +7502,100 @@ async def index() -> str:
       }}
     }}
 
+    function slideshowSortedFiles() {{
+      return Array.from(slideshowImages.files || []).sort((a, b) => a.name.localeCompare(b.name, undefined, {{ numeric: true, sensitivity: "base" }}));
+    }}
+
+    function updateSlideshowOrder() {{
+      const files = slideshowSortedFiles();
+      if (!files.length) {{
+        slideshowOrder.textContent = "画像を選択すると、送信順を表示します。";
+        return;
+      }}
+      slideshowOrder.textContent = `実際の処理順（自然順）: ${{files.map((file, index) => `${{index + 1}}. ${{file.name}}`).join(" / ")}}`;
+    }}
+
+    function slideshowError(error) {{
+      const detail = String(error.message || error);
+      if (/too large|large|413/i.test(detail)) return "ファイルサイズが上限を超えています。";
+      if (/unsupported|invalid|must contain|must not contain/i.test(detail)) return "対応していない形式です。PDFまたはPNG・JPEG・WebPを選択してください。";
+      if (/page count|PDF page/i.test(detail)) return "PDFのページ数が上限を超えています。";
+      if (/too many|maximum.*slide|images/i.test(detail)) return "画像数が上限を超えています。";
+      if (/conversion|convert|ffmpeg|failed/i.test(detail)) return "変換に失敗しました。ファイル内容を確認して、もう一度お試しください。";
+      return `スライドショーAPIエラー: ${{detail}}`;
+    }}
+
+    function setSlideshowStatus(body) {{
+      const labels = {{ queued: "待機中", running: "変換中", ready: "完了", failed: "失敗" }};
+      const status = labels[body.status] || body.status || "処理中";
+      const phase = body.progress?.phase === "convert" && body.status === "running" ? "（変換中）" : "";
+      slideshowStatus.textContent = `スライドショー: ${{status}}${{phase}}`;
+      if (body.status === "failed") throw new Error(body.error || "conversion failed");
+      if (body.status === "ready") {{
+        const url = publicUrl(body.url);
+        slideshowResult.hidden = false;
+        slideshowResult.innerHTML = "";
+        const heading = document.createElement("strong");
+        heading.textContent = "VRChatに貼るURL（完成したMP4）";
+        const link = document.createElement("a");
+        link.href = url;
+        link.textContent = url;
+        link.target = "_blank";
+        link.rel = "noopener";
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        const copy = document.createElement("button");
+        copy.type = "button";
+        copy.textContent = "URLをコピー";
+        copy.addEventListener("click", async () => copyPreparedUrl(url, copy));
+        actions.appendChild(copy);
+        const video = document.createElement("video");
+        video.controls = true;
+        video.preload = "metadata";
+        video.src = url;
+        slideshowResult.append(heading, link, actions, video);
+      }}
+      return body.status === "ready" || body.status === "failed";
+    }}
+
+    async function pollSlideshow(statusUrl) {{
+      for (let attempt = 0; attempt < 600; attempt += 1) {{
+        const body = await apiFetch(statusUrl);
+        if (setSlideshowStatus(body)) return;
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }}
+      throw new Error("変換の確認がタイムアウトしました。");
+    }}
+
+    async function createSlideshow() {{
+      slideshowMessage.textContent = "";
+      slideshowResult.hidden = true;
+      const pdf = slideshowPdf.files[0];
+      const images = slideshowSortedFiles();
+      if ((pdf && images.length) || (!pdf && !images.length)) {{
+        slideshowMessage.textContent = "PDFまたは画像をどちらか一方選択してください。";
+        return;
+      }}
+      const body = new FormData();
+      if (pdf) body.append("pdf", pdf);
+      for (const image of images) body.append("images", image);
+      body.append("slide_duration", slideshowDuration.value);
+      slideshowButton.disabled = true;
+      slideshowStatus.textContent = "アップロード中...";
+      try {{
+        const response = await fetch("/slideshow", {{ method: "POST", headers: authHeaders(), body }});
+        const result = await response.json().catch(() => ({{}}));
+        if (!response.ok) throw new Error(result.detail || `HTTP ${{response.status}}`);
+        setSlideshowStatus(result);
+        if (result.status_url) await pollSlideshow(result.status_url);
+      }} catch (error) {{
+        slideshowStatus.textContent = "スライドショー: 失敗";
+        slideshowMessage.textContent = slideshowError(error);
+      }} finally {{
+        slideshowButton.disabled = false;
+      }}
+    }}
+
     function updateJson() {{
       const values = sourceUrl.value.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean);
       const selectedType = sourceType.value;
@@ -7501,6 +7656,7 @@ async def index() -> str:
     }}
 
     videoTab.addEventListener("click", () => selectTool("video"));
+    slideshowTab.addEventListener("click", () => selectTool("slideshow"));
     jsonTab.addEventListener("click", () => selectTool("json"));
     preparedTab.addEventListener("click", () => selectTool("prepared"));
     monitorTab.addEventListener("click", () => selectTool("monitor"));
@@ -7525,6 +7681,18 @@ async def index() -> str:
       prepareCurrentVideo();
     }});
     prepareButton.addEventListener("click", prepareCurrentVideo);
+    slideshowPdf.addEventListener("change", () => {{
+      if (slideshowPdf.files.length) slideshowImages.value = "";
+      updateSlideshowOrder();
+    }});
+    slideshowImages.addEventListener("change", () => {{
+      if (slideshowImages.files.length) slideshowPdf.value = "";
+      updateSlideshowOrder();
+    }});
+    slideshowForm.addEventListener("submit", (event) => {{
+      event.preventDefault();
+      createSlideshow();
+    }});
     notifyButton.addEventListener("click", requestNotifications);
     compareLoadVariantsButton.addEventListener("click", loadCompareVariants);
     comparePrepareButton.addEventListener("click", prepareCompare);
