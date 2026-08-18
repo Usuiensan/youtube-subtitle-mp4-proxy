@@ -3071,7 +3071,7 @@ async def run_ffmpeg_with_optional_nvenc_fallback(
     if output_path.exists():
         output_path.unlink()
 
-    insert_at = fallback_args.index("-c:a")
+    insert_at = fallback_args.index("-c:a") if "-c:a" in fallback_args else len(fallback_args) - 1
     fallback_args[insert_at:insert_at] = ffmpeg_video_args("libx264")
     
     if job_id and duration_seconds:
