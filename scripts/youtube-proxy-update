@@ -37,6 +37,7 @@ if find "$STAGE" -type l -print -quit | grep -q .; then
 fi
 "$APP_DIR/.venv/bin/python" -m compileall -q "$STAGE/app" "$STAGE/bot"
 grep -q 'silent=True' "$STAGE/bot/main.py"
+"$APP_DIR/.venv/bin/python" -m pip install -r "$STAGE/requirements.txt"
 
 mkdir -p "$BACKUP"
 rsync -a --delete \

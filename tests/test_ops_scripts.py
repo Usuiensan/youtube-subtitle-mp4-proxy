@@ -46,6 +46,20 @@ def test_update_script_excludes_local_env_and_checks_native_commands() -> None:
     assert '"$STAGE/scripts/youtube-proxy-operator" /usr/local/sbin/youtube-proxy-operator' in root_wrapper
 
 
+def test_production_update_installs_runtime_requirements_before_service_switch() -> None:
+    script = (ROOT / "scripts" / "youtube-proxy-update").read_text(encoding="utf-8")
+    install = '"$APP_DIR/.venv/bin/python" -m pip install -r "$STAGE/requirements.txt"'
+
+    assert install in script
+    assert "requirements-dev.txt" not in script
+    assert ".venv/bin/activate" not in script
+    assert "python -m venv" not in script
+    assert "pip install --upgrade" not in script
+    assert script.index(install) < script.index('systemctl stop "$DISCORD_SERVICE" "$PROXY_SERVICE"')
+    assert script.index('systemctl stop "$DISCORD_SERVICE" "$PROXY_SERVICE"') < script.index('systemctl start "$PROXY_SERVICE"')
+    assert "python-multipart==" in (ROOT / "requirements.txt").read_text(encoding="utf-8")
+
+
 def test_storage_operator_uses_only_the_configured_mount_point() -> None:
     operator = (ROOT / "scripts" / "youtube-proxy-operator").read_text(encoding="utf-8")
     assert "CACHE_ARCHIVE_MOUNT_POINT が未設定" in operator
