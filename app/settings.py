@@ -48,6 +48,10 @@ class Settings:
     slideshow_max_pdf_pages = max(1, int(os.getenv("SLIDESHOW_MAX_PDF_PAGES", "500")))
     slideshow_max_input_bytes = max(1, int(os.getenv("SLIDESHOW_MAX_INPUT_BYTES", str(512 * 1024 * 1024))))
     slideshow_max_duration_seconds = max(1.0, float(os.getenv("SLIDESHOW_MAX_DURATION_SECONDS", "300")))
+    slideshow_max_total_duration_seconds = max(
+        1.0,
+        float(os.getenv("SLIDESHOW_MAX_TOTAL_DURATION_SECONDS", str(max_duration_seconds))),
+    )
     job_timeout_seconds = int(os.getenv("JOB_TIMEOUT_SECONDS", "7200"))
     subtitle_font = os.getenv("SUBTITLE_FONT", "Noto Sans JP")
     subtitle_font_size = int(os.getenv("SUBTITLE_FONT_SIZE", "22"))

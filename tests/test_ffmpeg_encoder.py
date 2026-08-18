@@ -15,6 +15,25 @@ def test_unrelated_ffmpeg_error_does_not_use_nvenc_fallback() -> None:
     assert not app_main.is_nvenc_driver_error(message)
 
 
+def test_slideshow_ffmpeg_runner_uses_global_encode_lock(monkeypatch) -> None:
+    events: list[str] = []
+
+    class Lock:
+        async def __aenter__(self):
+            events.append("acquire")
+
+        async def __aexit__(self, *_args):
+            events.append("release")
+
+    async def fake_ffmpeg(_args: list[str]) -> None:
+        events.append("encode")
+
+    monkeypatch.setattr(app_main, "_global_encode_lock", Lock())
+    monkeypatch.setattr(app_main, "run_ffmpeg_with_optional_nvenc_fallback", fake_ffmpeg)
+    asyncio.run(app_main.run_slideshow_ffmpeg(["ffmpeg"]))
+    assert events == ["acquire", "encode", "release"]
+
+
 def test_ffmpeg_progress_handles_long_stderr_without_newline(monkeypatch) -> None:
     class Process:
         def __init__(self) -> None:

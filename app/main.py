@@ -83,7 +83,10 @@ from app.slideshow import (
     SUPPORTED_IMAGE_EXTENSIONS,
     convert_slideshow,
     detect_upload_format,
+    estimate_workspace_bytes as estimate_slideshow_workspace_bytes,
     natural_sort_key,
+    pdf_page_count,
+    validate_total_duration,
 )
 from app.validation import (
     validate_discord_user_id,
@@ -3107,6 +3110,11 @@ async def run_ffmpeg_with_optional_nvenc_fallback(
         await run_command(fallback_args)
 
 
+async def run_slideshow_ffmpeg(args: list[str]) -> None:
+    async with _global_encode_lock:
+        await run_ffmpeg_with_optional_nvenc_fallback(args)
+
+
 async def run_translation_worker(payload: dict) -> dict:
     work_dir = Path(payload["_work_dir"])
     clean_payload = {key: value for key, value in payload.items() if key != "_work_dir"}
@@ -5255,6 +5263,7 @@ async def run_slideshow_job(
     work_dir: Path,
     output_path: Path,
     slide_duration: float,
+    slide_count: int | None = None,
 ) -> None:
     job = _prepare_jobs[job_id]
     try:
@@ -5267,6 +5276,13 @@ async def run_slideshow_job(
                     "progress": {"phase": "convert", "percent": 0},
                 }
             )
+            input_bytes = sum(path.stat().st_size for path in ([source] if isinstance(source, Path) else source))
+            estimated_slides = slide_count or settings.slideshow_max_pdf_pages
+            await ensure_prepare_workspace_capacity(
+                estimate_slideshow_workspace_bytes(
+                    input_bytes, estimated_slides, slide_duration
+                )
+            )
             converted = await convert_slideshow(
                 source,
                 work_dir / "output.mp4",
@@ -5276,7 +5292,9 @@ async def run_slideshow_job(
                     max_slides=settings.slideshow_max_files,
                     max_pdf_pages=settings.slideshow_max_pdf_pages,
                     max_input_bytes=settings.slideshow_max_input_bytes,
+                    max_total_duration_seconds=settings.slideshow_max_total_duration_seconds,
                 ),
+                ffmpeg_runner=run_slideshow_ffmpeg,
             )
             if not converted.is_file() or converted.stat().st_size <= 0:
                 raise RuntimeError("Slideshow conversion produced no MP4")
@@ -7529,6 +7547,7 @@ async def index() -> str:
       if (/unsupported|invalid|must contain|must not contain/i.test(detail)) return "対応していない形式です。PDFまたはPNG・JPEG・WebPを選択してください。";
       if (/page count|PDF page/i.test(detail)) return "PDFのページ数が上限を超えています。";
       if (/too many|maximum.*slide|images/i.test(detail)) return "画像数が上限を超えています。";
+      if (/total slideshow duration|全体.*再生時間/i.test(detail)) return "スライドショー全体の再生時間が上限を超えています。";
       if (/conversion|convert|ffmpeg|failed/i.test(detail)) return "変換に失敗しました。ファイル内容を確認して、もう一度お試しください。";
       return `スライドショーAPIエラー: ${{detail}}`;
     }}
@@ -8231,12 +8250,19 @@ async def create_slideshow(
         raise HTTPException(status_code=400, detail="slide_duration must be a number") from error
     if not 0 < duration <= settings.slideshow_max_duration_seconds:
         raise HTTPException(status_code=400, detail="slide_duration is outside the allowed range")
+    try:
+        validate_total_duration(
+            duration, len(image_uploads), settings.slideshow_max_total_duration_seconds
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
     slideshow_id = secrets.token_urlsafe(24)
     job_id = uuid.uuid4().hex
     work_dir = settings.slideshow_dir / f".work-{slideshow_id}"
     output_path = settings.slideshow_dir / f"{slideshow_id}.mp4"
     source: Path | list[Path]
+    slide_count: int | None = None
     total_bytes = 0
     try:
         await cleanup_expired_cache_async()
@@ -8250,6 +8276,21 @@ async def create_slideshow(
                 raise HTTPException(status_code=400, detail="The pdf field must contain a PDF file")
             source = temporary.with_suffix(".pdf")
             temporary.replace(source)
+            slide_count = await pdf_page_count(source)
+            if slide_count is not None:
+                if not 1 <= slide_count <= settings.slideshow_max_pdf_pages:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"PDF page count must be between 1 and {settings.slideshow_max_pdf_pages}",
+                    )
+                try:
+                    validate_total_duration(
+                        duration,
+                        slide_count,
+                        settings.slideshow_max_total_duration_seconds,
+                    )
+                except ValueError as error:
+                    raise HTTPException(status_code=400, detail=str(error)) from error
             input_type = "pdf"
         else:
             source_paths: list[Path] = []
@@ -8267,6 +8308,7 @@ async def create_slideshow(
                 temporary.replace(target)
                 source_paths.append(target)
             source = source_paths
+            slide_count = len(source_paths)
             input_type = "images"
 
         now = int(time.time())
@@ -8285,7 +8327,11 @@ async def create_slideshow(
         async with _prepare_lock:
             prune_prepare_jobs()
             _prepare_jobs[job_id] = job
-        asyncio.create_task(run_slideshow_job(job_id, source, work_dir, output_path, duration))
+        asyncio.create_task(
+            run_slideshow_job(
+                job_id, source, work_dir, output_path, duration, slide_count
+            )
+        )
         return JSONResponse(slideshow_job_response_body(job_id, job, request), status_code=202)
     except Exception:
         shutil.rmtree(work_dir, ignore_errors=True)
@@ -8309,7 +8355,11 @@ async def slideshow_mp4(slideshow_id: str, request: Request) -> Response:
     if not is_usable_file(path) or time.time() - path.stat().st_mtime >= settings.slideshow_ttl_seconds:
         await cleanup_expired_cache_async()
         raise HTTPException(status_code=404, detail="Slideshow not found")
-    return mp4_response(request, path, max_age=settings.slideshow_ttl_seconds)
+    remaining_ttl = max(
+        0,
+        int(settings.slideshow_ttl_seconds - (time.time() - path.stat().st_mtime)),
+    )
+    return mp4_response(request, path, max_age=remaining_ttl)
 
 
 @app.get("/youtube-hls/{video_id}")

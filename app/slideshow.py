@@ -13,6 +13,8 @@ from app.command_runner import run_command
 
 SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 DEFAULT_SLIDE_SECONDS = 10.0
+SLIDESHOW_WIDTH = 1920
+SLIDESHOW_HEIGHT = 1080
 
 
 def detect_upload_format(header: bytes) -> str | None:
@@ -32,6 +34,37 @@ class SlideshowLimits:
     max_slides: int = 500
     max_pdf_pages: int = 500
     max_input_bytes: int = 512 * 1024 * 1024
+    max_total_duration_seconds: float = float("inf")
+
+
+def validate_total_duration(
+    slide_seconds: float, slide_count: int, max_total_seconds: float
+) -> None:
+    total_seconds = slide_seconds * slide_count
+    if total_seconds > max_total_seconds + 1e-9:
+        raise ValueError(
+            f"Total slideshow duration exceeds the maximum ({total_seconds:g} > {max_total_seconds:g} seconds)"
+        )
+
+
+def estimate_workspace_bytes(
+    input_bytes: int, slide_count: int, duration_seconds: float
+) -> int:
+    # ponytail: fixed conservative estimate; use measured encoder output only if this becomes a storage bottleneck.
+    temporary_png_bytes = slide_count * SLIDESHOW_WIDTH * SLIDESHOW_HEIGHT * 4
+    output_mp4_bytes = max(64 * 1024 * 1024, int(duration_seconds * 2 * 1024 * 1024))
+    return input_bytes + temporary_png_bytes + output_mp4_bytes + 64 * 1024 * 1024
+
+
+async def pdf_page_count(pdf_path: Path) -> int | None:
+    try:
+        output = await run_command(
+            ["pdfinfo", str(pdf_path)], cwd=pdf_path.parent, timeout_seconds=30
+        )
+    except Exception:
+        return None
+    match = re.search(r"^Pages:\s*(\d+)\s*$", output, re.MULTILINE)
+    return int(match.group(1)) if match else None
 
 
 def natural_sort_key(path: Path) -> list[object]:
@@ -141,6 +174,10 @@ async def convert_slideshow(
                 slides = image_paths([source], limits=limits)
         else:
             slides = image_paths(source, limits=limits)
+
+        validate_total_duration(
+            slide_seconds, len(slides), limits.max_total_duration_seconds
+        )
 
         copied: list[Path] = []
         total_size = 0

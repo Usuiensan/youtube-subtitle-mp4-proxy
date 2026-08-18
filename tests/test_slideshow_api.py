@@ -1,3 +1,4 @@
+import os
 import time
 from pathlib import Path
 
@@ -155,3 +156,95 @@ def test_slideshow_rejects_upload_over_limit_and_cleans_workdir(tmp_path: Path, 
         )
     assert response.status_code == 413
     assert not list((tmp_path / "slideshows").glob(".work-*"))
+
+
+def test_slideshow_rejects_total_duration_for_images_and_pdf(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(app_main.settings, "discord_prepare_token", "token")
+    monkeypatch.setattr(app_main.settings, "slideshow_dir", tmp_path / "slideshows")
+    monkeypatch.setattr(app_main.settings, "slideshow_max_total_duration_seconds", 4)
+    app_main._prepare_jobs.clear()
+
+    async def fake_convert(source, output_path, **kwargs):
+        output_path.write_bytes(b"mp4")
+        return output_path
+
+    monkeypatch.setattr(app_main, "convert_slideshow", fake_convert)
+    with TestClient(app_main.app) as client:
+        image_response = client.post(
+            "/slideshow",
+            files=[_fake_image("1.png"), _fake_image("2.png")],
+            data={"slide_duration": "3"},
+            headers={"Authorization": "Bearer token"},
+        )
+        assert image_response.status_code == 400
+        assert "Total slideshow duration" in image_response.json()["detail"]
+
+        monkeypatch.setattr(app_main, "pdf_page_count", lambda _path: _async_value(2))
+        pdf_response = client.post(
+            "/slideshow",
+            files=[("pdf", ("source.pdf", b"%PDF-1.7 fake", "application/pdf"))],
+            data={"slide_duration": "3"},
+            headers={"Authorization": "Bearer token"},
+        )
+    assert pdf_response.status_code == 400
+    assert "Total slideshow duration" in pdf_response.json()["detail"]
+
+
+async def _async_value(value):
+    return value
+
+
+def test_slideshow_capacity_check_precedes_conversion(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(app_main.settings, "discord_prepare_token", "token")
+    monkeypatch.setattr(app_main.settings, "slideshow_dir", tmp_path / "slideshows")
+    app_main._prepare_jobs.clear()
+    required: list[int] = []
+
+    async def fake_capacity(value: int) -> None:
+        required.append(value)
+
+    async def fake_convert(source, output_path, **kwargs):
+        output_path.write_bytes(b"mp4")
+        return output_path
+
+    monkeypatch.setattr(app_main, "ensure_prepare_workspace_capacity", fake_capacity)
+    monkeypatch.setattr(app_main, "convert_slideshow", fake_convert)
+    with TestClient(app_main.app) as client:
+        response = client.post(
+            "/slideshow",
+            files=[_fake_image("1.png", b"0123456789")],
+            data={"slide_duration": "2"},
+            headers={"Authorization": "Bearer token"},
+        )
+        assert response.status_code == 202
+        for _ in range(20):
+            if client.get(response.json()["status_url"], headers={"Authorization": "Bearer token"}).json()["status"] == "ready":
+                break
+            time.sleep(0.01)
+    assert required
+    assert required[0] > 10
+
+
+def test_slideshow_cache_control_uses_remaining_ttl(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(app_main.settings, "slideshow_dir", tmp_path / "slideshows")
+    monkeypatch.setattr(app_main.settings, "slideshow_ttl_seconds", 86400)
+    slideshow_id = "A" * 32
+    path = app_main.settings.slideshow_dir / f"{slideshow_id}.mp4"
+    path.parent.mkdir(parents=True)
+
+    for age, upper_bound in ((0, 86400), (43200, 43200), (86399, 1)):
+        path.write_bytes(b"mp4")
+        os.utime(path, (time.time() - age, time.time() - age))
+        with TestClient(app_main.app) as client:
+            response = client.get(f"/slideshow/{slideshow_id}.mp4")
+        assert response.status_code == 200
+        max_age = int(response.headers["cache-control"].split("=")[-1])
+        assert 0 <= max_age <= upper_bound
+
+    path.write_bytes(b"mp4")
+    expired = time.time() - 86401
+    os.utime(path, (expired, expired))
+    with TestClient(app_main.app) as client:
+        response = client.get(f"/slideshow/{slideshow_id}.mp4")
+    assert response.status_code == 404
+    assert not path.exists()

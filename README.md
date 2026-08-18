@@ -68,7 +68,7 @@ Web UI の「スライドショー作成」タブで、PDF 1 ファイルまた�
 
 作成 API は認証付き `POST /slideshow` です。`pdf` または複数の `images` と `slide_duration`（秒）を multipart で送り、返された `status_url` を `GET` でポーリングします。`status=ready` の `url` が完成 MP4 の URL で、`GET /slideshow/{slideshow_id}.mp4` は認証なしで取得でき、Range Request に対応します。URL に query string は不要です。
 
-スライドショーの完成 MP4 と一時ファイルの TTL は `SLIDESHOW_TTL_SECONDS`（既定 24 時間）です。入力ファイル数、PDF ページ数、合計アップロードサイズ、表示秒数はそれぞれ `SLIDESHOW_MAX_FILES`、`SLIDESHOW_MAX_PDF_PAGES`、`SLIDESHOW_MAX_INPUT_BYTES`、`SLIDESHOW_MAX_DURATION_SECONDS` で制限します。標準出力は音声なし、H.264、`yuv420p`、1920x1080、`+faststart` の MP4 です。
+スライドショーの完成 MP4 と一時ファイルの TTL は `SLIDESHOW_TTL_SECONDS`（既定 24 時間）です。入力ファイル数、PDF ページ数、合計アップロードサイズ、1枚あたりの表示秒数、完成動画全体の秒数はそれぞれ `SLIDESHOW_MAX_FILES`、`SLIDESHOW_MAX_PDF_PAGES`、`SLIDESHOW_MAX_INPUT_BYTES`、`SLIDESHOW_MAX_DURATION_SECONDS`、`SLIDESHOW_MAX_TOTAL_DURATION_SECONDS` で制限します。後者の既定値は `MAX_DURATION_SECONDS`（通常 1800 秒）です。標準出力は音声なし、H.264、`yuv420p`、1920x1080、`+faststart` の MP4 です。
 
 必要な OS パッケージは `ffmpeg` と PDF の `pdftoppm`（Ubuntu/Debian では `sudo apt install -y ffmpeg poppler-utils`）です。通常の YouTube 用 API、`/prepare`、Discord bot、YamaPlayer 出力とは独立した `/slideshow` ジョブですが、状態確認には既存の `GET /prepare/jobs/{job_id}` を使用します。
 

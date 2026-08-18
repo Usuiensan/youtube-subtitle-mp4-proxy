@@ -6,10 +6,12 @@ import pytest
 from app.slideshow import (
     SlideshowLimits,
     convert_slideshow,
+    estimate_workspace_bytes,
     ffmpeg_slideshow_args,
     image_paths,
     natural_sort_key,
     slideshow_filter,
+    validate_total_duration,
 )
 
 
@@ -127,3 +129,71 @@ def test_mixed_images_are_normalized_before_concat(tmp_path: Path, monkeypatch: 
     assert len(commands) == 2
     assert all(path.endswith(".png") for path in (command[-1] for command in commands))
     assert concat_contents[0].count(".png") == 4
+
+
+def test_total_duration_limit_rejects_images_but_allows_exact_limit(tmp_path: Path) -> None:
+    sources = [tmp_path / "1.png", tmp_path / "2.png"]
+    for path in sources:
+        path.write_bytes(b"png")
+
+    with pytest.raises(ValueError, match="Total slideshow duration"):
+        asyncio.run(
+            convert_slideshow(
+                sources,
+                tmp_path / "work-over" / "over.mp4",
+                work_dir=tmp_path / "work-over",
+                slide_seconds=2,
+                limits=SlideshowLimits(max_total_duration_seconds=3),
+                ffmpeg_runner=lambda _args: _noop(),
+            )
+        )
+
+    asyncio.run(
+        convert_slideshow(
+            sources,
+            tmp_path / "work-exact" / "exact.mp4",
+            work_dir=tmp_path / "work-exact",
+            slide_seconds=2,
+            limits=SlideshowLimits(max_total_duration_seconds=4),
+            ffmpeg_runner=lambda _args: _noop(),
+        )
+    )
+
+
+def test_total_duration_limit_rejects_pdf_pages_but_allows_exact_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pdf = tmp_path / "source.pdf"
+    pdf.write_bytes(b"pdf")
+
+    async def fake_command(args: list[str], **kwargs: object) -> str:
+        output_prefix = Path(args[-1])
+        for index in range(1, 3):
+            (output_prefix.parent / f"page-{index}.png").write_bytes(b"page")
+        return ""
+
+    monkeypatch.setattr("app.slideshow.run_command", fake_command)
+    for maximum, output in ((3, "over.mp4"), (4, "exact.mp4")):
+        operation = convert_slideshow(
+            pdf,
+            tmp_path / output.removesuffix(".mp4") / output,
+            work_dir=tmp_path / output.removesuffix(".mp4"),
+            slide_seconds=2,
+            limits=SlideshowLimits(max_total_duration_seconds=maximum),
+            ffmpeg_runner=lambda _args: _noop(),
+        )
+        if maximum == 3:
+            with pytest.raises(ValueError, match="Total slideshow duration"):
+                asyncio.run(operation)
+        else:
+            asyncio.run(operation)
+
+
+async def _noop() -> None:
+    return None
+
+
+def test_slideshow_workspace_estimate_includes_input_png_and_mp4_space() -> None:
+    estimate = estimate_workspace_bytes(100, 2, 10)
+    assert estimate > 100 + 2 * 1920 * 1080 * 4
+    validate_total_duration(2, 2, 4)
