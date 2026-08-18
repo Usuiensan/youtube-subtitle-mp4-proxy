@@ -30,6 +30,9 @@ def test_ffmpeg_args_and_aspect_ratio_filter() -> None:
     assert "-movflags" in args and "+faststart" in args
     assert slideshow_filter() == "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black"
 
+    timed_args = ffmpeg_slideshow_args(Path("slides.txt"), Path("output.mp4"), [], duration_seconds=4)
+    assert timed_args[timed_args.index("-frames:v") + 1] == "120"
+
 
 def test_pdf_pages_are_sorted_and_capped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pdf = tmp_path / "source.pdf"
@@ -67,3 +70,60 @@ def test_pdf_pages_are_sorted_and_capped(tmp_path: Path, monkeypatch: pytest.Mon
     assert commands[0][0:4] == ["pdftoppm", "-png", "-r", "150"]
     assert "slide-000000.png" in concat_contents[0]
     assert concat_contents[0].find("slide-000000.png") < concat_contents[0].find("slide-000001.png")
+
+
+def test_pdf_page_limit_rejects_extra_pages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pdf = tmp_path / "source.pdf"
+    pdf.write_bytes(b"pdf")
+
+    async def fake_command(args: list[str], **kwargs: object) -> str:
+        output_prefix = Path(args[-1])
+        for index in range(1, 4):
+            (output_prefix.parent / f"page-{index}.png").write_bytes(b"page")
+        return ""
+
+    monkeypatch.setattr("app.slideshow.run_command", fake_command)
+    with pytest.raises(ValueError, match="page count"):
+        asyncio.run(
+            convert_slideshow(
+                pdf,
+                tmp_path / "work" / "output.mp4",
+                work_dir=tmp_path / "work",
+                limits=SlideshowLimits(max_pdf_pages=2),
+            )
+        )
+
+
+def test_mixed_images_are_normalized_before_concat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sources = []
+    for name in ("10.png", "2.jpg", "1.webp"):
+        path = tmp_path / name
+        path.write_bytes(name.encode())
+        sources.append(path)
+    commands: list[list[str]] = []
+
+    async def fake_command(args: list[str], **kwargs: object) -> str:
+        commands.append(args)
+        if args[0] == "ffmpeg":
+            Path(args[-1]).write_bytes(b"png")
+        return ""
+
+    monkeypatch.setattr("app.slideshow.run_command", fake_command)
+    concat_contents: list[str] = []
+
+    async def fake_ffmpeg(args: list[str]) -> None:
+        concat_contents.append(Path(args[args.index("-i") + 1]).read_text(encoding="utf-8"))
+
+    work = tmp_path / "work"
+    asyncio.run(
+        convert_slideshow(
+            sources,
+            work / "output.mp4",
+            work_dir=work,
+            video_args_factory=lambda: ["-c:v", "libx264"],
+            ffmpeg_runner=fake_ffmpeg,
+        )
+    )
+    assert len(commands) == 2
+    assert all(path.endswith(".png") for path in (command[-1] for command in commands))
+    assert concat_contents[0].count(".png") == 4

@@ -60,8 +60,9 @@ def ffmpeg_slideshow_args(
     concat_file: Path,
     output_path: Path,
     video_args: Sequence[str],
+    duration_seconds: float | None = None,
 ) -> list[str]:
-    return [
+    args = [
         "ffmpeg",
         "-y",
         "-f",
@@ -78,10 +79,11 @@ def ffmpeg_slideshow_args(
         *video_args,
         "-movflags",
         "+faststart",
-        "-f",
-        "mp4",
-        str(output_path),
     ]
+    if duration_seconds is not None:
+        args.extend(["-frames:v", str(max(1, round(duration_seconds * 30)))])
+    args.extend(["-f", "mp4", str(output_path)])
+    return args
 
 
 def _concat_line(path: Path, seconds: float | None = None) -> str:
@@ -147,8 +149,15 @@ async def convert_slideshow(
             total_size += size
             if total_size > limits.max_input_bytes:
                 raise ValueError("Input files are too large")
-            target = temp_dir / f"slide-{index:06d}{slide.suffix.casefold()}"
-            shutil.copyfile(slide, target)
+            target = temp_dir / f"slide-{index:06d}.png"
+            if slide.suffix.casefold() == ".png":
+                shutil.copyfile(slide, target)
+            else:
+                await run_command(
+                    ["ffmpeg", "-y", "-i", str(slide), "-frames:v", "1", str(target)],
+                    cwd=temp_dir,
+                    timeout_seconds=120,
+                )
             copied.append(target)
 
         concat_file = temp_dir / "slides.txt"
@@ -162,7 +171,12 @@ async def convert_slideshow(
             from app.main import ffmpeg_video_args
 
             video_args_factory = ffmpeg_video_args
-        args = ffmpeg_slideshow_args(concat_file, output_path, video_args_factory())
+        args = ffmpeg_slideshow_args(
+            concat_file,
+            output_path,
+            video_args_factory(),
+            duration_seconds=slide_seconds * len(copied),
+        )
         if ffmpeg_runner is None:
             from app.main import run_ffmpeg_with_optional_nvenc_fallback
 

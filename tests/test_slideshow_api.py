@@ -6,8 +6,8 @@ from fastapi.testclient import TestClient
 import app.main as app_main
 
 
-def _fake_image(name: str = "slide.png") -> tuple[str, tuple[str, bytes, str]]:
-    return ("images", (name, b"\x89PNG\r\n\x1a\nimage", "image/png"))
+def _fake_image(name: str = "slide.png", body: bytes = b"image") -> tuple[str, tuple[str, bytes, str]]:
+    return ("images", (name, b"\x89PNG\r\n\x1a\n" + body, "image/png"))
 
 
 def test_index_contains_slideshow_form() -> None:
@@ -29,11 +29,17 @@ def test_slideshow_upload_job_public_range_and_ttl(tmp_path: Path, monkeypatch) 
 
     async def fake_convert(source, output_path, **kwargs):
         output_path.write_bytes(b"0123456789")
+        assert [path.read_bytes()[-1:] for path in source] == [b"1", b"2", b"0"]
         return output_path
 
     monkeypatch.setattr(app_main, "convert_slideshow", fake_convert)
     with TestClient(app_main.app) as client:
-        response = client.post("/slideshow", files=[_fake_image("2.png"), _fake_image("10.png")], data={"slide_duration": "2"}, headers={"Authorization": "Bearer token"})
+        response = client.post(
+            "/slideshow",
+            files=[_fake_image("10.png", b"0"), _fake_image("2.png", b"2"), _fake_image("1.png", b"1")],
+            data={"slide_duration": "2"},
+            headers={"Authorization": "Bearer token"},
+        )
         assert response.status_code == 202
         body = response.json()
         assert body["status"] == "queued"
@@ -51,6 +57,7 @@ def test_slideshow_upload_job_public_range_and_ttl(tmp_path: Path, monkeypatch) 
         assert public.status_code == 200
         assert public.headers["content-type"] == "video/mp4"
         assert public.headers["accept-ranges"] == "bytes"
+        assert client.get("/slideshow/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.mp4").status_code == 404
         ranged = client.get(url, headers={"Range": "bytes=2-5"})
         assert ranged.status_code == 206
         assert ranged.content == b"2345"
@@ -72,6 +79,8 @@ def test_slideshow_upload_job_public_range_and_ttl(tmp_path: Path, monkeypatch) 
         monkeypatch.setattr(app_main.settings, "slideshow_ttl_seconds", 1)
         assert client.get(url).status_code == 404
         assert not stale.exists()
+        assert client.get(f"/slideshow/{body['slideshow_id']}.mp4?download=1").status_code == 404
+        assert client.get("/slideshow/../escape.mp4").status_code == 404
 
 
 def test_slideshow_accepts_a_pdf_upload(tmp_path: Path, monkeypatch) -> None:
@@ -114,3 +123,35 @@ def test_slideshow_rejects_auth_ambiguous_and_invalid_inputs(tmp_path: Path, mon
             files=[("images", ("bad.png", b"not-an-image", "image/png"))],
             headers=headers,
         ).status_code == 400
+        assert client.post(
+            "/slideshow",
+            files=[("images", ("bad.gif", b"\x89PNG\r\n\x1a\nimage", "image/gif"))],
+            headers=headers,
+        ).status_code == 400
+
+
+def test_slideshow_rejects_too_many_images(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(app_main.settings, "discord_prepare_token", "token")
+    monkeypatch.setattr(app_main.settings, "slideshow_dir", tmp_path / "slideshows")
+    monkeypatch.setattr(app_main.settings, "slideshow_max_files", 1)
+    with TestClient(app_main.app) as client:
+        response = client.post(
+            "/slideshow",
+            files=[_fake_image("1.png"), _fake_image("2.png")],
+            headers={"Authorization": "Bearer token"},
+        )
+    assert response.status_code == 400
+
+
+def test_slideshow_rejects_upload_over_limit_and_cleans_workdir(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(app_main.settings, "discord_prepare_token", "token")
+    monkeypatch.setattr(app_main.settings, "slideshow_dir", tmp_path / "slideshows")
+    monkeypatch.setattr(app_main.settings, "slideshow_max_input_bytes", 10)
+    with TestClient(app_main.app) as client:
+        response = client.post(
+            "/slideshow",
+            files=[_fake_image("1.png", b"0123456789")],
+            headers={"Authorization": "Bearer token"},
+        )
+    assert response.status_code == 413
+    assert not list((tmp_path / "slideshows").glob(".work-*"))

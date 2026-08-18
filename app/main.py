@@ -80,8 +80,10 @@ from app.progress import FfmpegProgressParser, YtdlpProgressParser
 from app.slideshow import (
     DEFAULT_SLIDE_SECONDS,
     SlideshowLimits,
+    SUPPORTED_IMAGE_EXTENSIONS,
     convert_slideshow,
     detect_upload_format,
+    natural_sort_key,
 )
 from app.validation import (
     validate_discord_user_id,
@@ -5238,6 +5240,12 @@ async def save_slideshow_upload(upload: UploadFile, destination: Path, limit: in
     if detected is None:
         destination.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="Unsupported or invalid PDF/image file")
+    suffix = Path(upload.filename or "").suffix.casefold()
+    if (detected == "pdf" and suffix != ".pdf") or (
+        detected != "pdf" and suffix not in SUPPORTED_IMAGE_EXTENSIONS
+    ):
+        destination.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Unsupported or invalid PDF/image file")
     return detected, total
 
 
@@ -8213,6 +8221,10 @@ async def create_slideshow(
         raise HTTPException(status_code=400, detail="Specify a PDF or images, not both")
     if len(image_uploads) > settings.slideshow_max_files:
         raise HTTPException(status_code=400, detail="Too many slideshow images")
+    image_uploads = sorted(
+        image_uploads,
+        key=lambda upload: natural_sort_key(Path(Path(upload.filename or "").name)),
+    )
     try:
         duration = float(slide_duration)
     except (TypeError, ValueError) as error:
