@@ -15,6 +15,18 @@ SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 DEFAULT_SLIDE_SECONDS = 10.0
 
 
+def detect_upload_format(header: bytes) -> str | None:
+    if header.startswith(b"%PDF-"):
+        return "pdf"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if header.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return ".webp"
+    return None
+
+
 @dataclass(frozen=True)
 class SlideshowLimits:
     max_slides: int = 500

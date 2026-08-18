@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 import srt
-from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi import File, Form, FastAPI, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -77,6 +77,12 @@ from app.json_files import read_json_object
 from app.hls_playlist import rewrite_playlist
 from app.media_stream import file_iterator
 from app.progress import FfmpegProgressParser, YtdlpProgressParser
+from app.slideshow import (
+    DEFAULT_SLIDE_SECONDS,
+    SlideshowLimits,
+    convert_slideshow,
+    detect_upload_format,
+)
 from app.validation import (
     validate_discord_user_id,
     validate_input,
@@ -1416,7 +1422,26 @@ def is_hls_started(key: str) -> bool:
     return any(hls_dir(key).glob("segment_*.ts"))
 
 
+def cleanup_expired_slideshows() -> None:
+    root = settings.slideshow_dir
+    root.mkdir(parents=True, exist_ok=True)
+    cutoff = time.time() - max(1, settings.slideshow_ttl_seconds)
+    for path in root.glob("*.mp4"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+        except FileNotFoundError:
+            pass
+    for path in root.glob(".work-*"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                shutil.rmtree(path, ignore_errors=True)
+        except FileNotFoundError:
+            pass
+
+
 def cleanup_expired_cache() -> None:
+    cleanup_expired_slideshows()
     settings.cache_hot_dir.mkdir(parents=True, exist_ok=True)
     if settings.cache_archive_dir is not None and not archive_storage_available():
         return
@@ -5135,12 +5160,12 @@ async def enqueue_prepare_job(
         return 202, job_response_body(job_id, _prepare_jobs[job_id], request)
 
 
-def mp4_response(request: Request, path: Path) -> Response:
+def mp4_response(request: Request, path: Path, max_age: int | None = None) -> Response:
     file_size = path.stat().st_size
     byte_range = parse_range(request.headers.get("range"), file_size)
     headers = {
         "Accept-Ranges": "bytes",
-        "Cache-Control": f"public, max-age={settings.cache_ttl_seconds}",
+        "Cache-Control": f"public, max-age={settings.cache_ttl_seconds if max_age is None else max_age}",
     }
     if byte_range is None:
         return FileResponse(path, media_type="video/mp4", headers=headers)
@@ -5158,6 +5183,123 @@ def mp4_response(request: Request, path: Path) -> Response:
         media_type="video/mp4",
         headers=headers,
     )
+
+
+SLIDESHOW_ID_RE = re.compile(r"^[A-Za-z0-9_-]{32}$")
+
+
+def slideshow_public_url(request: Request, slideshow_id: str) -> str:
+    base_url = settings.youtube_proxy_base_url or str(request.base_url).rstrip("/")
+    return f"{base_url}/slideshow/{slideshow_id}.mp4"
+
+
+def slideshow_job_response_body(job_id: str, job: dict, request: Request) -> dict:
+    body = {
+        "status": job["status"],
+        "job_id": job_id,
+        "slideshow_id": job["slideshow_id"],
+        "input_type": job["input_type"],
+        "mode": "mp4",
+        "slide_duration": job["slide_duration"],
+    }
+    if job["status"] in {"queued", "running"}:
+        body["status_url"] = prepare_status_url(request, job_id)
+        body["queue_counts"] = queue_counts_for_job(job_id)
+    if job.get("progress") is not None:
+        body["progress"] = job["progress"]
+    if job.get("eta_seconds") is not None:
+        body["eta_seconds"] = job["eta_seconds"]
+    if job.get("estimated_ready_at") is not None:
+        body["estimated_ready_at"] = job["estimated_ready_at"]
+    if job["status"] == "ready":
+        body["url"] = job["url"]
+    if job["status"] == "failed":
+        body["error"] = job.get("error", "Slideshow job failed")
+    return body
+
+
+async def save_slideshow_upload(upload: UploadFile, destination: Path, limit: int) -> tuple[str, int]:
+    total = 0
+    try:
+        with destination.open("wb") as output:
+            while chunk := await upload.read(1024 * 1024):
+                total += len(chunk)
+                if total > limit:
+                    raise HTTPException(status_code=413, detail="Slideshow upload is too large")
+                output.write(chunk)
+        with destination.open("rb") as source:
+            detected = detect_upload_format(source.read(16))
+    except HTTPException:
+        destination.unlink(missing_ok=True)
+        raise
+    except OSError as error:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail="Failed to store slideshow upload") from error
+    if detected is None:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Unsupported or invalid PDF/image file")
+    return detected, total
+
+
+async def run_slideshow_job(
+    job_id: str,
+    source: Path | list[Path],
+    work_dir: Path,
+    output_path: Path,
+    slide_duration: float,
+) -> None:
+    job = _prepare_jobs[job_id]
+    try:
+        async with _prepare_job_semaphore:
+            job.update(
+                {
+                    "status": "running",
+                    "attempt": 1,
+                    "max_attempts": 1,
+                    "progress": {"phase": "convert", "percent": 0},
+                }
+            )
+            converted = await convert_slideshow(
+                source,
+                work_dir / "output.mp4",
+                work_dir=work_dir,
+                slide_seconds=slide_duration,
+                limits=SlideshowLimits(
+                    max_slides=settings.slideshow_max_files,
+                    max_pdf_pages=settings.slideshow_max_pdf_pages,
+                    max_input_bytes=settings.slideshow_max_input_bytes,
+                ),
+            )
+            if not converted.is_file() or converted.stat().st_size <= 0:
+                raise RuntimeError("Slideshow conversion produced no MP4")
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            converted.replace(output_path)
+            now = int(time.time())
+            job.update(
+                {
+                    "status": "ready",
+                    "url": job["url"],
+                    "progress": {"phase": "complete", "percent": 100},
+                    "eta_seconds": 0,
+                    "estimated_ready_at": now,
+                    "completed_at": now,
+                }
+            )
+    except Exception as error:
+        output_path.unlink(missing_ok=True)
+        now = int(time.time())
+        job.update(
+            {
+                "status": "failed",
+                "error": prepare_error_text(error),
+                "progress": {"phase": "failed", "percent": 0},
+                "eta_seconds": 0,
+                "estimated_ready_at": now,
+                "completed_at": now,
+            }
+        )
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def hls_playlist_response(request: Request, key: str, playlist: Path) -> Response:
@@ -7884,6 +8026,112 @@ async def youtube(
     raise HTTPException(status_code=404, detail="MP4 is not prepared")
 
 
+@app.post("/slideshow")
+async def create_slideshow(
+    request: Request,
+    pdf: list[UploadFile] | None = File(default=None),
+    images: list[UploadFile] | None = File(default=None),
+    slide_duration: str = Form(str(DEFAULT_SLIDE_SECONDS)),
+) -> JSONResponse:
+    require_prepare_auth(request)
+    pdf_uploads = pdf or []
+    image_uploads = images or []
+    if len(pdf_uploads) > 1:
+        raise HTTPException(status_code=400, detail="Specify exactly one PDF")
+    pdf_upload = pdf_uploads[0] if pdf_uploads else None
+    if pdf_upload is None and not image_uploads:
+        raise HTTPException(status_code=400, detail="Provide one PDF or one or more images")
+    if pdf_upload is not None and image_uploads:
+        raise HTTPException(status_code=400, detail="Specify a PDF or images, not both")
+    if len(image_uploads) > settings.slideshow_max_files:
+        raise HTTPException(status_code=400, detail="Too many slideshow images")
+    try:
+        duration = float(slide_duration)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=400, detail="slide_duration must be a number") from error
+    if not 0 < duration <= settings.slideshow_max_duration_seconds:
+        raise HTTPException(status_code=400, detail="slide_duration is outside the allowed range")
+
+    slideshow_id = secrets.token_urlsafe(24)
+    job_id = uuid.uuid4().hex
+    work_dir = settings.slideshow_dir / f".work-{slideshow_id}"
+    output_path = settings.slideshow_dir / f"{slideshow_id}.mp4"
+    source: Path | list[Path]
+    total_bytes = 0
+    try:
+        await cleanup_expired_cache_async()
+        work_dir.mkdir(parents=True, exist_ok=False)
+        if pdf_upload is not None:
+            temporary = work_dir / "upload"
+            detected, total_bytes = await save_slideshow_upload(
+                pdf_upload, temporary, settings.slideshow_max_input_bytes
+            )
+            if detected != "pdf":
+                raise HTTPException(status_code=400, detail="The pdf field must contain a PDF file")
+            source = temporary.with_suffix(".pdf")
+            temporary.replace(source)
+            input_type = "pdf"
+        else:
+            source_paths: list[Path] = []
+            for index, upload in enumerate(image_uploads):
+                temporary = work_dir / f"upload-{index:06d}"
+                detected, size = await save_slideshow_upload(
+                    upload,
+                    temporary,
+                    settings.slideshow_max_input_bytes - total_bytes,
+                )
+                total_bytes += size
+                if detected == "pdf":
+                    raise HTTPException(status_code=400, detail="Images must not contain a PDF")
+                target = temporary.with_suffix(detected)
+                temporary.replace(target)
+                source_paths.append(target)
+            source = source_paths
+            input_type = "images"
+
+        now = int(time.time())
+        job = {
+            "kind": "slideshow",
+            "status": "queued",
+            "slideshow_id": slideshow_id,
+            "input_type": input_type,
+            "slide_duration": duration,
+            "url": slideshow_public_url(request, slideshow_id),
+            "created_at": now,
+            "eta_seconds": None,
+            "estimated_ready_at": None,
+            "progress": {"phase": "queued", "percent": 0},
+        }
+        async with _prepare_lock:
+            prune_prepare_jobs()
+            _prepare_jobs[job_id] = job
+        asyncio.create_task(run_slideshow_job(job_id, source, work_dir, output_path, duration))
+        return JSONResponse(slideshow_job_response_body(job_id, job, request), status_code=202)
+    except Exception:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        raise
+    finally:
+        for upload in [*pdf_uploads, *image_uploads]:
+            if upload is not None:
+                await upload.close()
+
+
+@app.get("/slideshow/{slideshow_id}.mp4")
+async def slideshow_mp4(slideshow_id: str, request: Request) -> Response:
+    if not SLIDESHOW_ID_RE.fullmatch(slideshow_id):
+        raise HTTPException(status_code=404, detail="Slideshow not found")
+    root = settings.slideshow_dir.resolve()
+    path = (root / f"{slideshow_id}.mp4").resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail="Slideshow not found") from error
+    if not is_usable_file(path) or time.time() - path.stat().st_mtime >= settings.slideshow_ttl_seconds:
+        await cleanup_expired_cache_async()
+        raise HTTPException(status_code=404, detail="Slideshow not found")
+    return mp4_response(request, path, max_age=settings.slideshow_ttl_seconds)
+
+
 @app.get("/youtube-hls/{video_id}")
 @app.get("/youtube-hls/{video_id}/{lang}")
 @app.get("/youtube-hls/{video_id}/{lang}/{source_lang}")
@@ -8037,6 +8285,8 @@ async def prepare_job_status(job_id: str, request: Request) -> JSONResponse:
     job = _prepare_jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Prepare job not found")
+    if job.get("kind") == "slideshow":
+        return JSONResponse(slideshow_job_response_body(job_id, job, request))
     return JSONResponse(job_response_body(job_id, job, request))
 
 
