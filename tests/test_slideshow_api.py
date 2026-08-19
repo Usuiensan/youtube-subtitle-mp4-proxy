@@ -19,6 +19,7 @@ def test_index_contains_slideshow_form() -> None:
     assert 'id="slideshowPdf"' in response.text
     assert 'id="slideshowImages"' in response.text
     assert 'id="slideshowDuration"' in response.text
+    assert 'min="1" max="300" step="1" value="3"' in response.text
     assert "VRChatに貼るURL" in response.text
 
 
@@ -69,6 +70,7 @@ def test_slideshow_upload_job_public_range_and_ttl(tmp_path: Path, monkeypatch) 
             headers={"Authorization": "Bearer token"},
         )
         assert second.status_code == 202
+        assert second.json()["slide_duration"] == 3.0
         assert second.json()["slideshow_id"] != body["slideshow_id"]
 
         stale = app_main.settings.slideshow_dir / f"{body['slideshow_id']}.mp4"
@@ -114,6 +116,7 @@ def test_slideshow_rejects_auth_ambiguous_and_invalid_inputs(tmp_path: Path, mon
         headers = {"Authorization": "Bearer token"}
         assert client.post("/slideshow", headers=headers).status_code == 400
         assert client.post("/slideshow", files=[_fake_image()], data={"slide_duration": "0"}, headers=headers).status_code == 400
+        assert client.post("/slideshow", files=[_fake_image()], data={"slide_duration": "1.5"}, headers=headers).status_code == 400
         assert client.post(
             "/slideshow",
             files=[("pdf", ("source.pdf", b"%PDF-1.7", "application/pdf")), _fake_image()],

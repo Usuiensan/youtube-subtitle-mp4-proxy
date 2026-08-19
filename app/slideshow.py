@@ -12,7 +12,7 @@ from pathlib import Path
 from app.command_runner import run_command
 
 SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
-DEFAULT_SLIDE_SECONDS = 10.0
+DEFAULT_SLIDE_SECONDS = 3.0
 SLIDESHOW_WIDTH = 1920
 SLIDESHOW_HEIGHT = 1080
 

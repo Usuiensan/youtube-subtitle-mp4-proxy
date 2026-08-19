@@ -6318,7 +6318,7 @@ async def index() -> str:
       </div>
       <label>
         1枚あたりの表示時間（秒）
-        <input id="slideshowDuration" name="slide_duration" type="number" min="0.1" max="300" step="0.1" value="10" required>
+        <input id="slideshowDuration" name="slide_duration" type="number" min="1" max="300" step="1" value="3" required>
       </label>
       <div class="actions">
         <button type="submit" id="slideshowButton">MP4を作成</button>
@@ -8249,7 +8249,7 @@ async def create_slideshow(
         duration = float(slide_duration)
     except (TypeError, ValueError) as error:
         raise HTTPException(status_code=400, detail="slide_duration must be a number") from error
-    if not 0 < duration <= settings.slideshow_max_duration_seconds:
+    if not duration.is_integer() or not 0 < duration <= settings.slideshow_max_duration_seconds:
         raise HTTPException(status_code=400, detail="slide_duration is outside the allowed range")
     try:
         validate_total_duration(
