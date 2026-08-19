@@ -4585,6 +4585,10 @@ def prepare_key(
     return f"{mode}:{cache_key(video_id, lang)}{option_key}"
 
 
+def public_base_url(request: Request) -> str:
+    return (settings.youtube_proxy_base_url or str(request.base_url)).rstrip("/")
+
+
 def prepared_media_url(
     request: Request,
     video_id: str,
@@ -4593,7 +4597,7 @@ def prepared_media_url(
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
 ) -> str:
-    base_url = settings.youtube_proxy_base_url or str(request.base_url).rstrip("/")
+    base_url = public_base_url(request)
     suffix = ""
     if subtitle_source_lang:
         suffix = f"/{urllib.parse.quote(subtitle_source_lang, safe='')}"
@@ -4605,13 +4609,11 @@ def prepared_media_url(
 
 
 def prepare_status_url(request: Request, job_id: str) -> str:
-    base_url = str(request.base_url).rstrip("/")
-    return f"{base_url}/prepare/jobs/{job_id}"
+    return f"{public_base_url(request)}/prepare/jobs/{job_id}"
 
 
 def prepare_batch_status_url(request: Request, batch_id: str) -> str:
-    base_url = str(request.base_url).rstrip("/")
-    return f"{base_url}/prepare/batches/{batch_id}"
+    return f"{public_base_url(request)}/prepare/batches/{batch_id}"
 
 
 def prepare_ready_path(
@@ -5199,8 +5201,7 @@ SLIDESHOW_ID_RE = re.compile(r"^[A-Za-z0-9_-]{32}$")
 
 
 def slideshow_public_url(request: Request, slideshow_id: str) -> str:
-    base_url = settings.youtube_proxy_base_url or str(request.base_url).rstrip("/")
-    return f"{base_url}/slideshow/{slideshow_id}.mp4"
+    return f"{public_base_url(request)}/slideshow/{slideshow_id}.mp4"
 
 
 def slideshow_job_response_body(job_id: str, job: dict, request: Request) -> dict:
