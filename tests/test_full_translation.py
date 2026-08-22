@@ -43,27 +43,19 @@ def test_validate_translations_requires_contiguous_ranges_and_non_empty_text() -
             validate_translations(target, result)
 
 
-def test_validate_translations_rejects_numbers_shifted_into_another_id() -> None:
+def test_validate_translations_does_not_reject_number_changes() -> None:
     target = [subtitle(1, "Cash registers"), subtitle(2, "appeared"), subtitle(3, "in 1879")]
-    with pytest.raises(TranslationError, match="numeric tokens mismatch"):
-        validate_translations(
-            target,
-            {
-                "subtitles": [
-                    {"from_id": 1, "to_id": 1, "text": "レジは1879年に登場しました"},
-                    {"from_id": 2, "to_id": 2, "text": "登場しました"},
-                    {"from_id": 3, "to_id": 3, "text": "登場しました"},
-                ]
-            },
-        )
-
-
-def test_validate_translations_allows_ordinal_number_words_as_digits() -> None:
     result = validate_translations(
-        [subtitle(29, "As in as little as one fourth as much electricity.")],
-        {"subtitles": [{"from_id": 29, "to_id": 29, "text": "わずか4分の1の電力で済むのです。"}]},
+        target,
+        {
+            "subtitles": [
+                {"from_id": 1, "to_id": 1, "text": "レジは1879年に登場しました"},
+                {"from_id": 2, "to_id": 2, "text": "登場しました"},
+                {"from_id": 3, "to_id": 3, "text": "登場しました"},
+            ]
+        },
     )
-    assert result[0]["text"] == "わずか4分の1の電力で済むのです。"
+    assert result[0]["text"] == "レジは1879年に登場しました"
 
 
 def test_validate_translations_does_not_reject_translation_content_heuristics() -> None:

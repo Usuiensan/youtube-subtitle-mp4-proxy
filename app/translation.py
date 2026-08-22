@@ -14,17 +14,6 @@ from typing import Any, Callable
 import srt
 
 
-_ASCII_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*")
-_NUMBER_WORDS = {
-    "one": 1, "ones": 1, "first": 1, "two": 2, "twos": 2, "second": 2,
-    "three": 3, "third": 3, "four": 4, "fourth": 4, "five": 5, "fifth": 5,
-    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
-    "fives": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "tens": 10,
-    "twenty": 20, "twenties": 20, "fifty": 50, "hundred": 100, "hundreds": 100,
-    "thousand": 1000, "thousands": 1000, "grand": 1000,
-}
-
-
 @dataclass
 class TranslationSettings:
     enabled: bool
@@ -190,33 +179,6 @@ def validate_translations(
             )
         if not text:
             raise TranslationError(f"empty translation: {from_id}-{to_id}")
-        source_phrase_window = " ".join(
-            subtitle.content.lower()
-            for subtitle in target[max(0, from_position - 2) : min(len(target), to_position + 3)]
-        )
-        source_number_window = "".join(
-            digit
-            for subtitle in target[max(0, from_position - 1) : min(len(target), to_position + 2)]
-            for token in _ASCII_NUMBER_RE.findall(subtitle.content)
-            for digit in token
-            if digit.isdigit()
-        )
-        for token in _ASCII_NUMBER_RE.findall(text):
-            token_digits = [digit for digit in token if digit.isdigit()]
-            if token.isdigit() and (
-                any(
-                    value == int(token) and re.search(rf"\b{re.escape(word)}\b", source_phrase_window)
-                    for word, value in _NUMBER_WORDS.items()
-                )
-                or (int(token) == 1 and re.search(r"\ba\s+week\b", source_phrase_window))
-                or (token == "4000" and re.search(r"\b4\s+grand\b", source_phrase_window))
-            ):
-                continue
-            if not source_number_window or "".join(token_digits) not in source_number_window:
-                raise TranslationError(
-                    f"translation numeric tokens mismatch: {from_id}-{to_id} "
-                    f"expected={source_number_window!r} actual={token!r}"
-                )
         output.append({"from_id": from_id, "to_id": to_id, "text": text})
         next_position = to_position + 1
 
