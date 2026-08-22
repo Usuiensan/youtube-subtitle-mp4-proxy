@@ -16,7 +16,9 @@ import srt
 
 _ASCII_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*")
 _NUMBER_WORDS = {
-    "one": 1, "ones": 1, "two": 2, "twos": 2, "three": 3, "four": 4, "five": 5,
+    "one": 1, "ones": 1, "first": 1, "two": 2, "twos": 2, "second": 2,
+    "three": 3, "third": 3, "four": 4, "fourth": 4, "five": 5, "fifth": 5,
+    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
     "fives": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "tens": 10,
     "twenty": 20, "twenties": 20, "fifty": 50, "hundred": 100, "hundreds": 100,
     "thousand": 1000, "thousands": 1000, "grand": 1000,

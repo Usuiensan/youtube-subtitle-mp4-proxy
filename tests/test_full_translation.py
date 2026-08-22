@@ -58,6 +58,14 @@ def test_validate_translations_rejects_numbers_shifted_into_another_id() -> None
         )
 
 
+def test_validate_translations_allows_ordinal_number_words_as_digits() -> None:
+    result = validate_translations(
+        [subtitle(29, "As in as little as one fourth as much electricity.")],
+        {"subtitles": [{"from_id": 29, "to_id": 29, "text": "わずか4分の1の電力で済むのです。"}]},
+    )
+    assert result[0]["text"] == "わずか4分の1の電力で済むのです。"
+
+
 def test_validate_translations_does_not_reject_translation_content_heuristics() -> None:
     result = validate_translations(
         [subtitle(4, "Route 66 is 24 ft wide: https://example.test")],
