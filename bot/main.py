@@ -991,7 +991,7 @@ def default_source_language(candidates: list[dict[str, Any]]) -> str | None:
 
 
 def subtitle_choice_prompt(title: str, view: "SubtitleChoiceView") -> str:
-    return f"日本語字幕が見つかりませんでした。\n{title}\n翻訳元字幕と翻訳先を選択してください。"
+    return f"{view.lang} の字幕が見つかりませんでした。\n{title}\n翻訳元字幕と翻訳先を選択してください。"
 
 
 class SubtitleChoiceView(discord.ui.View):
@@ -1151,6 +1151,107 @@ class SubtitleChoiceView(discord.ui.View):
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(content="準備をキャンセルしました。", view=self)
+        self.stop()
+
+
+class IntakePrepareView(discord.ui.View):
+
+    def __init__(self, *, requester_id: int, video_id: str) -> None:
+        super().__init__(timeout=300)
+        self.requester_id = requester_id
+        self.video_id = video_id
+        self.mode: str | None = None
+        self.lang: str | None = None
+        self.mode_select = discord.ui.Select(
+            placeholder="配信方法を選択",
+            options=[
+                discord.SelectOption(label="字幕付きMP4", value="mp4"),
+                discord.SelectOption(label="字幕なしMP4（再エンコードなし）", value="direct"),
+            ],
+        )
+        self.lang_select = discord.ui.Select(
+            placeholder="字幕言語を選択",
+            options=[
+                discord.SelectOption(label="日本語", value="ja"),
+                discord.SelectOption(label="英語", value="en"),
+                discord.SelectOption(label="韓国語", value="ko"),
+                discord.SelectOption(label="中国語（簡体字）", value="zh-Hans"),
+                discord.SelectOption(label="中国語（繁体字）", value="zh-Hant"),
+                discord.SelectOption(label="フランス語", value="fr"),
+                discord.SelectOption(label="ドイツ語", value="de"),
+            ],
+        )
+        self.mode_select.callback = self.on_mode_selected
+        self.lang_select.callback = self.on_lang_selected
+        self.add_item(self.mode_select)
+        self.add_item(self.lang_select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.requester_id:
+            return True
+        await interaction.response.send_message("この選択はURLを投稿した人だけが操作できます。", ephemeral=True, silent=True)
+        return False
+
+    async def on_mode_selected(self, interaction: discord.Interaction) -> None:
+        self.mode = self.mode_select.values[0]
+        SubtitleChoiceView._mark_selected(self.mode_select, self.mode)
+        await interaction.response.edit_message(view=self)
+
+    async def on_lang_selected(self, interaction: discord.Interaction) -> None:
+        self.lang = self.lang_select.values[0]
+        SubtitleChoiceView._mark_selected(self.lang_select, self.lang)
+        await interaction.response.edit_message(view=self)
+
+    @discord.ui.button(label="次へ", style=discord.ButtonStyle.primary)
+    async def continue_prepare(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        if not self.mode:
+            await interaction.response.send_message("配信方法を選択してください。", ephemeral=False, silent=True)
+            return
+        if self.mode != "direct" and not self.lang:
+            await interaction.response.send_message("字幕言語を選択してください。", ephemeral=False, silent=True)
+            return
+        await interaction.response.defer(ephemeral=False)
+        progress_message = interaction.message
+        lang = self.lang or "direct"
+        if self.mode != "direct":
+            try:
+                options_body = await fetch_subtitle_options(self.video_id, lang, "mp4")
+            except PrepareApiError as error:
+                await progress_message.edit(content=subtitle_options_error_message(error), view=None)
+                return
+            if options_body.get("requires_choice"):
+                candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
+                if not candidates:
+                    await progress_message.edit(content=str(options_body.get("error") or "翻訳可能な手動字幕がありません。"), view=None)
+                    return
+                view = SubtitleChoiceView(
+                    requester_id=self.requester_id,
+                    video_id=self.video_id,
+                    lang=lang,
+                    mode="mp4",
+                    options_body=options_body,
+                )
+                await progress_message.edit(
+                    content=subtitle_choice_prompt(str(options_body.get("title") or self.video_id), view),
+                    view=view,
+                )
+                return
+            if options_body.get("error"):
+                await progress_message.edit(content=str(options_body["error"]), view=None)
+                return
+        try:
+            _status, body = await prepare_video(self.video_id, lang, self.mode, self.requester_id)
+        except PrepareApiError as error:
+            await progress_message.edit(content=f"準備APIエラー ({error.status_code}): {error.detail}", view=None)
+            return
+        await progress_message.edit(content=status_message(body, self.requester_id), view=None)
+        status_url = body.get("status_url")
+        if body.get("status") in {"queued", "running"} and isinstance(status_url, str):
+            asyncio.create_task(notify_when_done(None, status_url, progress_message=progress_message, channel=interaction.channel, user=interaction.user))
+
+    @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(content="準備をキャンセルしました。", view=None)
         self.stop()
 
 
@@ -1620,53 +1721,11 @@ class YoutubeProxyBot(discord.Client):
         if not settings.discord_prepare_token:
             await message.channel.send("DISCORD_PREPARE_TOKEN が未設定です。", silent=True)
             return
-        try:
-            options_body = await fetch_subtitle_options(video_id, "ja", "mp4")
-        except PrepareApiError as error:
-            await message.channel.send(subtitle_options_error_message(error), silent=True)
-            return
-        title = options_body.get("title") or video_id
-        if options_body.get("error"):
-            await message.channel.send(str(options_body["error"]), silent=True)
-            return
-        candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
-        if not candidates:
-            await message.channel.send(
-                f"字幕準備候補を確認しました。\n{title}\n字幕候補が見つかりませんでした。",
-                mention_author=False,
-                silent=True,
-            )
-            return
-        source_lang = (
-            default_source_language(candidates)
-            if options_body.get("requires_choice")
-            else None
+        await message.channel.send(
+            "配信方法を選択してください。字幕付きの場合は字幕言語も選択します。",
+            view=IntakePrepareView(requester_id=message.author.id, video_id=video_id),
+            silent=True,
         )
-        progress_message = await message.channel.send("準備を受け付けました。", silent=True)
-        try:
-            _status, body = await prepare_video(
-                video_id,
-                "ja",
-                "mp4",
-                message.author.id,
-                subtitle_source_lang=source_lang,
-            )
-        except PrepareApiError as error:
-            await progress_message.edit(content=f"準備APIエラー ({error.status_code}): {error.detail}")
-            return
-        content = status_message(body, message.author.id)
-        await progress_message.edit(content=content)
-        status_url = body.get("status_url")
-        if body.get("status") in {"queued", "running"} and isinstance(status_url, str):
-            asyncio.create_task(
-                notify_when_done(
-                    None,
-                    status_url,
-                    progress_message=progress_message,
-                    channel=message.channel,
-                    user=message.author,
-                )
-            )
 client = YoutubeProxyBot()
 scan_lock = asyncio.Lock()
 
