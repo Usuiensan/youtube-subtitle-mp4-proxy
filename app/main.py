@@ -112,6 +112,7 @@ from app.youtube_inputs import (
 )
 from app.ytdlp_args import (
     args_without_cookies,
+    direct_mp4_format_selector,
     download_format_selector,
     fallback_format_selector,
 )
@@ -675,6 +676,10 @@ def yt_dlp_fallback_format_selector(original_language: str | None = None) -> str
     return fallback_format_selector(original_language)
 
 
+def yt_dlp_direct_mp4_format_selector() -> str:
+    return direct_mp4_format_selector(settings.max_height)
+
+
 def yt_dlp_args_without_cookies(args: list[str]) -> list[str]:
     return args_without_cookies(args)
 
@@ -810,10 +815,11 @@ def prepared_cache_entry_body(request: Request, key: str, base_dir: Path, storag
     source_lang, translation_engine = prepared_variant_from_meta(subtitle_meta)
     outputs = []
     if is_usable_file(base_dir / "output.mp4"):
+        output_mode = "direct" if merged.get("mode") == "direct" else "mp4"
         outputs.append(
             {
-                "mode": "mp4",
-                "url": prepared_media_url(request, video_id, lang, "mp4", source_lang, translation_engine),
+                "mode": output_mode,
+                "url": prepared_media_url(request, video_id, lang, output_mode, source_lang, translation_engine),
             }
         )
     playlist = base_dir / "hls" / "index.m3u8"
@@ -4312,6 +4318,44 @@ async def create_mp4(
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+async def create_direct_mp4(video_id: str, job_id: str | None = None) -> Path:
+    key = cache_key(video_id, "direct")
+    prepared = prepared_output_path(key)
+    if prepared:
+        return prepared
+
+    info = await fetch_video_info(video_id)
+    assert_duration_allowed(info)
+    work_dir = settings.cache_hot_dir / f".work-{key}-{uuid.uuid4().hex}"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    output_path(key).parent.mkdir(parents=True, exist_ok=True)
+    try:
+        args = yt_dlp_base_args() + [
+            "--no-playlist",
+            "-f",
+            yt_dlp_direct_mp4_format_selector(),
+            "--merge-output-format",
+            "mp4",
+            "--paths",
+            str(work_dir),
+            "-o",
+            "%(id)s.%(ext)s",
+            f"https://www.youtube.com/watch?v={video_id}",
+        ]
+        if job_id:
+            await run_yt_dlp_with_progress(args, job_id=job_id, cwd=work_dir)
+        else:
+            await run_command(args, cwd=work_dir)
+        downloaded = find_downloaded_video(work_dir)
+        if downloaded.suffix.lower() != ".mp4":
+            raise HTTPException(status_code=502, detail="yt-dlp did not produce an MP4")
+        move_replace(downloaded, output_path(key))
+        write_meta(key, video_id, "direct", info, "direct")
+        return output_path(key)
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
 async def create_hls_job(
     video_id: str,
     lang: str,
@@ -4582,7 +4626,19 @@ def prepare_key(
     option_key = ""
     if subtitle_source_lang or translation_engine:
         option_key = f":src={subtitle_source_lang or ''}:engine={translation_engine or ''}"
-    return f"{mode}:{cache_key(video_id, lang)}{option_key}"
+    return f"{mode}:{prepare_cache_key(video_id, lang, mode)}{option_key}"
+
+
+def prepare_cache_key(
+    video_id: str,
+    lang: str,
+    mode: str,
+    subtitle_source_lang: str | None = None,
+    translation_engine: str | None = None,
+) -> str:
+    if mode == "direct":
+        return cache_key(video_id, "direct")
+    return cache_key(video_id, lang, subtitle_source_lang, translation_engine)
 
 
 def public_base_url(request: Request) -> str:
@@ -4598,6 +4654,8 @@ def prepared_media_url(
     translation_engine: str | None = None,
 ) -> str:
     base_url = public_base_url(request)
+    if mode == "direct":
+        return f"{base_url}/youtube-direct/{video_id}"
     suffix = ""
     if subtitle_source_lang:
         suffix = f"/{urllib.parse.quote(subtitle_source_lang, safe='')}"
@@ -4623,7 +4681,7 @@ def prepare_ready_path(
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
 ) -> Path | None:
-    key = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
+    key = prepare_cache_key(video_id, lang, mode, subtitle_source_lang, translation_engine)
     if mode == "hls":
         return hot_hls_playlist_path(key)
     return hot_output_path(key)
@@ -4915,7 +4973,7 @@ async def run_prepare_job_once(
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
 ) -> None:
-    cache_id = cache_key(video_id, lang, subtitle_source_lang, translation_engine)
+    cache_id = prepare_cache_key(video_id, lang, mode, subtitle_source_lang, translation_engine)
     if archived_ready_entry_exists(cache_id, mode):
         update_job_eta(job_id, estimate_archive_prepare_seconds(cache_id))
     else:
@@ -4947,7 +5005,9 @@ async def run_prepare_job_once(
             )
             update_job_eta(job_id, eta)
     update_job_eta(job_id, None)
-    if mode == "hls":
+    if mode == "direct":
+        await create_direct_mp4(video_id, job_id=job_id)
+    elif mode == "hls":
         await get_or_create_hls(
             video_id,
             lang,
@@ -5082,7 +5142,7 @@ async def enqueue_prepare_job(
     ready = prepare_ready_path(video_id, lang, mode, subtitle_source_lang, normalized_engine)
     url = prepared_media_url(request, video_id, lang, mode, subtitle_source_lang, normalized_engine)
     if ready:
-        cache_id = cache_key(video_id, lang, subtitle_source_lang, normalized_engine)
+        cache_id = prepare_cache_key(video_id, lang, mode, subtitle_source_lang, normalized_engine)
         job = {
             "status": "ready",
             "video_id": video_id,
@@ -5108,7 +5168,7 @@ async def enqueue_prepare_job(
                 return 202, job_response_body(existing_job_id, job, request)
 
         job_id = uuid.uuid4().hex
-        cache_id = cache_key(video_id, lang, subtitle_source_lang, normalized_engine)
+        cache_id = prepare_cache_key(video_id, lang, mode, subtitle_source_lang, normalized_engine)
         cached_info = get_cached_video_info(cache_id)
         if archived_ready_entry_exists(cache_id, mode):
             eta_seconds = estimate_archive_prepare_seconds(cache_id)
@@ -6277,6 +6337,7 @@ async def index() -> str:
           <select id="mode" name="mode">
             <option value="youtube">MP4</option>
             <option value="youtube-hls">HLS playlist</option>
+            <option value="youtube-direct">字幕なしMP4（再エンコードなし）</option>
           </select>
         </label>
       </div>
@@ -6737,13 +6798,16 @@ async def index() -> str:
         message.textContent = "Invalid language";
         return;
       }}
-      const url = `${{location.origin}}/${{mode.value}}/${{videoId}}/${{language}}`;
+      const url = mode.value === "youtube-direct"
+        ? `${{location.origin}}/youtube-direct/${{videoId}}`
+        : `${{location.origin}}/${{mode.value}}/${{videoId}}/${{language}}`;
       result.textContent = url;
       message.textContent = "";
     }}
 
     function prepareMode() {{
-      return mode.value === "youtube-hls" ? "hls" : "mp4";
+      if (mode.value === "youtube-hls") return "hls";
+      return mode.value === "youtube-direct" ? "direct" : "mp4";
     }}
 
     function renderTranslationOptions() {{
@@ -7487,7 +7551,7 @@ async def index() -> str:
           return;
         }}
         let path = `/prepare/youtube/${{videoId}}/${{language}}`;
-        if (language === "ja" && prepareOptions.hidden) {{
+        if (selectedMode !== "direct" && language === "ja" && prepareOptions.hidden) {{
           const needsChoice = await loadSubtitleChoices(videoId, language, selectedMode);
           if (needsChoice) return;
         }}
@@ -8222,6 +8286,17 @@ async def youtube(
     raise HTTPException(status_code=404, detail="MP4 is not prepared")
 
 
+@app.get("/youtube-direct/{video_id}")
+async def youtube_direct(video_id: str, request: Request) -> Response:
+    validate_input(video_id, "direct")
+    key = cache_key(video_id, "direct")
+    path = hot_output_path(key) or archived_output_path(key)
+    if path is not None:
+        return mp4_response(request, path)
+    await cleanup_expired_cache_async()
+    raise HTTPException(status_code=404, detail="Direct MP4 is not prepared")
+
+
 @app.post("/slideshow")
 async def create_slideshow(
     request: Request,
@@ -8414,8 +8489,8 @@ async def prepare_youtube(
     elif path_translation_engine is not None:
         raise HTTPException(status_code=400, detail="translation engine requires a source language")
     discord_user_id = validate_discord_user_id(discord_user_id)
-    if mode not in {"mp4", "hls"}:
-        raise HTTPException(status_code=400, detail="mode must be mp4 or hls")
+    if mode not in {"mp4", "hls", "direct"}:
+        raise HTTPException(status_code=400, detail="mode must be mp4, hls, or direct")
     if archive_immediately and mode != "mp4":
         raise HTTPException(status_code=400, detail="archiveImmediately is supported only for mp4")
     await cleanup_expired_cache_async()

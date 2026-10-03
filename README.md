@@ -9,6 +9,7 @@ GET /youtube/:videoId/:targetLang/:sourceLang
 GET /youtube-hls/:videoId
 GET /youtube-hls/:videoId/:lang
 GET /youtube-hls/:videoId/:targetLang/:sourceLang
+GET /youtube-direct/:videoId
 POST /prepare/youtube-batch/:lang?source=:playlistOrChannelUrl
 GET /yamaplayer/playlist?list=:playlistIdOrUrl
 GET /yamaplayer/channel?channel=:channelIdOrHandleOrUrl
@@ -257,6 +258,8 @@ bot はスラッシュコマンド `/prepare` を提供します。
 /webui-key days:3
 /reset-eta
 ```
+
+`mode=direct` で準備すると、字幕処理と再エンコードを行わず、VRChat向けの H.264/AAC MP4 を取得して `/youtube-direct/:videoId` から配信します。
 
 運用者は `/scan` で現在の Discord サーバーにある全テキストチャンネルの YouTube 動画リンクを再走査できます。引数なしは全期間、`/scan days:30` は直近30日だけを対象にします。`days` 指定時は表示も「直近30日」となり、「累計」とは表示しません。初回から `days` 指定を使った場合は、サーバー全期間の件数ではない旨を注意表示します。
 

@@ -28,6 +28,13 @@ def fallback_format_selector(original_language: str | None = None) -> str:
     return "bestvideo*+bestaudio/best"
 
 
+def direct_mp4_format_selector(max_height: int) -> str:
+    return (
+        f"bv*[height<={max_height}][vcodec^=avc1][ext=mp4]+ba[acodec^=mp4a]/"
+        f"b[height<={max_height}][vcodec^=avc1][acodec^=mp4a][ext=mp4]"
+    )
+
+
 def args_without_cookies(args: list[str]) -> list[str]:
     stripped: list[str] = []
     skip_next = False
