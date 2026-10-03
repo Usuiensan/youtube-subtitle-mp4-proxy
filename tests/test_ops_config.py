@@ -11,6 +11,11 @@ from app import main as app_main
 from app import ops_config
 
 
+@pytest.fixture(autouse=True)
+def use_temporary_audit_file(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(ops_config, "config_audit_file", lambda: tmp_path / "config-audit.jsonl")
+
+
 def test_ops_config_requires_separate_token(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(app_main.settings, "translation_config_api_token", "config-token")
     monkeypatch.setattr(ops_config, "config_file", lambda: tmp_path / "config.env")
