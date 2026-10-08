@@ -433,7 +433,9 @@ def load_system_metrics_history() -> None:
         return
     cutoff = int(time.time()) - settings.system_metrics_history_seconds
     try:
-        for line in settings.system_metrics_file.read_text(encoding="utf-8").splitlines()[-_system_metrics.maxlen:]:
+        with settings.system_metrics_file.open(encoding="utf-8") as file:
+            lines = deque(file, maxlen=_system_metrics.maxlen)
+        for line in lines:
             try:
                 sample = json.loads(line)
             except json.JSONDecodeError:
