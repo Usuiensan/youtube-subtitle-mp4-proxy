@@ -351,6 +351,19 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertIn("この動画は利用できません", response.json()["detail"])
 
+    def test_subtitle_api_lists_sources_even_when_default_output_is_prepared(self) -> None:
+        info = {"id": "dQw4w9WgXcQ", "title": "video", "duration": 60, "subtitles": {"es": [{}]}}
+        with patch.object(app_main.settings, "discord_prepare_token", "token"), patch.object(
+            app_main, "prepare_ready_path", return_value=Path("prepared.mp4")
+        ), patch.object(app_main, "fetch_video_info", new=AsyncMock(return_value=info)):
+            response = TestClient(app_main.app).get(
+                "/prepare/youtube/dQw4w9WgXcQ/ja/subtitles?mode=mp4",
+                headers={"Authorization": "Bearer token"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["language"] for item in response.json()["candidates"]], ["es"])
+
     def test_discord_subtitle_options_404_message_is_user_facing(self) -> None:
         error = bot_main.PrepareApiError(404, "この動画は利用できません。")
         message = bot_main.subtitle_options_error_message(error)

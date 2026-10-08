@@ -8519,15 +8519,6 @@ async def prepare_youtube_subtitles(
     validate_input(video_id, lang)
     if mode not in {"mp4", "hls"}:
         raise HTTPException(status_code=400, detail="mode must be mp4 or hls")
-    if prepare_ready_path(video_id, lang, mode):
-        return JSONResponse(
-            {
-                "video_id": video_id,
-                "requested_language": lang,
-                "requires_choice": False,
-                "prepared": True,
-            }
-        )
     info = await fetch_video_info(video_id)
     assert_duration_allowed(info)
     body = subtitle_choice_body(info, lang)

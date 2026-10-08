@@ -51,10 +51,87 @@ def test_intake_channel_requires_explicit_prepare_choices(monkeypatch) -> None:
     asyncio.run(main.YoutubeProxyBot.__new__(main.YoutubeProxyBot).on_message(message))
 
     sent = message.channel.messages[0]
-    assert sent.content == "配信方法を選択してください。字幕付きの場合は字幕言語も選択します。"
+    assert sent.content == "配信方法を選択してください。字幕付きの場合は元言語と翻訳先も選択します。"
     assert isinstance(sent.view, main.IntakePrepareView)
-    assert sent.view.mode is None
-    assert sent.view.lang is None
+    assert sent.view.mode == "direct"
+    assert sent.view.mode_select.options[1].default is True
+
+
+def test_direct_message_url_opens_prepare_choices(monkeypatch) -> None:
+    class Author:
+        bot = False
+        id = 42
+
+        def __init__(self) -> None:
+            self.messages = []
+
+        async def send(self, content: str, **kwargs):
+            self.messages.append((content, kwargs.get("view")))
+
+    class Channel:
+        def __init__(self) -> None:
+            self.messages = []
+
+        async def send(self, content: str, **kwargs):
+            self.messages.append((content, kwargs.get("view")))
+
+    class Message:
+        guild = None
+        content = "https://youtu.be/dQw4w9WgXcQ"
+        author = Author()
+
+        def __init__(self) -> None:
+            self.channel = Channel()
+
+    monkeypatch.setattr(main.settings, "discord_prepare_token", "token")
+    message = Message()
+
+    asyncio.run(main.YoutubeProxyBot.__new__(main.YoutubeProxyBot).on_message(message))
+
+    content, view = message.author.messages[0]
+    assert content == "配信方法を選択してください。字幕付きの場合は元言語と翻訳先も選択します。"
+    assert isinstance(view, main.IntakePrepareView)
+    assert view.mode == "direct"
+
+
+def test_subtitle_intake_uses_available_source_languages(monkeypatch) -> None:
+    view = main.IntakePrepareView(requester_id=42, video_id="dQw4w9WgXcQ")
+    view.mode = "mp4"
+
+    class ProgressMessage:
+        def __init__(self) -> None:
+            self.content = ""
+            self.view = None
+
+        async def edit(self, *, content: str, view=None) -> None:
+            self.content = content
+            self.view = view
+
+    class Response:
+        async def defer(self, **_kwargs) -> None:
+            pass
+
+    class Interaction:
+        user = type("User", (), {"id": 42})()
+        response = Response()
+        message = ProgressMessage()
+
+    async def fetch_options(_video_id: str, _lang: str, _mode: str):
+        return {
+            "title": "video",
+            "candidates": [
+                {"language": "es", "name": "スペイン語"},
+                {"language": "en", "name": "英語"},
+            ],
+        }
+
+    monkeypatch.setattr(main, "fetch_subtitle_options", fetch_options)
+    interaction = Interaction()
+
+    asyncio.run(view.continue_prepare.callback(interaction))
+
+    assert isinstance(interaction.message.view, main.SubtitleChoiceView)
+    assert [option.value for option in interaction.message.view.source_select.options] == ["es", "en"]
 
 
 def test_scan_days_result_does_not_call_count_cumulative() -> None:

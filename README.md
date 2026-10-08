@@ -263,14 +263,16 @@ bot はスラッシュコマンド `/prepare` を提供します。
 
 運用者は `/scan` で現在の Discord サーバーにある全テキストチャンネルの YouTube 動画リンクを再走査できます。引数なしは全期間、`/scan days:30` は直近30日だけを対象にします。`days` 指定時は表示も「直近30日」となり、「累計」とは表示しません。初回から `days` 指定を使った場合は、サーバー全期間の件数ではない旨を注意表示します。
 
-Discord の DM でも、変換系のテキストコマンドを実行できます。
+Discord の DM へ YouTube 動画 URL を直接送ると、配信方法の選択 UI を表示します。既定は「字幕なしMP4（再エンコードなし）」です。字幕付きを選ぶと、利用可能な字幕の元言語と翻訳先を選択できます。
+
+Discord の DM では、変換系のテキストコマンドも実行できます。
 
 ```text
 prepare https://www.youtube.com/watch?v=dQw4w9WgXcQ lang=ja mode=mp4
 reburn https://www.youtube.com/watch?v=dQw4w9WgXcQ lang=ja mode=mp4
 ```
 
-`DISCORD_URL_INTAKE_CHANNEL_ID` に特定チャンネルの ID を設定すると、そのチャンネルへ YouTube 動画 URL を貼るだけで、`lang=ja`・MP4 として準備を開始します。日本語字幕がない場合も、`TRANSLATION_SOURCE_LANGS` の優先順で翻訳元字幕を自動選択します。
+`DISCORD_URL_INTAKE_CHANNEL_ID` に特定チャンネルの ID を設定すると、そのチャンネルへ YouTube 動画 URL を貼るだけで、DM と同じ選択 UI を表示します。
 
 `url` にプレイリスト URL やチャンネル URL を渡した場合は、YouTube Data API v3 で一覧を展開して一括準備します。`max_items` の既定値は `DISCORD_PREPARE_BATCH_MAX_ITEMS`、未設定時は 5000 件です。
 `url` に動画URLまたは動画IDを複数入れた場合も、手動動画リストとして一括準備できます。区切りは改行、空白、カンマに対応します。Web UI の動画準備欄も同じ形式を受け付け、複数件の場合は `/prepare/youtube-batch` に `sourceType=videos` で送信します。
