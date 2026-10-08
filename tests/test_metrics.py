@@ -1,6 +1,5 @@
 import json
-from io import StringIO
-
+from collections import deque
 from app import main
 from app.metrics import MetricsManager
 
@@ -27,22 +26,16 @@ def test_metrics_manager_ignores_invalid_file_and_can_reset(tmp_path) -> None:
     assert metrics.get_avg("encode_speed_ratio", 7) == 7
 
 
-def test_system_metrics_history_is_streamed_instead_of_read_whole(monkeypatch) -> None:
-    class MetricsFile:
-        def exists(self) -> bool:
-            return True
-
-        def open(self, **_kwargs):
-            return StringIO('{"timestamp":100,"cpu":1}\n{"timestamp":200,"cpu":2}\n')
-
-        def read_text(self, **_kwargs):
-            raise AssertionError("large metrics history must not be read into memory at once")
-
-    monkeypatch.setattr(main.settings, "system_metrics_file", MetricsFile())
-    monkeypatch.setattr(main.settings, "system_metrics_history_seconds", 150)
-    monkeypatch.setattr(main.time, "time", lambda: 250)
-    main._system_metrics.clear()
+def test_system_metrics_history_reads_only_the_needed_tail(monkeypatch, tmp_path) -> None:
+    path = tmp_path / "system-metrics.jsonl"
+    path.write_text("".join(json.dumps({"timestamp": value}) + "\n" for value in range(2_000)), encoding="utf-8")
+    monkeypatch.setattr(main.settings, "system_metrics_file", path)
+    monkeypatch.setattr(main.settings, "system_metrics_history_seconds", 10_000)
+    monkeypatch.setattr(main.time, "time", lambda: 2_000)
+    monkeypatch.setattr(main, "_system_metrics", deque(maxlen=10))
 
     main.load_system_metrics_history()
 
-    assert [sample["timestamp"] for sample in main._system_metrics] == [100, 200]
+    assert len(main._system_metrics) == main._system_metrics.maxlen
+    assert main._system_metrics[0]["timestamp"] == 2_000 - main._system_metrics.maxlen
+    assert main._system_metrics[-1]["timestamp"] == 1_999

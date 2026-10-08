@@ -433,8 +433,19 @@ def load_system_metrics_history() -> None:
         return
     cutoff = int(time.time()) - settings.system_metrics_history_seconds
     try:
-        with settings.system_metrics_file.open(encoding="utf-8") as file:
-            lines = deque(file, maxlen=_system_metrics.maxlen)
+        with settings.system_metrics_file.open("rb") as file:
+            file.seek(0, os.SEEK_END)
+            position = file.tell()
+            chunks: list[bytes] = []
+            newline_count = 0
+            while position and newline_count <= _system_metrics.maxlen:
+                size = min(64 * 1024, position)
+                position -= size
+                file.seek(position)
+                chunk = file.read(size)
+                chunks.append(chunk)
+                newline_count += chunk.count(b"\n")
+        lines = b"".join(reversed(chunks)).decode("utf-8").splitlines()[-_system_metrics.maxlen:]
         for line in lines:
             try:
                 sample = json.loads(line)
