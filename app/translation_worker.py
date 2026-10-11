@@ -151,7 +151,13 @@ Candidates:
         ]
         normalized_groups.append(normalized)
     group_json = json.dumps(normalized_groups, ensure_ascii=False, separators=(",", ":"))
-    concise = "Make the translation shorter while preserving all important information because the previous result exceeded the available display time." if payload.get("concise") else ""
+    concise = ""
+    if payload.get("concise"):
+        limits = json.dumps(payload.get("concise_max_characters") or {}, ensure_ascii=False, separators=(",", ":"))
+        concise = (
+            "Make the translation shorter while preserving all important information because the previous result exceeded the available display time. "
+            f"The Japanese translation for each group must not exceed this character limit: {limits}."
+        )
     return f"""You are a professional subtitle translator.
 Translate every meaning group from {source_language} to {target_language}.
 Return exactly one natural, complete Japanese subtitle translation for each group_id, in input order.

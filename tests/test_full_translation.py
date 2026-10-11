@@ -141,7 +141,7 @@ def test_overlong_single_id_is_retranslated_concisely(tmp_path) -> None:
 
     async def worker(payload: dict) -> dict:
         calls.append(payload)
-        text = "お気に入りです。" if payload.get("concise") else "私はこの道具をとても気に入っています。"
+        text = "お気に入りです。" if payload.get("concise_max_characters") == {"g001": 11} else "私はこの道具をとても気に入っています。"
         return {"groups": [{"group_id": "g001", "translation": text}]}
 
     asyncio.run(translate_srt_with_local_worker(
@@ -149,6 +149,8 @@ def test_overlong_single_id_is_retranslated_concisely(tmp_path) -> None:
         source_language="en", target_language="ja", settings=config(), run_worker=worker,
     ))
     assert [call.get("concise") for call in calls] == [False, True]
+    assert calls[1]["concise_max_characters"] == {"g001": 11}
+    assert 'must not exceed this character limit: {"g001":11}' in translation_worker.build_full_translation_prompt(calls[1])
     assert [item.content for item in srt.parse(output.read_text(encoding="utf-8"))] == ["お気に入りです。"]
 
 

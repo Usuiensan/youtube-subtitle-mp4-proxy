@@ -463,6 +463,14 @@ async def translate_srt_with_local_worker(
             "translation_chunk_to_id": chunk[-1].subtitles[-1].index,
             "concise": concise,
         }
+        if concise:
+            payload["concise_max_characters"] = {
+                group.group_id: max(
+                    1,
+                    math.floor((group.subtitles[-1].end - group.subtitles[0].start).total_seconds() * 14.0),
+                )
+                for group in chunk
+            }
         payload.pop("subtitles", None)
         usage_totals["requests"] += 1
         result = await run_worker(payload)
