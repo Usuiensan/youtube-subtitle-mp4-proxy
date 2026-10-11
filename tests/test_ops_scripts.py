@@ -127,5 +127,5 @@ def test_production_update_pauses_storage_watcher_while_services_are_replaced() 
 
     stop_watcher = script.index('systemctl stop "$STORAGE_WATCH_SERVICE"')
     stop_proxy = script.index('systemctl stop "$DISCORD_SERVICE" "$PROXY_SERVICE"')
-    start_watcher = script.index('systemctl start "$STORAGE_WATCH_SERVICE"')
+    start_watcher = script.rindex('systemctl start "$STORAGE_WATCH_SERVICE"')
     assert stop_watcher < stop_proxy < start_watcher
