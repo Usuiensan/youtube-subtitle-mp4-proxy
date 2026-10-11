@@ -80,3 +80,5 @@ $state = .\scripts\production-config.ps1 -Get | ConvertFrom-Json
 - 再起動後は `youtube-proxy-maintenance-boot.service` がAPI、Discord Bot、HDD、NVIDIA、NVENCを確認する。失敗しても再起動を繰り返さず、CPUフォールバックを維持してDiscordへ通知する。
 
 保守状態は `/var/lib/youtube-mp4-proxy/maintenance.json` の一箇所だけに保存する。正常時の定期通知は行わない。
+
+翻訳字幕の動画左上には、字幕言語、日本語・英語表記、実際に利用した翻訳モデルを10秒間表示する。字幕メタデータが取得できない場合は、不完全な代替ラベルを表示しない。

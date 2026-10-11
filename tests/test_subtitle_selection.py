@@ -254,6 +254,25 @@ def test_translation_overlay_uses_actual_engine_after_fallback() -> None:
     ) == "[翻訳]Gemini 3.5 Flash"
 
 
+def test_translation_overlay_omits_incomplete_fallback_label() -> None:
+    assert main.get_subtitle_overlay_label({}) == ""
+    assert main.subtitle_overlay_drawtext_filters({}, None, "Noto Sans JP") == []
+
+
+def test_translation_overlay_contains_languages_and_model() -> None:
+    label = main.get_subtitle_overlay_label({
+        "source_language": "es",
+        "requested_language": "ja",
+        "translated": True,
+        "translation_model": "gemini-3.1-flash-lite",
+    })
+    assert label.splitlines() == [
+        "[字幕]スペイン語 → 日本語",
+        "[subs]Spanish → Japanese",
+        "[翻訳]gemini-3.1-flash-lite",
+    ]
+
+
 def test_wrap_text_to_width_prefers_punctuation_then_word_boundary() -> None:
     assert main.wrap_text_to_width("一二三、四五六、七八九", 7) == ["一二三、", "四五六、七八九"]
     assert main.wrap_text_to_width("one two three four", 4) == ["one two", "three", "four"]

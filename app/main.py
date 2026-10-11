@@ -2612,7 +2612,7 @@ def get_subtitle_overlay_label(subtitle_meta: dict) -> str:
         line1 = f"[字幕]{req_ja}"
         line2 = f"[subs]{req_en}"
         return f"{line1}\n{line2}"
-    return "[subs]"
+    return ""
 
 
 def escape_drawtext_value(value: str) -> str:
