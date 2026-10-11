@@ -58,9 +58,14 @@ install -o root -g root -m 755 "$ROOT_DIR/scripts/youtube-proxy-update" /usr/loc
 install -o root -g root -m 755 "$ROOT_DIR/scripts/youtube-proxy-audit" /usr/local/sbin/youtube-proxy-audit
 install -o root -g root -m 755 "$ROOT_DIR/scripts/youtube-proxy-config" /usr/local/sbin/youtube-proxy-config
 install -o root -g root -m 755 "$ROOT_DIR/scripts/youtube-proxy-operator" /usr/local/sbin/youtube-proxy-operator
+install -o root -g root -m 755 "$ROOT_DIR/scripts/update-ytdlp" /usr/local/sbin/youtube-proxy-ytdlp-update
+install -o root -g root -m 755 "$ROOT_DIR/scripts/youtube-proxy-maintenance" /usr/local/sbin/youtube-proxy-maintenance
 install -o root -g root -m 644 "$ROOT_DIR/deploy/youtube-mp4-proxy.service" /etc/systemd/system/youtube-mp4-proxy.service
 install -o root -g root -m 644 "$ROOT_DIR/deploy/youtube-mp4-discord-bot.service" /etc/systemd/system/youtube-mp4-discord-bot.service
 install -o root -g root -m 644 "$ROOT_DIR/deploy/youtube-proxy-storage-watch.service" /etc/systemd/system/youtube-proxy-storage-watch.service
+for unit in youtube-proxy-ytdlp-update.service youtube-proxy-ytdlp-update.timer youtube-proxy-maintenance-check.service youtube-proxy-maintenance-check.timer youtube-proxy-maintenance-reboot.service youtube-proxy-maintenance-reboot.timer youtube-proxy-maintenance-boot.service; do
+    install -o root -g root -m 644 "$ROOT_DIR/deploy/$unit" "/etc/systemd/system/$unit"
+done
 
 install -o root -g root -m 440 "$ROOT_DIR/deploy/youtube-proxy-sudoers" /etc/sudoers.d/youtube-proxy-deploy.new
 visudo -cf /etc/sudoers.d/youtube-proxy-deploy.new >/dev/null
@@ -68,7 +73,8 @@ install -o root -g root -m 440 /etc/sudoers.d/youtube-proxy-deploy.new /etc/sudo
 rm -f /etc/sudoers.d/youtube-proxy-deploy.new
 
 systemctl daemon-reload
-systemctl enable --now youtube-proxy-storage-watch.service
+systemctl enable --now youtube-proxy-storage-watch.service youtube-proxy-ytdlp-update.timer youtube-proxy-maintenance-check.timer youtube-proxy-maintenance-reboot.timer
+systemctl enable youtube-proxy-maintenance-boot.service
 systemctl restart youtube-mp4-proxy youtube-mp4-discord-bot
 sleep 3
 systemctl is-active --quiet youtube-mp4-proxy

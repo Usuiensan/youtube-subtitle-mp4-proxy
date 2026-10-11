@@ -71,3 +71,12 @@ $state = .\scripts\production-config.ps1 -Get | ConvertFrom-Json
 ```
 
 `Detach` は退避完了かつ実行中ジョブなしの場合だけproxyを停止してアンマウントします。成功表示の後にHDDを抜いてください。常駐watcherが5秒ごとに再接続を確認し、HDDが戻るとマウントしてproxyを自動再開します。Discordでは同じ操作を `/server-storage` と `/translation-model` から実行できます。いずれも設定したユーザーIDだけが実行でき、返答はephemeralです。
+
+## 自動保守
+
+- `youtube-proxy-ytdlp-update.timer` は毎日04:10 JST以降に新版を確認する。変換中は延期し、更新後にYouTubeメタデータ、字幕一覧、API、Discord Gatewayを検証する。失敗時は更新前の `yt-dlp`、`curl-cffi`、`yt-dlp-ejs` へ戻す。
+- `youtube-proxy-maintenance-check.timer` は毎日03:45 JST以降に `reboot-required`、NVIDIAのロード済み版とライブラリ版、`nvidia-smi`、1フレームNVENCを確認する。異常と復旧だけをDiscord運用者へDMする。
+- `youtube-proxy-maintenance-reboot.timer` は毎日04:30 JST以降、再起動が必要な場合だけ動く。実行中ジョブ、`ffmpeg`、`yt-dlp`、apt/dpkg、対話ログインがある場合と、`/etc/youtube-mp4-proxy/no-auto-reboot` がある場合は翌日へ延期する。
+- 再起動後は `youtube-proxy-maintenance-boot.service` がAPI、Discord Bot、HDD、NVIDIA、NVENCを確認する。失敗しても再起動を繰り返さず、CPUフォールバックを維持してDiscordへ通知する。
+
+保守状態は `/var/lib/youtube-mp4-proxy/maintenance.json` の一箇所だけに保存する。正常時の定期通知は行わない。

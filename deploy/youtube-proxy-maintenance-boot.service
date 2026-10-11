@@ -1,0 +1,11 @@
+[Unit]
+Description=Verify YouTube Proxy after boot
+After=network-online.target youtube-mp4-proxy.service youtube-mp4-discord-bot.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/youtube-proxy-maintenance boot-check
+
+[Install]
+WantedBy=multi-user.target

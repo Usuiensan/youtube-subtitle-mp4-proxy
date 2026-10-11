@@ -82,3 +82,41 @@ def test_provisioning_removes_legacy_app_env_only_after_backup() -> None:
     text = (ROOT / "scripts" / "provision-production-ops.sh").read_text(encoding="utf-8")
     assert 'install -o root -g root -m 600 "$APP_DIR/.env" "$BACKUP/app.env"' in text
     assert 'rm -f -- "$APP_DIR/.env"' in text
+
+
+def test_ytdlp_updater_is_safe_and_uses_real_service_names() -> None:
+    script = (ROOT / "scripts" / "update-ytdlp").read_text(encoding="utf-8")
+    timer = (ROOT / "deploy" / "youtube-proxy-ytdlp-update.timer").read_text(encoding="utf-8")
+
+    assert "youtube-mp4-discord-bot" in script
+    assert "youtube-mp4-proxy-discord" not in script
+    assert "active_jobs" in script and "pgrep" in script
+    assert "--simulate" in script and "--list-subs" in script
+    assert "yt-dlp==$old_ytdlp" in script
+    assert "youtube-proxy-maintenance notify" in script
+    assert "OnCalendar=*-*-* 04:10:00 Asia/Tokyo" in timer
+
+
+def test_maintenance_reboot_has_guards_and_nvenc_checks() -> None:
+    script = (ROOT / "scripts" / "youtube-proxy-maintenance").read_text(encoding="utf-8")
+    provision = (ROOT / "scripts" / "provision-production-ops.sh").read_text(encoding="utf-8")
+
+    for required in (
+        "/var/run/reboot-required",
+        "/etc/youtube-mp4-proxy/no-auto-reboot",
+        "active_jobs",
+        "who",
+        "pgrep",
+        "nvidia-smi",
+        "h264_nvenc",
+        "systemctl reboot",
+        "DISCORD_OPERATOR_USER_ID",
+    ):
+        assert required in script
+    for unit in (
+        "youtube-proxy-ytdlp-update.timer",
+        "youtube-proxy-maintenance-check.timer",
+        "youtube-proxy-maintenance-reboot.timer",
+        "youtube-proxy-maintenance-boot.service",
+    ):
+        assert unit in provision

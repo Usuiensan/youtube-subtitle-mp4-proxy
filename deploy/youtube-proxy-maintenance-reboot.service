@@ -1,0 +1,7 @@
+[Unit]
+Description=Safely reboot YouTube Proxy host when required
+After=network-online.target youtube-mp4-proxy.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/youtube-proxy-maintenance reboot

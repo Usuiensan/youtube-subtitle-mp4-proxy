@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily YouTube Proxy maintenance check
+
+[Timer]
+OnCalendar=*-*-* 03:45:00 Asia/Tokyo
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

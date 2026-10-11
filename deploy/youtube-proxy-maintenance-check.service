@@ -1,0 +1,7 @@
+[Unit]
+Description=Check YouTube Proxy host maintenance state
+After=network-online.target youtube-mp4-proxy.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/youtube-proxy-maintenance check

@@ -2,9 +2,9 @@
 Description=Periodic yt-dlp update for YouTube Proxy
 
 [Timer]
-OnCalendar=weekly
+OnCalendar=*-*-* 04:10:00 Asia/Tokyo
 Persistent=true
-RandomizedDelaySec=1h
+RandomizedDelaySec=30m
 
 [Install]
 WantedBy=timers.target

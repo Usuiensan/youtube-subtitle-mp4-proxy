@@ -1,24 +1,56 @@
 #!/bin/bash
 set -Eeuo pipefail
 
-APP_DIR="/opt/youtube-mp4-proxy"
+APP_DIR=/opt/youtube-mp4-proxy
 PYTHON="$APP_DIR/.venv/bin/python"
-LOCK="/run/lock/youtube-proxy-ytdlp-update.lock"
+LOCK=/run/lock/youtube-proxy-ytdlp-update.lock
+SECRETS=/etc/youtube-mp4-proxy/secrets.env
+PROXY=youtube-mp4-proxy
+BOT=youtube-mp4-discord-bot
+SMOKE_URL=https://www.youtube.com/watch?v=Otm3HChL4w8
 
 exec 9>"$LOCK"
 flock -n 9 || exit 0
 
-old_version=$("$PYTHON" -m yt_dlp --version)
-"$PYTHON" -m pip install --disable-pip-version-check --upgrade "yt-dlp[default,curl-cffi]"
+token=$(awk -F= '$1 == "DISCORD_PREPARE_TOKEN" { sub(/^[^=]*=/, ""); print; exit }' "$SECRETS")
+active_jobs=$(curl --fail --silent --show-error --config - http://127.0.0.1:8000/prepare/storage-status <<EOF | "$PYTHON" -c 'import json,sys; print(len(json.load(sys.stdin).get("active_jobs") or []))'
+header = "Authorization: Bearer $token"
+EOF
+)
+[[ "$active_jobs" == 0 ]] || { echo 'yt-dlp update deferred: active jobs'; exit 0; }
+pgrep -x ffmpeg >/dev/null && { echo 'yt-dlp update deferred: ffmpeg is running'; exit 0; }
+pgrep -f '/yt-dlp|python.*yt_dlp' >/dev/null && { echo 'yt-dlp update deferred: yt-dlp is running'; exit 0; }
+
+report=$(mktemp)
+trap 'rm -f "$report"' EXIT
+"$PYTHON" -m pip install --disable-pip-version-check --dry-run --report "$report" --upgrade 'yt-dlp[default,curl-cffi]' >/dev/null
+"$PYTHON" - "$report" <<'PY' || { echo 'yt-dlp unchanged'; exit 0; }
+import json, sys
+raise SystemExit(0 if json.load(open(sys.argv[1], encoding="utf-8")).get("install") else 1)
+PY
+
+read -r old_ytdlp old_curl old_ejs < <("$PYTHON" - <<'PY'
+from importlib.metadata import version
+print(version("yt-dlp"), version("curl-cffi"), version("yt-dlp-ejs"))
+PY
+)
+rollback() {
+    "$PYTHON" -m pip install --disable-pip-version-check \
+        "yt-dlp==$old_ytdlp" "curl-cffi==$old_curl" "yt-dlp-ejs==$old_ejs" >/dev/null || true
+    systemctl restart "$PROXY" "$BOT" || true
+    /usr/local/sbin/youtube-proxy-maintenance notify \
+        'yt-dlpの自動更新に失敗し、更新前の版へ戻しました。journalctl -u youtube-proxy-ytdlp-updateで確認してください。' || true
+}
+trap 'status=$?; if (( status != 0 )); then rollback; fi; rm -f "$report"; exit $status' EXIT
+
+systemctl stop "$BOT" "$PROXY"
+"$PYTHON" -m pip install --disable-pip-version-check --upgrade 'yt-dlp[default,curl-cffi]'
+systemctl start "$PROXY" "$BOT"
+sleep 3
+systemctl is-active --quiet "$PROXY"
+systemctl is-active --quiet "$BOT"
+curl --fail --silent --show-error http://127.0.0.1:8000/healthz >/dev/null
+"$PYTHON" -m yt_dlp --ignore-config --simulate --no-playlist --print '%(id)s %(duration)s' "$SMOKE_URL" >/dev/null
+"$PYTHON" -m yt_dlp --ignore-config --skip-download --list-subs "$SMOKE_URL" >/dev/null
 new_version=$("$PYTHON" -m yt_dlp --version)
-
-if [[ "$old_version" == "$new_version" ]]; then
-    echo "yt-dlp unchanged: $new_version"
-    exit 0
-fi
-
-echo "yt-dlp updated: $old_version -> $new_version"
-systemctl restart youtube-mp4-proxy
-systemctl restart youtube-mp4-proxy-discord
-systemctl is-active --quiet youtube-mp4-proxy
-systemctl is-active --quiet youtube-mp4-proxy-discord
+echo "yt-dlp updated: $old_ytdlp -> $new_version"

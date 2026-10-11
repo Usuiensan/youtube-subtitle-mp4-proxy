@@ -1,0 +1,120 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+CONFIG=/etc/youtube-mp4-proxy/config.env
+SECRETS=/etc/youtube-mp4-proxy/secrets.env
+STATE=/var/lib/youtube-mp4-proxy/maintenance.json
+INHIBIT=/etc/youtube-mp4-proxy/no-auto-reboot
+PYTHON=/opt/youtube-mp4-proxy/.venv/bin/python
+PROXY=youtube-mp4-proxy
+BOT=youtube-mp4-discord-bot
+
+config_value() {
+    awk -F= -v key="$1" '$1 == key { sub(/^[^=]*=/, ""); gsub(/^"|"$/, ""); print; exit }' "$2"
+}
+
+notify() {
+    local message=$1 token user channel payload
+    token=$(config_value DISCORD_BOT_TOKEN "$SECRETS")
+    user=$(config_value DISCORD_OPERATOR_USER_ID "$CONFIG")
+    [[ -n "$token" && "$user" =~ ^[0-9]+$ ]] || { logger -t youtube-proxy-maintenance "$message"; return; }
+    payload=$("$PYTHON" -c 'import json,sys; print(json.dumps({"recipient_id":sys.argv[1]}))' "$user")
+    channel=$(printf '%s' "$payload" | curl --fail --silent --show-error \
+        --config <(printf 'header = "Authorization: Bot %s"\n' "$token") \
+        -H 'Content-Type: application/json' -d @- https://discord.com/api/v10/users/@me/channels \
+        | "$PYTHON" -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+    "$PYTHON" -c 'import json,sys; print(json.dumps({"content":sys.argv[1]}))' "$message" \
+        | curl --fail --silent --show-error --config <(printf 'header = "Authorization: Bot %s"\n' "$token") \
+            -H 'Content-Type: application/json' -d @- "https://discord.com/api/v10/channels/$channel/messages" >/dev/null
+}
+
+set_state() {
+    local status=$1 message=$2 notice_key=${3:-$1} changed
+    install -d -o root -g root -m 755 "$(dirname "$STATE")"
+    changed=$("$PYTHON" - "$STATE" "$status" "$message" "$notice_key" <<'PY'
+import json, os, sys, time
+path, status, message, notice_key = sys.argv[1:]
+try:
+    state = json.load(open(path, encoding="utf-8"))
+except Exception:
+    state = {}
+notified = set(state.get("notified") or [])
+if status == "healthy":
+    changed = state.get("status") not in {None, "healthy"}
+    notified = set()
+else:
+    changed = notice_key not in notified
+    notified.add(notice_key)
+state.update({"status": status, "message": message, "notified": sorted(notified), "updated_at": int(time.time())})
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as file:
+    json.dump(state, file, ensure_ascii=False, indent=2)
+os.replace(tmp, path)
+print("1" if changed else "0")
+PY
+)
+    [[ "$changed" == 0 ]] || notify "$message"
+}
+
+nvenc_ok() {
+    nvidia-smi >/dev/null 2>&1 && ffmpeg -hide_banner -loglevel error \
+        -f lavfi -i color=size=1280x720:rate=1 -frames:v 1 \
+        -c:v h264_nvenc -preset p2 -f null - >/dev/null 2>&1
+}
+
+active_jobs() {
+    local token
+    token=$(config_value DISCORD_PREPARE_TOKEN "$SECRETS")
+    curl --fail --silent --show-error --config - http://127.0.0.1:8000/prepare/storage-status <<EOF \
+        | "$PYTHON" -c 'import json,sys; print(len(json.load(sys.stdin).get("active_jobs") or []))'
+header = "Authorization: Bearer $token"
+EOF
+}
+
+check() {
+    local reasons=() loaded disk
+    [[ ! -f /var/run/reboot-required ]] || reasons+=(reboot-required)
+    loaded=$(sed -n 's/^NVRM version:.*Kernel Module  *\([^ ]*\).*/\1/p' /proc/driver/nvidia/version 2>/dev/null || true)
+    disk=$(modinfo -F version nvidia 2>/dev/null || true)
+    [[ -n "$loaded" && "$loaded" == "$disk" ]] || reasons+=("nvidia-version:$loaded/$disk")
+    nvenc_ok || reasons+=(nvenc-unavailable)
+    if ((${#reasons[@]})); then
+        set_state reboot-required "本番ホストの再起動が必要です: ${reasons[*]}。04:30 JSTの保守枠で安全条件を確認します。" "reboot-required:${reasons[*]}"
+    else
+        set_state healthy '本番ホストの保守状態が正常へ戻りました。NVIDIA/NVENCも利用可能です。'
+    fi
+}
+
+reboot_if_safe() {
+    check
+    "$PYTHON" - "$STATE" <<'PY' || exit 0
+import json, sys
+raise SystemExit(0 if json.load(open(sys.argv[1], encoding="utf-8")).get("status") == "reboot-required" else 1)
+PY
+    [[ ! -e "$INHIBIT" ]] || { set_state deferred "自動再起動を延期しました: $INHIBIT が存在します。"; exit 0; }
+    [[ -z "$(who)" ]] || { set_state deferred '自動再起動を延期しました: 対話ログイン利用者がいます。'; exit 0; }
+    [[ "$(active_jobs)" == 0 ]] || { set_state deferred '自動再起動を延期しました: 動画ジョブが実行中です。'; exit 0; }
+    ! pgrep -x ffmpeg >/dev/null || { set_state deferred '自動再起動を延期しました: ffmpegが実行中です。'; exit 0; }
+    ! pgrep -f '/yt-dlp|python.*yt_dlp' >/dev/null || { set_state deferred '自動再起動を延期しました: yt-dlpが実行中です。'; exit 0; }
+    ! pgrep -x dpkg >/dev/null && ! pgrep -x apt >/dev/null && ! pgrep -x apt-get >/dev/null \
+        || { set_state deferred '自動再起動を延期しました: apt/dpkgが実行中です。'; exit 0; }
+    set_state rebooting '本番ホストを保守再起動します。実行中ジョブと利用者がいないことを確認済みです。'
+    systemctl reboot
+}
+
+boot_check() {
+    sleep 10
+    systemctl is-active --quiet "$PROXY"
+    systemctl is-active --quiet "$BOT"
+    curl --fail --silent --show-error http://127.0.0.1:8000/healthz >/dev/null
+    nvenc_ok
+    set_state healthy '本番ホストの保守再起動が完了しました。API、Discord Bot、NVIDIA/NVENCは正常です。'
+}
+
+case "${1:-check}" in
+    check) check ;;
+    reboot) reboot_if_safe ;;
+    boot-check) boot_check ;;
+    notify) [[ $# == 2 ]] || exit 2; notify "$2" ;;
+    *) exit 2 ;;
+esac
