@@ -239,7 +239,7 @@ def _split_boundary_penalty(text: str, position: int) -> float:
     if before in _BAD_SPLIT_AFTER or after in _BAD_SPLIT_BEFORE:
         return 50.0
     if before in _GOOD_SPLIT_AFTER:
-        return -8.0
+        return -2.0
     if before.isspace() or after.isspace():
         return -4.0
     if before.isascii() and after.isascii() and before.isalnum() and after.isalnum():

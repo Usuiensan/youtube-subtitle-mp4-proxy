@@ -134,6 +134,18 @@ def test_difficult_split_asks_llm_to_choose_without_retranslation(tmp_path, monk
     assert [item.content for item in srt.parse(output.read_text(encoding="utf-8"))] == ["自然な字幕", "です。"]
 
 
+def test_split_does_not_overprefer_early_punctuation() -> None:
+    subtitles = (
+        cue(63, 166.020, 168.242, "Bien. Mientras espero que eso gotee,"),
+        cue(64, 168.724, 169.554, "voy a hacer"),
+        cue(65, 170.043, 173.071, "un pequeño prellenado del filtro."),
+    )
+    result = split_group_translation("さて、滴り落ちるのを待つ間に、フィルターを少し予備充填しておきます。", subtitles)
+
+    assert not result.difficult
+    assert "".join(result.segments) == "さて、滴り落ちるのを待つ間に、フィルターを少し予備充填しておきます。"
+
+
 def test_overlong_single_id_is_retranslated_concisely(tmp_path) -> None:
     source_path, output = tmp_path / "source.srt", tmp_path / "translated.srt"
     source_path.write_text(srt.compose([cue(1, 0, 0.8, "I like it a lot.")]), encoding="utf-8")
