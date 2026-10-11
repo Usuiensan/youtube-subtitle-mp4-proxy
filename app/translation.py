@@ -337,7 +337,8 @@ def _group_translation_issue(group: MeaningGroup, translation: str) -> str | Non
     if text.lower().strip("。.!！ ") in _FILLER_TRANSLATIONS:
         return "filler translation"
     source = " ".join(normalize_subtitle_text(item.content, compact=True) for item in group.subtitles)
-    if _translation_anchors(source) != _translation_anchors(text):
+    source_anchors = _translation_anchors(source)
+    if source_anchors and source_anchors != _translation_anchors(text):
         return "number, model, or URL anchors changed"
     return None
 

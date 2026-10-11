@@ -63,6 +63,15 @@ def test_group_validation_flags_only_bad_group() -> None:
     assert invalid == ["g002"]
 
 
+def test_group_validation_allows_a_spelled_number_to_become_digits() -> None:
+    groups = build_meaning_groups([cue(1, 0, 2, "Seis líquidos mantienen vivo a tu auto.")])
+    accepted, invalid = validate_group_translations(groups, {
+        "groups": [{"group_id": "g001", "translation": "6種類のフルードが車を動かしています。"}]
+    })
+    assert accepted == {"g001": "6種類のフルードが車を動かしています。"}
+    assert invalid == []
+
+
 def test_prompt_uses_groups_and_flattens_escape_markers() -> None:
     prompt = translation_worker.build_full_translation_prompt({"source_language": "en", "target_language": "ja", "groups": [
         {"group_id": "g001", "source": [{"id": 1, "text": r"first\nsecond\hthird"}]}
