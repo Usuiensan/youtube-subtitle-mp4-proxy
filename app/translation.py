@@ -559,6 +559,17 @@ async def translate_srt_with_local_worker(
             translation = translated_groups[group.group_id]
             candidates = split_group_translation_candidates(translation, group.subtitles)
             split = candidates[0]
+            if split.difficult and len(candidates) < 2:
+                concise_result = await run_group_request(
+                    [group], limited_context(recent_pairs), [], 1, 1, concise=True
+                )
+                concise, invalid = validate_group_translations([group], concise_result)
+                if invalid:
+                    raise TranslationError(f"invalid concise translation: {group.group_id}")
+                translation = concise[group.group_id]
+                translated_groups[group.group_id] = translation
+                candidates = split_group_translation_candidates(translation, group.subtitles)
+                split = candidates[0]
             if split.difficult:
                 if len(candidates) < 2:
                     raise TranslationError(f"translation cannot be split naturally: {group.group_id}")

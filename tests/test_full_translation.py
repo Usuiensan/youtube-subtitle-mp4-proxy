@@ -134,6 +134,24 @@ def test_difficult_split_asks_llm_to_choose_without_retranslation(tmp_path, monk
     assert [item.content for item in srt.parse(output.read_text(encoding="utf-8"))] == ["自然な字幕", "です。"]
 
 
+def test_overlong_single_id_is_retranslated_concisely(tmp_path) -> None:
+    source_path, output = tmp_path / "source.srt", tmp_path / "translated.srt"
+    source_path.write_text(srt.compose([cue(1, 0, 0.8, "I like it a lot.")]), encoding="utf-8")
+    calls: list[dict] = []
+
+    async def worker(payload: dict) -> dict:
+        calls.append(payload)
+        text = "お気に入りです。" if payload.get("concise") else "私はこの道具をとても気に入っています。"
+        return {"groups": [{"group_id": "g001", "translation": text}]}
+
+    asyncio.run(translate_srt_with_local_worker(
+        subtitle_path=source_path, output_path=output, video_title="title", channel_name="channel",
+        source_language="en", target_language="ja", settings=config(), run_worker=worker,
+    ))
+    assert [call.get("concise") for call in calls] == [False, True]
+    assert [item.content for item in srt.parse(output.read_text(encoding="utf-8"))] == ["お気に入りです。"]
+
+
 def test_openai_request_uses_group_array_schema(monkeypatch) -> None:
     requests: list[dict] = []
 
