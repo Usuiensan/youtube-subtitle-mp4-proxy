@@ -19,6 +19,19 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         response = SimpleNamespace(status=404, reason="Not Found")
         return bot_main.discord.NotFound(response, {"code": 10008, "message": "Unknown Message"})
 
+    def test_reburn_all_forwards_recent_resplit_options(self) -> None:
+        enqueue = AsyncMock(return_value=(202, {"status": "queued", "batch_id": "a" * 32}))
+        with patch.object(app_main.settings, "discord_prepare_token", "token"), patch.object(
+            app_main, "cleanup_expired_cache_async", new=AsyncMock()
+        ), patch.object(app_main, "enqueue_reburn_all", new=enqueue):
+            response = TestClient(app_main.app).post(
+                "/prepare/youtube-reburn-all?lang=ja&mode=mp4&recentHours=24&resplitTranslations=true",
+                headers={"Authorization": "Bearer token"},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(enqueue.await_args.args[-2:], (24, True))
+
     def test_prepare_ready_path_without_cache_does_not_raise(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             original_hot_dir = app_main.settings.cache_hot_dir

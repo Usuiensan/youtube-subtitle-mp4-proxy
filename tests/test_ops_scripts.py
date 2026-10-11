@@ -44,6 +44,16 @@ def test_operator_can_reprepare_one_video_without_exposing_the_token() -> None:
     assert "printf '%s\\n' \"$status_body\"" in operator
 
 
+def test_operator_can_reburn_recent_translations_without_exposing_the_token() -> None:
+    operator = (ROOT / "scripts" / "youtube-proxy-operator").read_text(encoding="utf-8")
+    windows = (ROOT / "scripts" / "reburn-recent-translations.ps1").read_text(encoding="utf-8")
+    assert "reburn-recent-translations)" in operator
+    assert "recentHours=24&resplitTranslations=true" in operator
+    assert "/prepare/batches/$batch_id" in operator
+    assert "DISCORD_PREPARE_TOKEN" not in windows
+    assert "tada.wav" in windows
+
+
 def test_update_script_excludes_local_env_and_checks_native_commands() -> None:
     text = (ROOT / "youtube-subtitles-update.ps1").read_text(encoding="utf-8")
     root_wrapper = (ROOT / "scripts" / "youtube-proxy-update").read_text(encoding="utf-8")

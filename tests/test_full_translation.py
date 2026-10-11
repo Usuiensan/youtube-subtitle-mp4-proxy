@@ -8,7 +8,7 @@ import pytest
 import srt
 
 from app import translation, translation_worker
-from app.translation import TranslationError, TranslationSettings, batch_translation_groups, build_meaning_groups, split_group_translation, translate_srt_with_local_worker, validate_group_translations
+from app.translation import TranslationError, TranslationSettings, batch_translation_groups, build_meaning_groups, resplit_existing_translation, split_group_translation, translate_srt_with_local_worker, validate_group_translations
 
 
 def cue(index: int, start: float, end: float, text: str) -> srt.Subtitle:
@@ -54,6 +54,18 @@ def test_python_split_keeps_japanese_particles_with_the_preceding_phrase() -> No
     result = split_group_translation("誰にとっても最高の選択です", source)
 
     assert result.segments == ("誰にとっても", "最高の選択です")
+
+
+def test_existing_translation_is_resplit_without_retranslation() -> None:
+    source = [cue(1, 0, 4, "Who is it for"), cue(2, 4, 10, "the best choice")]
+    translated = [cue(1, 0, 4, "誰にとって"), cue(2, 4, 10, "も最高の選択です")]
+
+    result = resplit_existing_translation(source, translated)
+
+    assert [item.content for item in result] == ["誰にとっても", "最高の選択です"]
+    assert [(item.index, item.start, item.end) for item in result] == [
+        (item.index, item.start, item.end) for item in source
+    ]
 
 
 def test_python_split_rejects_translation_too_short_for_non_empty_ids() -> None:

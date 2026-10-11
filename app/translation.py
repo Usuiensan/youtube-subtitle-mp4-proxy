@@ -341,6 +341,23 @@ def split_group_translation_candidates(
     return unique
 
 
+def resplit_existing_translation(
+    source_subtitles: list[srt.Subtitle], translated_subtitles: list[srt.Subtitle]
+) -> list[srt.Subtitle]:
+    if [item.index for item in source_subtitles] != [item.index for item in translated_subtitles]:
+        raise TranslationError("source and translated subtitle ids differ")
+    translated_by_id = {item.index: item for item in translated_subtitles}
+    result: list[srt.Subtitle] = []
+    for group in build_meaning_groups(source_subtitles):
+        translation = "".join(translated_by_id[item.index].content for item in group.subtitles)
+        split = split_group_translation(translation, group.subtitles)
+        result.extend(
+            srt.Subtitle(item.index, item.start, item.end, content, item.proprietary)
+            for item, content in zip(group.subtitles, split.segments)
+        )
+    return result
+
+
 _FILLER_TRANSLATIONS = {"完了", "終了", "翻訳なし", "翻訳完了", "translation complete", "done"}
 
 

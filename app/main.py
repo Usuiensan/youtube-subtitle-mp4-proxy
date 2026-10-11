@@ -38,6 +38,7 @@ from app.translation import (
     build_worker_payload,
     load_srt,
     normalize_subtitle_text,
+    resplit_existing_translation,
     save_srt,
     translate_srt_with_local_worker,
 )
@@ -4108,6 +4109,17 @@ def prepared_subtitle_bundle_for_key(key: str) -> dict:
     }
 
 
+def resplit_cached_translation(key: str) -> None:
+    source_path = cached_original_subtitle_path(key)
+    translated_path = cached_subtitle_path(key)
+    if source_path is None or translated_path is None or source_path == translated_path:
+        raise TranslationError("reusable translated subtitles were not found")
+    subtitles = resplit_existing_translation(load_srt(source_path), load_srt(translated_path))
+    temporary = translated_path.with_suffix(f"{translated_path.suffix}.resplit")
+    save_srt(temporary, subtitles)
+    temporary.replace(translated_path)
+
+
 def prepared_subtitle_file_response(key: str, kind: str, request: Request) -> FileResponse:
     if not re.fullmatch(r"[A-Za-z0-9_.:-]+", key):
         raise HTTPException(status_code=400, detail="Invalid cache key")
@@ -5791,6 +5803,8 @@ async def enqueue_reburn_all(
     discord_user_id: str | None,
     archive_immediately: bool = False,
     subtitle_font_size: int | None = None,
+    recent_hours: int | None = None,
+    resplit_translations: bool = False,
 ) -> tuple[int, dict]:
     if archive_immediately and mode != "mp4":
         raise HTTPException(status_code=400, detail="archiveImmediately is supported only for mp4")
@@ -5800,6 +5814,11 @@ async def enqueue_reburn_all(
     for prepared in reusable_source_entries():
         if lang and prepared.get("lang") != lang:
             continue
+        subtitle_meta = prepared.get("subtitle") if isinstance(prepared.get("subtitle"), dict) else {}
+        if recent_hours is not None:
+            created_at = subtitle_meta.get("translation_created_at")
+            if not subtitle_meta.get("translated") or not isinstance(created_at, (int, float)) or created_at < time.time() - recent_hours * 3600:
+                continue
         key = str(prepared.get("key") or "")
         if not key or key in seen:
             continue
@@ -5823,6 +5842,12 @@ async def enqueue_reburn_all(
         key = str(prepared["key"])
         subtitle_meta = prepared.get("subtitle") if isinstance(prepared.get("subtitle"), dict) else {}
         source_lang, translation_engine = prepared_variant_from_meta(subtitle_meta)
+        if resplit_translations:
+            try:
+                resplit_cached_translation(key)
+            except (OSError, TranslationError, srt.SRTParseError) as error:
+                items.append({"video_id": video_id, "title": prepared.get("title") or video_id, "lang": item_lang, "mode": mode, "status": "failed", "error": str(error)})
+                continue
         clear_rendered_outputs_only(key, mode)
         status_code, body = await enqueue_prepare_job(
             request,
@@ -8744,6 +8769,8 @@ async def prepare_youtube_reburn_all(
     discord_user_id: str | None = Query(None, alias="discordUserId"),
     archive_immediately: bool = Query(False, alias="archiveImmediately"),
     subtitle_font_size: int | None = Query(None, alias="subtitleFontSize"),
+    recent_hours: int | None = Query(None, alias="recentHours", ge=1, le=168),
+    resplit_translations: bool = Query(False, alias="resplitTranslations"),
 ) -> JSONResponse:
     require_prepare_auth(request)
     if lang in {"", "all", "*"}:
@@ -8764,6 +8791,9 @@ async def prepare_youtube_reburn_all(
         max_items,
         discord_user_id,
         archive_immediately,
+        subtitle_font_size,
+        recent_hours,
+        resplit_translations,
     )
     return JSONResponse(body, status_code=status_code)
 

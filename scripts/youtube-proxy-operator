@@ -105,6 +105,40 @@ EOF
     return 1
 }
 
+reburn_recent_translations() {
+    local token body batch_id status_body state summary previous=''
+    token=$(awk -F= '$1 == "DISCORD_PREPARE_TOKEN" { sub(/^[^=]*=/, ""); print; exit }' "$SECRETS_FILE")
+    [[ -n "$token" ]] || { echo '準備API設定が不完全です' >&2; return 1; }
+    body=$(curl --fail --silent --show-error --config - -X POST \
+        'http://127.0.0.1:8000/prepare/youtube-reburn-all?lang=ja&mode=mp4&maxItems=5000&recentHours=24&resplitTranslations=true' <<EOF
+header = "Authorization: Bearer $token"
+EOF
+    )
+    batch_id=$(printf '%s' "$body" | "$APP_PYTHON" -c 'import json,sys; print(json.load(sys.stdin).get("batch_id", ""))')
+    [[ "$batch_id" =~ ^[a-f0-9]{32}$ ]] || { printf '%s\n' "$body"; return 1; }
+    echo "再分割・再焼き込みを開始しました: batch=$batch_id"
+    for _ in $(seq 1 17280); do
+        status_body=$(curl --fail --silent --show-error --config - "http://127.0.0.1:8000/prepare/batches/$batch_id" <<EOF
+header = "Authorization: Bearer $token"
+EOF
+        )
+        state=$(printf '%s' "$status_body" | "$APP_PYTHON" -c 'import json,sys; print(json.load(sys.stdin).get("status", ""))')
+        summary=$(printf '%s' "$status_body" | "$APP_PYTHON" -c 'import json,sys; b=json.load(sys.stdin); c=b.get("counts", {}); print("status={} total={} ready={} running={} queued={} failed={}".format(b.get("status"), c.get("total", 0), c.get("ready", 0), c.get("running", 0), c.get("queued", 0), c.get("failed", 0)))')
+        if [[ "$summary" != "$previous" ]]; then
+            printf '%s %s\n' "$(date --iso-8601=seconds)" "$summary"
+            previous=$summary
+        fi
+        if [[ "$state" == ready || "$state" == failed ]]; then
+            printf '%s\n' "$status_body"
+            [[ "$state" == ready ]]
+            return
+        fi
+        sleep 5
+    done
+    echo '再焼き込みバッチの待機がタイムアウトしました' >&2
+    return 1
+}
+
 storage_api() {
     [[ -r "$SECRETS_FILE" ]] || { echo '準備API設定が見つかりません' >&2; return 1; }
     local token
@@ -188,6 +222,7 @@ case "${1:-hdd-status}" in
     hdd-attach) [[ $# -eq 1 ]] || exit 2; attach ;;
     translation-profile) [[ $# -eq 2 ]] || exit 2; translation_profile "$2" ;;
     reprepare-video) [[ $# -eq 5 ]] || exit 2; reprepare_video "$2" "$3" "$4" "$5" ;;
+    reburn-recent-translations) [[ $# -eq 1 ]] || exit 2; reburn_recent_translations ;;
     watch) [[ $# -eq 1 ]] || exit 2; watch ;;
     *) echo '許可されていない操作です' >&2; exit 2 ;;
 esac
