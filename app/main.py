@@ -730,7 +730,7 @@ def render_profile_id(subtitle_font_size: int | None = None) -> str:
 def translation_profile_id() -> str:
     return json.dumps(
         {
-            "batch_translation_version": "full-srt-id-keyed-chunked-v2",
+            "batch_translation_version": "meaning-group-python-split-v1",
             "enabled": settings.translation_enabled,
             "target": "ja",
             "source_langs": settings.translation_source_langs,

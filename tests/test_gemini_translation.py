@@ -169,7 +169,7 @@ class GeminiTranslationTests(unittest.TestCase):
     def test_high_thinking_reserves_output_budget(self) -> None:
         budget = translation_worker._output_token_budget(
             "x" * 24000,
-            {"subtitles": [{"id": 1, "text": "x"}], "gemini_thinking_level": "high"},
+            {"groups": [{"group_id": "g001", "source": [{"id": 1, "text": "x"}]}], "gemini_thinking_level": "high"},
         )
 
         self.assertEqual(budget, 32000)
@@ -227,7 +227,7 @@ class GeminiTranslationTests(unittest.TestCase):
                 return False
 
             def read(self):
-                return b'{"candidates":[{"content":{"parts":[{"text":"{\\"subtitles\\":{\\"1\\":\\"Hi\\"}}"}]}}],"usageMetadata":{}}'
+                return b'{"candidates":[{"content":{"parts":[{"text":"{\\"groups\\":[{\\"group_id\\":\\"g001\\",\\"translation\\":\\"Hi\\"}]}"}]}}],"usageMetadata":{}}'
 
         def urlopen(request, timeout):
             requests.append(json.loads(request.data.decode("utf-8")))
@@ -241,16 +241,16 @@ class GeminiTranslationTests(unittest.TestCase):
                     "model_name": "gemini-3.1-flash-lite",
                     "source_language": "en",
                     "target_language": "ja",
-                    "subtitles": [{"id": 1, "text": "Hi"}],
+                    "groups": [{"group_id": "g001", "source": [{"id": 1, "text": "Hi"}]}],
                     "gemini_thinking_level": "high",
                 }
             )
 
         self.assertEqual(requests[0]["generationConfig"]["thinkingConfig"], {"thinkingLevel": "high"})
-        subtitles_schema = requests[0]["generationConfig"]["responseSchema"]["properties"]["subtitles"]
-        self.assertEqual(subtitles_schema["required"], ["1"])
-        self.assertEqual(subtitles_schema["properties"], {"1": {"type": "STRING"}})
-        self.assertNotIn("additionalProperties", subtitles_schema)
+        groups_schema = requests[0]["generationConfig"]["responseSchema"]["properties"]["groups"]
+        self.assertEqual(groups_schema["minItems"], 1)
+        self.assertEqual(groups_schema["items"]["properties"]["group_id"]["enum"], ["g001"])
+        self.assertNotIn("additionalProperties", groups_schema)
         self.assertNotIn("additionalProperties", requests[0]["generationConfig"]["responseSchema"])
 
     def test_gemini_max_tokens_is_reported_as_truncation(self) -> None:
@@ -272,7 +272,7 @@ class GeminiTranslationTests(unittest.TestCase):
                         "llm_api_key": "test-key",
                         "source_language": "en",
                         "target_language": "ja",
-                        "subtitles": [{"id": 1, "text": "Hi"}],
+                        "groups": [{"group_id": "g001", "source": [{"id": 1, "text": "Hi"}]}],
                     }
                 )
 
@@ -560,14 +560,12 @@ class GeminiTranslationTests(unittest.TestCase):
             "channel_name": "Sample channel",
             "source_language": "en",
             "target_language": "ja",
-            "subtitles": [
-                {"id": 1, "text": "First line"},
-                {"id": 2, "text": "Translate me"},
-                {"id": 3, "text": "Last line"},
-            ],
+            "groups": [{"group_id": "g001", "source": [
+                {"id": 1, "text": "First line"}, {"id": 2, "text": "Translate me"}, {"id": 3, "text": "Last line"},
+            ]}],
         }
         prompt = translation_worker.build_full_translation_prompt(payload)
-        self.assertIn("Translate the complete subtitle list", prompt)
+        self.assertIn("Translate every meaning group", prompt)
         self.assertIn("Default video title", prompt)
         self.assertIn("Sample title", prompt)
         self.assertIn("Sample channel", prompt)
@@ -586,7 +584,7 @@ class GeminiTranslationTests(unittest.TestCase):
     def test_gemini_request_and_raw_response_are_saved_without_api_key(self) -> None:
         with TemporaryDirectory() as temp_dir:
             audit_path = Path(temp_dir) / "translation.jsonl"
-            raw_response = '{"candidates": [{"content": {"parts": [{"text": "{\\"subtitles\\":{\\"1\\":\\"Hi\\"}}"}]}}]}'
+            raw_response = '{"candidates": [{"content": {"parts": [{"text": "{\\"groups\\":[{\\"group_id\\":\\"g001\\",\\"translation\\":\\"Hi\\"}]}"}]}}]}'
 
             class Response:
                 def __enter__(self):
@@ -605,7 +603,7 @@ class GeminiTranslationTests(unittest.TestCase):
                         "model_name": "gemini-2.5-flash-lite",
                         "source_language": "en",
                         "target_language": "ja",
-                        "subtitles": [{"id": 1, "text": "Hi"}],
+                        "groups": [{"group_id": "g001", "source": [{"id": 1, "text": "Hi"}]}],
                         "_translation_audit_path": str(audit_path),
                     }
                 )
@@ -633,7 +631,7 @@ class GeminiTranslationTests(unittest.TestCase):
                         {
                             "llm_api_key": "secret-key",
                             "model_name": "gemini-2.5-flash-lite",
-                            "subtitles": [{"id": 1, "text": "Hi"}],
+                            "groups": [{"group_id": "g001", "source": [{"id": 1, "text": "Hi"}]}],
                             "_translation_audit_path": str(audit_path),
                         }
                     )

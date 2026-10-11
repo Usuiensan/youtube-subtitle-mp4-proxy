@@ -45,6 +45,39 @@ class TranslationError(Exception):
     pass
 
 
+@dataclass(frozen=True)
+class MeaningGroup:
+    group_id: str
+    subtitles: tuple[srt.Subtitle, ...]
+    forced_split: bool = False
+
+    @property
+    def duration_seconds(self) -> float:
+        return max(0.001, (self.subtitles[-1].end - self.subtitles[0].start).total_seconds())
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "group_id": self.group_id,
+            "source": [
+                {
+                    "id": subtitle.index,
+                    "text": normalize_subtitle_text(subtitle.content, compact=True),
+                    "start": round(subtitle.start.total_seconds(), 3),
+                    "end": round(subtitle.end.total_seconds(), 3),
+                }
+                for subtitle in self.subtitles
+            ],
+            "forced_split": self.forced_split,
+        }
+
+
+@dataclass(frozen=True)
+class TranslationSplit:
+    segments: tuple[str, ...]
+    score: float
+    difficult: bool
+
+
 def load_srt(path: Path) -> list[srt.Subtitle]:
     return list(srt.parse(path.read_text(encoding="utf-8-sig")))
 
@@ -58,7 +91,7 @@ def normalize_subtitle_text(text: str, *, compact: bool = False) -> str:
 
 
 def save_srt(path: Path, subtitles: list[srt.Subtitle]) -> None:
-    path.write_text(srt.compose(subtitles), encoding="utf-8")
+    path.write_text(srt.compose(subtitles, reindex=False), encoding="utf-8")
 
 
 def build_worker_payload(
@@ -71,6 +104,7 @@ def build_worker_payload(
     settings: TranslationSettings,
     video_id: str = "",
 ) -> dict[str, Any]:
+    groups = build_meaning_groups(all_subtitles)
     return {
         "video_id": video_id,
         "video_title": video_title,
@@ -82,7 +116,7 @@ def build_worker_payload(
         "translation_provider": settings.provider_name,
         "translation_profile": settings.engine,
         "model_name": settings.model_name,
-        "subtitles": [{"id": sub.index, "text": sub.content} for sub in all_subtitles],
+        "groups": [group.payload() for group in groups],
     }
 
 
@@ -96,96 +130,246 @@ def _chunk_input_token_estimate(payload: dict[str, Any]) -> int:
     return math.ceil((len(encoded) + 3072) / 3)
 
 
-def chunk_translation_subtitles(payload: dict[str, Any]) -> list[list[dict[str, Any]]]:
-    subtitles = payload.get("subtitles")
-    if str(payload.get("translation_provider") or "") not in {"openai_api", "gemini_api"} or not isinstance(subtitles, list):
-        return [subtitles] if isinstance(subtitles, list) else []
-    limit = _chunk_input_token_limit()
-    chunks: list[list[dict[str, Any]]] = []
-    current: list[dict[str, Any]] = []
-    for item in subtitles:
-        if not isinstance(item, dict):
-            raise TranslationError("subtitles must be an array of objects")
-        candidate = [*current, item]
-        if current and _chunk_input_token_estimate({**payload, "subtitles": candidate}) > limit:
-            chunks.append(current)
-            current = [item]
-        else:
-            current = candidate
-    if current:
-        chunks.append(current)
-    return chunks
+_SENTENCE_END_RE = re.compile(r"[.!?。！？…][\"'”’）】」』]*$")
+_CONTINUATION_END_RE = re.compile(r"[,，、:：;；\-—][\"'”’）】」』]*$")
+_SPEAKER_RE = re.compile(r"^(?:[-–—]\s*|[\[（(][^\]）)]{1,24}[\]）)])")
 
 
-def _recent_translation_pairs(
-    subtitles: list[srt.Subtitle],
-    segments: list[dict[str, Any]],
-) -> list[dict[str, str]]:
-    positions = {str(sub.index): position for position, sub in enumerate(subtitles)}
+def _meaning_boundary_score(subtitles: list[srt.Subtitle], position: int) -> float:
+    current = subtitles[position]
+    following = subtitles[position + 1] if position + 1 < len(subtitles) else None
+    text = normalize_subtitle_text(current.content, compact=True)
+    if following is None:
+        return 100.0
+    gap = (following.start - current.end).total_seconds()
+    score = 0.0
+    if _SENTENCE_END_RE.search(text):
+        score += 80.0
+    if gap >= 0.7:
+        score += 70.0 + min(gap, 3.0) * 5.0
+    if _SPEAKER_RE.search(normalize_subtitle_text(following.content, compact=True)):
+        score += 50.0
+    if _CONTINUATION_END_RE.search(text):
+        score -= 45.0
+    if text and text[-1:].isalnum() and normalize_subtitle_text(following.content, compact=True)[:1].islower():
+        score -= 20.0
+    return score
+
+
+def build_meaning_groups(subtitles: list[srt.Subtitle]) -> list[MeaningGroup]:
+    if not subtitles:
+        return []
+    count = len(subtitles)
+    boundary_scores = [_meaning_boundary_score(subtitles, index) for index in range(count)]
+    best_cost = [math.inf] * (count + 1)
+    previous = [-1] * (count + 1)
+    best_cost[0] = 0.0
+
+    for end in range(1, count + 1):
+        for start in range(max(0, end - 8), end):
+            group = subtitles[start:end]
+            duration = (group[-1].end - group[0].start).total_seconds()
+            if duration > 12.0 and len(group) > 1:
+                continue
+            events = len(group)
+            cost = abs(events - 4) * 2.5 + abs(duration - 6.0) * 0.45
+            boundary_score = boundary_scores[end - 1]
+            cost -= boundary_score * 0.12
+            for internal in range(start, end - 1):
+                if boundary_scores[internal] >= 70.0:
+                    cost += 18.0
+            if events == 1 and boundary_score < 70.0:
+                cost += 10.0
+            candidate = best_cost[start] + cost
+            if candidate < best_cost[end]:
+                best_cost[end] = candidate
+                previous[end] = start
+
+    if previous[count] < 0:
+        raise TranslationError("meaning groups could not be constructed")
+    ranges: list[tuple[int, int]] = []
+    end = count
+    while end:
+        start = previous[end]
+        ranges.append((start, end))
+        end = start
+    ranges.reverse()
     return [
-        {
-            "source": " ".join(
-                sub.content
-                for sub in subtitles[positions[segment["from_id"]] : positions[segment["to_id"]] + 1]
-            ),
-            "translated": segment["text"],
-        }
-        for segment in segments
+        MeaningGroup(
+            group_id=f"g{number:03d}",
+            subtitles=tuple(subtitles[start:end]),
+            forced_split=end < count and boundary_scores[end - 1] < 0.0,
+        )
+        for number, (start, end) in enumerate(ranges, start=1)
     ]
 
 
-def _chunk_error_can_be_split(error: Exception) -> bool:
-    text = str(error).lower()
-    return any(
-        marker in text
-        for marker in (
-            "invalid json",
-            "no json content",
-            "truncated",
-            "omitted subtitle id",
-            "missing subtitle range",
-            "subtitle range must continue",
-        )
+def batch_translation_groups(payload: dict[str, Any], groups: list[MeaningGroup]) -> list[list[MeaningGroup]]:
+    if str(payload.get("translation_provider") or "") not in {"openai_api", "gemini_api"}:
+        return [groups] if groups else []
+    limit = _chunk_input_token_limit()
+    batches: list[list[MeaningGroup]] = []
+    current: list[MeaningGroup] = []
+    for group in groups:
+        candidate = [*current, group]
+        estimate_payload = {**payload, "groups": [item.payload() for item in candidate]}
+        estimate_payload.pop("subtitles", None)
+        if current and _chunk_input_token_estimate(estimate_payload) > limit:
+            batches.append(current)
+            current = [group]
+        else:
+            current = candidate
+    if current:
+        batches.append(current)
+    return batches
+
+
+_BAD_SPLIT_BEFORE = set("、。！？!?)]}）］｝」』】〉》,.;:：；")
+_BAD_SPLIT_AFTER = set("([{（［｛「『【〈《")
+_GOOD_SPLIT_AFTER = set("、。！？!?：；")
+
+
+def _char_weight(text: str) -> float:
+    return sum(0.5 if ord(character) < 128 else 1.0 for character in text)
+
+
+def _split_boundary_penalty(text: str, position: int) -> float:
+    before = text[position - 1]
+    after = text[position]
+    if before in _BAD_SPLIT_AFTER or after in _BAD_SPLIT_BEFORE:
+        return 50.0
+    if before in _GOOD_SPLIT_AFTER:
+        return -8.0
+    if before.isspace() or after.isspace():
+        return -4.0
+    if before.isascii() and after.isascii() and before.isalnum() and after.isalnum():
+        return 30.0
+    if before in "てでにはをがとのもへばからのでし" or after in "しかしそしてまた":
+        return -1.5
+    return 1.0
+
+
+def split_group_translation(translation: str, subtitles: tuple[srt.Subtitle, ...]) -> TranslationSplit:
+    text = str(translation).strip()
+    count = len(subtitles)
+    if not text:
+        raise TranslationError("empty group translation")
+    if len(text) < count:
+        raise TranslationError("group translation is too short for non-empty subtitle ids")
+    if count == 1:
+        duration = max(0.001, (subtitles[0].end - subtitles[0].start).total_seconds())
+        difficult = _char_weight(text) / duration > 14.0
+        return TranslationSplit((text,), 0.0, difficult)
+
+    durations = [max(0.1, (item.end - item.start).total_seconds()) for item in subtitles]
+    total_duration = sum(durations)
+    cumulative_targets: list[float] = []
+    running = 0.0
+    for duration in durations[:-1]:
+        running += duration
+        cumulative_targets.append(len(text) * running / total_duration)
+
+    states: dict[tuple[int, int], tuple[float, tuple[int, ...]]] = {(0, 0): (0.0, ())}
+    for segment_index in range(1, count):
+        for position in range(segment_index, len(text) - (count - segment_index) + 1):
+            best: tuple[float, tuple[int, ...]] | None = None
+            target = cumulative_targets[segment_index - 1]
+            for previous_position in range(segment_index - 1, position):
+                prior = states.get((segment_index - 1, previous_position))
+                if prior is None:
+                    continue
+                cost = prior[0] + ((position - target) ** 2) / max(1.0, len(text)) + _split_boundary_penalty(text, position)
+                if best is None or cost < best[0]:
+                    best = (cost, (*prior[1], position))
+            if best is not None:
+                states[(segment_index, position)] = best
+
+    best = min(
+        (value for (segment_index, _position), value in states.items() if segment_index == count - 1),
+        key=lambda item: item[0],
     )
+    cuts = (0, *best[1], len(text))
+    segments = tuple(text[cuts[index] : cuts[index + 1]] for index in range(count))
+    if "".join(segments) != text or any(not segment for segment in segments):
+        raise TranslationError("translation split did not preserve the completed translation")
+    rates = [_char_weight(segment) / duration for segment, duration in zip(segments, durations)]
+    bad_boundaries = sum(
+        _split_boundary_penalty(text, position) >= 30.0
+        for position in best[1]
+    )
+    difficult = bad_boundaries > 0 or max(rates) > 14.0
+    return TranslationSplit(segments, best[0], difficult)
 
 
-def validate_translations(
-    target: list[srt.Subtitle],
+def split_group_translation_candidates(
+    translation: str,
+    subtitles: tuple[srt.Subtitle, ...],
+) -> list[TranslationSplit]:
+    best = split_group_translation(translation, subtitles)
+    if len(subtitles) == 1:
+        return [best]
+
+    text = str(translation).strip()
+    equal_subtitles = tuple(
+        srt.Subtitle(index=item.index, start=item.start, end=item.start + (subtitles[0].end - subtitles[0].start), content=item.content)
+        for item in subtitles
+    )
+    alternatives = [best, split_group_translation(text, equal_subtitles)]
+    unique: list[TranslationSplit] = []
+    for candidate in alternatives:
+        if candidate.segments not in {item.segments for item in unique}:
+            unique.append(candidate)
+    return unique
+
+
+_ANCHOR_RE = re.compile(r"https?://\S+|[A-Za-z]*\d+(?:[.,]\d+)?[A-Za-z]*")
+_FILLER_TRANSLATIONS = {"完了", "終了", "翻訳なし", "翻訳完了", "translation complete", "done"}
+
+
+def _translation_anchors(text: str) -> list[str]:
+    return [match.group(0) for match in _ANCHOR_RE.finditer(text)]
+
+
+def _group_translation_issue(group: MeaningGroup, translation: str) -> str | None:
+    text = str(translation).strip()
+    if not text:
+        return "empty translation"
+    if text.lower().strip("。.!！ ") in _FILLER_TRANSLATIONS:
+        return "filler translation"
+    source = " ".join(normalize_subtitle_text(item.content, compact=True) for item in group.subtitles)
+    if _translation_anchors(source) != _translation_anchors(text):
+        return "number, model, or URL anchors changed"
+    return None
+
+
+def validate_group_translations(
+    groups: list[MeaningGroup],
     result: dict[str, Any],
-) -> list[dict[str, Any]]:
-    translations = result.get("subtitles")
-    if not isinstance(translations, list):
-        raise TranslationError("subtitles must be an array")
-
-    expected_ids = [str(sub.index) for sub in target]
-    expected_positions = {item_id: position for position, item_id in enumerate(expected_ids)}
-    next_position = 0
-    output: list[dict[str, Any]] = []
-
-    for item in translations:
+) -> tuple[dict[str, str], list[str]]:
+    raw = result.get("groups")
+    if not isinstance(raw, list):
+        raise TranslationError("translation groups must be an array")
+    expected = {group.group_id: group for group in groups}
+    accepted: dict[str, str] = {}
+    invalid: set[str] = set()
+    for item in raw:
         if not isinstance(item, dict):
-            raise TranslationError("translation item must be an object")
-        from_id = str(item.get("from_id", ""))
-        to_id = str(item.get("to_id", ""))
-        text = str(item.get("text", "")).strip()
-        if from_id not in expected_positions or to_id not in expected_positions:
-            raise TranslationError(f"unexpected subtitle range: {from_id}-{to_id}")
-        from_position = expected_positions[from_id]
-        to_position = expected_positions[to_id]
-        if from_position != next_position or to_position < from_position:
-            expected_from_id = expected_ids[next_position] if next_position < len(expected_ids) else "end"
-            raise TranslationError(
-                f"subtitle range must continue at {expected_from_id}: got {from_id}-{to_id}"
-            )
-        if not text:
-            raise TranslationError(f"empty translation: {from_id}-{to_id}")
-        output.append({"from_id": from_id, "to_id": to_id, "text": text})
-        next_position = to_position + 1
-
-    if next_position != len(target):
-        missing_id = expected_ids[next_position] if next_position < len(target) else "end"
-        raise TranslationError(f"missing subtitle range starting at: {missing_id}")
-    return output
+            continue
+        group_id = str(item.get("group_id") or "")
+        if group_id not in expected:
+            raise TranslationError(f"unexpected translation group: {group_id}")
+        if group_id in accepted:
+            invalid.add(group_id)
+            accepted.pop(group_id, None)
+            continue
+        text = str(item.get("translation") or "").strip()
+        issue = _group_translation_issue(expected[group_id], text)
+        if issue:
+            invalid.add(group_id)
+            continue
+        accepted[group_id] = text
+    invalid.update(set(expected) - set(accepted))
+    return accepted, [group.group_id for group in groups if group.group_id in invalid]
 
 
 def discard_successful_attempt(result: dict[str, Any]) -> None:
@@ -251,86 +435,143 @@ async def translate_srt_with_local_worker(
         settings=settings,
         video_id=video_id,
     )
-    chunks = chunk_translation_subtitles(base_payload)
+    meaning_groups = build_meaning_groups(subtitles)
+    chunks = batch_translation_groups(base_payload, meaning_groups)
     context_limit = min(5, max(0, settings.context_before_max_events, settings.context_after_max_events))
-    subtitle_by_id = {str(sub.index): sub for sub in subtitles}
-
-    def source_subtitles(chunk: list[dict[str, Any]]) -> list[srt.Subtitle]:
-        return [subtitle_by_id[str(item["id"])] for item in chunk]
 
     def limited_context(pairs: list[dict[str, str]]) -> list[dict[str, str]]:
         return pairs[-context_limit:] if context_limit else []
 
-    async def translate_chunk(
-        chunk: list[dict[str, Any]],
+    async def run_group_request(
+        chunk: list[MeaningGroup],
         previous_context: list[dict[str, str]],
         next_context: list[dict[str, str]],
         chunk_index: int,
         chunk_count: int,
-    ) -> list[dict[str, Any]]:
+        *,
+        concise: bool = False,
+    ) -> dict:
         payload = {
             **base_payload,
-            "subtitles": chunk,
+            "groups": [group.payload() for group in chunk],
             "previous_context": previous_context,
             "next_context": next_context,
             "translation_chunk_index": chunk_index,
             "translation_chunk_count": chunk_count,
-            "translation_chunk_from_id": chunk[0]["id"],
-            "translation_chunk_to_id": chunk[-1]["id"],
+            "translation_chunk_from_id": chunk[0].subtitles[0].index,
+            "translation_chunk_to_id": chunk[-1].subtitles[-1].index,
+            "concise": concise,
         }
+        payload.pop("subtitles", None)
         usage_totals["requests"] += 1
         result = await run_worker(payload)
         add_usage(result)
-        translated = validate_translations(source_subtitles(chunk), result)
         discard_successful_attempt(result)
-        return translated
+        return result
 
-    async def translate_chunk_once_with_split(
-        chunk: list[dict[str, Any]],
+    async def translate_chunk(
+        chunk: list[MeaningGroup],
         previous_context: list[dict[str, str]],
         next_context: list[dict[str, str]],
         chunk_index: int,
         chunk_count: int,
-    ) -> list[dict[str, Any]]:
-        try:
-            return await translate_chunk(chunk, previous_context, next_context, chunk_index, chunk_count)
-        except Exception as error:
-            if (
-                settings.provider_name not in {"openai_api", "gemini_api"}
-                or len(chunks) <= 1
-                or len(chunk) < 2
-                or not _chunk_error_can_be_split(error)
-            ):
-                raise
-            midpoint = len(chunk) // 2
-            left, right = chunk[:midpoint], chunk[midpoint:]
-            left_next = [{"source": str(item["text"])} for item in right[:context_limit]]
-            left_translated = await translate_chunk(left, previous_context, left_next, chunk_index, chunk_count)
-            right_context = limited_context(previous_context + _recent_translation_pairs(source_subtitles(left), left_translated))
-            right_translated = await translate_chunk(right, right_context, next_context, chunk_index, chunk_count)
-            return [*left_translated, *right_translated]
+    ) -> dict[str, str]:
+        result = await run_group_request(chunk, previous_context, next_context, chunk_index, chunk_count)
+        accepted, invalid = validate_group_translations(chunk, result)
+        for group_id in invalid:
+            group = next(item for item in chunk if item.group_id == group_id)
+            retry = await run_group_request([group], previous_context, next_context, chunk_index, chunk_count)
+            retried, still_invalid = validate_group_translations([group], retry)
+            if still_invalid:
+                raise TranslationError(f"invalid translation group after retry: {group_id}")
+            accepted.update(retried)
+        ordered = {group.group_id: accepted[group.group_id] for group in chunk}
+        duplicate_run: list[str] = []
+        previous_text = None
+        for group_id, text in ordered.items():
+            duplicate_run = [*duplicate_run, group_id] if text == previous_text else [group_id]
+            if len(duplicate_run) >= 3:
+                for retry_group_id in duplicate_run:
+                    group = next(item for item in chunk if item.group_id == retry_group_id)
+                    retry = await run_group_request([group], previous_context, next_context, chunk_index, chunk_count)
+                    retried, still_invalid = validate_group_translations([group], retry)
+                    if still_invalid or retried[group.group_id] == text:
+                        raise TranslationError(f"abnormal repeated translation: {retry_group_id}")
+                    ordered.update(retried)
+            previous_text = text
+        return ordered
+
+    async def select_split_candidate(group: MeaningGroup, translation: str, candidates: list[TranslationSplit]) -> TranslationSplit:
+        payload = {
+            **base_payload,
+            "task": "select_split_candidate",
+            "group": group.payload(),
+            "translation": translation,
+            "candidates": [list(candidate.segments) for candidate in candidates],
+        }
+        payload.pop("groups", None)
+        usage_totals["requests"] += 1
+        result = await run_worker(payload)
+        add_usage(result)
+        discard_successful_attempt(result)
+        index = result.get("candidate_index") if isinstance(result, dict) else None
+        if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(candidates):
+            raise TranslationError(f"invalid split candidate selection: {group.group_id}")
+        selected = candidates[index]
+        if "".join(selected.segments) != translation:
+            raise TranslationError(f"selected split changed translation: {group.group_id}")
+        return selected
 
     if on_progress:
         on_progress(0, total_subtitles, recent_pairs)
     try:
-        translated_segments: list[dict[str, Any]] = []
+        translated_groups: dict[str, str] = {}
         completed = 0
         for chunk_index, chunk in enumerate(chunks, start=1):
             following = chunks[chunk_index] if chunk_index < len(chunks) else []
-            next_context = [{"source": str(item["text"])} for item in following[:context_limit]]
-            translated = await translate_chunk_once_with_split(
+            next_context = [
+                {"source": " ".join(normalize_subtitle_text(item.content, compact=True) for item in group.subtitles)}
+                for group in following[:context_limit]
+            ]
+            translated = await translate_chunk(
                 chunk,
                 limited_context(recent_pairs),
                 next_context,
                 chunk_index,
                 len(chunks),
             )
-            translated_segments.extend(translated)
-            recent_pairs = limited_context(recent_pairs + _recent_translation_pairs(source_subtitles(chunk), translated))
-            completed += len(chunk)
+            translated_groups.update(translated)
+            recent_pairs = limited_context(
+                recent_pairs
+                + [
+                    {
+                        "source": " ".join(normalize_subtitle_text(item.content, compact=True) for item in group.subtitles),
+                        "translated": translated[group.group_id],
+                    }
+                    for group in chunk
+                ]
+            )
+            completed += sum(len(group.subtitles) for group in chunk)
             if on_progress:
                 on_progress(completed, total_subtitles, recent_pairs)
-        translated_segments = validate_translations(subtitles, {"subtitles": translated_segments})
+        for group in meaning_groups:
+            translation = translated_groups[group.group_id]
+            candidates = split_group_translation_candidates(translation, group.subtitles)
+            split = candidates[0]
+            if split.difficult:
+                if len(candidates) < 2:
+                    raise TranslationError(f"translation cannot be split naturally: {group.group_id}")
+                split = await select_split_candidate(group, translation, candidates)
+            for source_subtitle, translated_text in zip(group.subtitles, split.segments):
+                translated_subtitles.append(
+                    srt.Subtitle(
+                        index=source_subtitle.index,
+                        start=source_subtitle.start,
+                        end=source_subtitle.end,
+                        content=translated_text,
+                        proprietary=source_subtitle.proprietary,
+                    )
+                )
     except Exception as error:
         if isinstance(error, TranslationError):
             error.translation_usage = {"engine": settings.engine, "model": settings.model_name, **usage_totals}
@@ -345,20 +586,11 @@ async def translate_srt_with_local_worker(
         translation_error.translation_chunk_failed = len(chunks) > 1
         raise translation_error from error
 
-    subtitle_positions = {str(sub.index): position for position, sub in enumerate(subtitles)}
-    for segment_index, segment in enumerate(translated_segments, start=1):
-        start_subtitle = subtitles[subtitle_positions[segment["from_id"]]]
-        end_subtitle = subtitles[subtitle_positions[segment["to_id"]]]
-        translated_text = segment["text"]
-        translated_subtitles.append(
-            srt.Subtitle(
-                index=segment_index,
-                start=start_subtitle.start,
-                end=end_subtitle.end,
-                content=translated_text,
-                proprietary=start_subtitle.proprietary,
-            )
-        )
+    if [item.index for item in translated_subtitles] != [item.index for item in subtitles] or any(
+        translated.start != source.start or translated.end != source.end
+        for source, translated in zip(subtitles, translated_subtitles)
+    ):
+        raise TranslationError("translated subtitle ids or timings changed")
     if on_progress:
         on_progress(total_subtitles, total_subtitles, recent_pairs)
 
@@ -381,6 +613,7 @@ async def translate_srt_with_local_worker(
             "translation_total_tokens": usage_totals["total_tokens"],
             "translation_request_count": usage_totals["requests"],
             "translation_chunk_count": len(chunks),
+            "translation_group_count": len(meaning_groups),
             "translation_billing_class": "local",
         },
     )
