@@ -66,7 +66,7 @@ class Settings:
     ffmpeg_video_encoder = os.getenv("FFMPEG_VIDEO_ENCODER", "libx264")
     ffmpeg_video_preset = os.getenv("FFMPEG_VIDEO_PRESET")
     ffmpeg_video_crf = os.getenv("FFMPEG_VIDEO_CRF", "23")
-    ffmpeg_video_cq = os.getenv("FFMPEG_VIDEO_CQ", "23")
+    ffmpeg_video_cq = os.getenv("FFMPEG_VIDEO_CQ", "26")
     ytdlp_cookies_file = os.getenv("YTDLP_COOKIES_FILE")
     ytdlp_bin = os.getenv("YTDLP_BIN")
     ytdlp_proxy = os.getenv("YTDLP_PROXY")

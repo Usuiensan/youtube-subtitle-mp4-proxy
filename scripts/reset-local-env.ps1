@@ -11,7 +11,7 @@ param(
     [string]$FfmpegVideoEncoder = "",
     [string]$FfmpegVideoPreset = "",
     [int]$FfmpegVideoCrf = 23,
-    [int]$FfmpegVideoCq = 23,
+    [int]$FfmpegVideoCq = 26,
     [string]$SubtitleFont = "BIZ UDPGothic",
     [int]$SubtitleFontSize = 20,
     [int]$SubtitleMarginV = 34,
@@ -132,7 +132,7 @@ New-Item -ItemType Directory -Force -Path $ResolvedCacheDir | Out-Null
 if ($GpuEncode) {
     $FfmpegVideoEncoder = "h264_nvenc"
     if (-not $FfmpegVideoPreset) {
-        $FfmpegVideoPreset = "fast"
+        $FfmpegVideoPreset = "p2"
     }
 }
 if (-not $FfmpegVideoEncoder) {

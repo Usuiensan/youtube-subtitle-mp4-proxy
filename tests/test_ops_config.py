@@ -82,6 +82,14 @@ def test_ops_config_allows_openai_chunk_token_limit(monkeypatch, tmp_path: Path)
     assert "TRANSLATION_CHUNK_INPUT_TOKENS=3500" in config.read_text(encoding="utf-8")
 
 
+def test_ops_config_accepts_video_quality_settings() -> None:
+    assert ops_config.validate_values({
+        "MAX_HEIGHT": 720,
+        "FFMPEG_VIDEO_CQ": 26,
+        "FFMPEG_VIDEO_PRESET": "p2",
+    }) == {"MAX_HEIGHT": 720, "FFMPEG_VIDEO_CQ": 26, "FFMPEG_VIDEO_PRESET": "p2"}
+
+
 def test_ops_config_allows_discord_url_intake_channel(monkeypatch, tmp_path: Path) -> None:
     config = tmp_path / "config.env"
     monkeypatch.setattr(app_main.settings, "translation_config_api_token", "config-token")
@@ -107,7 +115,7 @@ def test_ops_config_allows_only_absolute_archive_mount_paths(monkeypatch, tmp_pa
         ops_config.validate_values({"CACHE_ARCHIVE_MOUNT_POINT": "/mnt/video"}),
         ops_config.revision(),
     )
-    assert old_values == {}
+    assert "CACHE_ARCHIVE_MOUNT_POINT" not in old_values
     assert "CACHE_ARCHIVE_MOUNT_POINT=/mnt/video" in config.read_text(encoding="utf-8")
     with pytest.raises(ops_config.ConfigValidationError):
         ops_config.validate_values({"CACHE_ARCHIVE_MOUNT_POINT": "../../mnt/video"})

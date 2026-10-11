@@ -193,6 +193,20 @@ def test_dual_subtitle_ass_preserves_source_line_breaks(tmp_path) -> None:
     assert r"First line\NSecond line" in ass
 
 
+def test_dual_subtitle_uses_requested_size_and_scales_before_drawing(tmp_path) -> None:
+    source = tmp_path / "source.srt"
+    translated = tmp_path / "translated.srt"
+    value = srt.compose([srt.Subtitle(1, timedelta(0), timedelta(seconds=1), "line")])
+    source.write_text(value, encoding="utf-8")
+    translated.write_text(value, encoding="utf-8")
+
+    args = main.ffmpeg_dual_subtitle_args(source, translated, subtitle_font_size=16)
+    ass = source.with_suffix(".dual.ass").read_text(encoding="utf-8")
+
+    assert args[1].startswith(r"scale=-2:min(ih\,")
+    assert ",16," in next(line for line in ass.splitlines() if line.startswith("Style: Default,"))
+
+
 def test_dual_subtitle_ass_keeps_source_cues_with_a_ranged_translation(tmp_path) -> None:
     source = tmp_path / "source.srt"
     translated = tmp_path / "translated.srt"

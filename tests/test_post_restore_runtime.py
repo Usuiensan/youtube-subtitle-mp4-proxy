@@ -336,7 +336,7 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         self.assertEqual(subtitle.name, "jrAS3MDxCeA.fr.srt")
         self.assertFalse(meta["translated"])
         self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[1][calls[1].index("-f") + 1], "bestvideo*+bestaudio/best")
+        self.assertEqual(calls[1][calls[1].index("-f") + 1], "bestvideo*[height<=720]+bestaudio/best[height<=720]")
 
     def test_unavailable_video_subtitle_api_returns_404(self) -> None:
         error = app_main.CommandError(["yt-dlp"], "ERROR: [youtube] I5e6ftNpGsU: This video is not available")

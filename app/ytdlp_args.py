@@ -6,9 +6,7 @@ from __future__ import annotations
 def download_format_selector(max_height: int, original_language: str | None = None) -> str:
     base = (
         f"bv*[height<={max_height}]+ba/"
-        f"b[height<={max_height}]/"
-        "bv*+ba/"
-        "b"
+        f"b[height<={max_height}]"
     )
     language = (original_language or "").strip().lower().split("-", 1)[0]
     if not language:
@@ -21,11 +19,11 @@ def download_format_selector(max_height: int, original_language: str | None = No
     )
 
 
-def fallback_format_selector(original_language: str | None = None) -> str:
+def fallback_format_selector(max_height: int, original_language: str | None = None) -> str:
     language = (original_language or "").strip().lower().split("-", 1)[0]
     if language:
-        return f"bestvideo*+mergeall[vcodec=none][language^={language}]/bestvideo*+bestaudio/best"
-    return "bestvideo*+bestaudio/best"
+        return f"bestvideo*[height<={max_height}]+mergeall[vcodec=none][language^={language}]/bestvideo*[height<={max_height}]+bestaudio/best[height<={max_height}]"
+    return f"bestvideo*[height<={max_height}]+bestaudio/best[height<={max_height}]"
 
 
 def direct_mp4_format_selector(max_height: int) -> str:

@@ -495,12 +495,12 @@ NVIDIA GTX 1050 Ti など NVENC 対応 GPU がある Windows 環境では、ロ�
 
 ```powershell
 $env:FFMPEG_VIDEO_ENCODER="h264_nvenc"
-$env:FFMPEG_VIDEO_PRESET="fast"
-$env:FFMPEG_VIDEO_CQ="23"
+$env:FFMPEG_VIDEO_PRESET="p2"
+$env:FFMPEG_VIDEO_CQ="26"
 ```
 
 CPU エンコードに戻す場合は `FFMPEG_VIDEO_ENCODER=libx264` を指定します。NVENC を使うには、NVIDIA ドライバーと `h264_nvenc` 対応の FFmpeg が必要です。
-`FFMPEG_VIDEO_PRESET=veryfast` は `libx264` 用で、`h264_nvenc` では使えません。NVENC では `fast`、`medium`、`slow`、`p1` から `p7` などを使ってください。無効な値が設定されている場合、アプリは `fast` にフォールバックします。
+`FFMPEG_VIDEO_PRESET=veryfast` は `libx264` 用で、`h264_nvenc` では使えません。NVENC では `p1` から `p7` などを使ってください。無効な値が設定されている場合、アプリは速度寄りの `p2` にフォールバックします。
 
 `Driver does not support the required nvenc API version` が出る場合は、FFmpeg が要求する NVENC API に対して NVIDIA ドライバーが古い状態です。この場合、アプリは CPU エンコードに自動フォールバックします。GPU を使い切りたい場合は NVIDIA ドライバーを更新してください。
 
@@ -561,7 +561,7 @@ WorkingDirectory=/opt/youtube-mp4-proxy
 Environment=CACHE_DIR=/var/cache/youtube-mp4
 Environment=DEFAULT_LANG=ja
 Environment=MAX_DURATION_SECONDS=1800
-Environment=MAX_HEIGHT=1080
+Environment=MAX_HEIGHT=720
 Environment=CACHE_TTL_SECONDS=86400
 Environment=SUBTITLE_FONT=Noto Sans JP
 ExecStart=/opt/youtube-mp4-proxy/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000

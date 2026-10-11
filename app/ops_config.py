@@ -26,10 +26,13 @@ CONFIG_SCHEMA: dict[str, tuple[str, float, float]] = {
     "DISCORD_OPERATOR_USER_ID": ("int", 1, 9_223_372_036_854_775_807),
     "DISCORD_URL_INTAKE_CHANNEL_ID": ("int", 1, 9_223_372_036_854_775_807),
     "CACHE_ARCHIVE_MOUNT_POINT": ("path", 0, 0),
+    "MAX_HEIGHT": ("int", 360, 2160),
+    "FFMPEG_VIDEO_CQ": ("int", 0, 51),
 }
 ENUM_VALUES = {
     "GEMINI_THINKING_LEVEL": {"minimal", "low", "medium", "high"},
     "TRANSLATION_DEFAULT_PROFILE": set(profile_models(os.getenv)),
+    "FFMPEG_VIDEO_PRESET": {f"p{index}" for index in range(1, 8)},
 }
 
 

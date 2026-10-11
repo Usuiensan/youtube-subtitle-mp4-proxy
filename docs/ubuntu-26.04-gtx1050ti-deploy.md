@@ -139,8 +139,8 @@ HLS_SEGMENT_SECONDS=6
 HLS_READY_TIMEOUT_SECONDS=1800
 
 FFMPEG_VIDEO_ENCODER=h264_nvenc
-FFMPEG_VIDEO_PRESET=fast
-FFMPEG_VIDEO_CQ=23
+FFMPEG_VIDEO_PRESET=p2
+FFMPEG_VIDEO_CQ=26
 
 YTDLP_EXTRA_ARGS=--js-runtimes deno --remote-components ejs:npm
 # YTDLP_COOKIES_FILE=/etc/youtube-mp4-cookies.txt
@@ -363,7 +363,7 @@ NVENC:
 
 ```bash
 ffmpeg -hide_banner -f lavfi -i testsrc2=size=1280x720:rate=30 -t 5 \
-  -c:v h264_nvenc -preset fast -cq 23 -f null -
+  -c:v h264_nvenc -preset p2 -cq 26 -f null -
 ```
 
 変換準備API:

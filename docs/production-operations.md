@@ -36,6 +36,9 @@ allowlist:
 - `DISCORD_OPERATOR_USER_ID` (Discordの運用者ID)
 - `DISCORD_URL_INTAKE_CHANNEL_ID` (URL貼り付け受付チャンネルID)
 - `CACHE_ARCHIVE_MOUNT_POINT` (HDDの固定マウント点)
+- `MAX_HEIGHT` (360..2160、字幕描画前の映像高上限)
+- `FFMPEG_VIDEO_CQ` (0..51、NVENC品質。大きいほど低画質・小容量)
+- `FFMPEG_VIDEO_PRESET` (`p1`..`p7`、NVENC速度。`p1`が最速)
 
 ## sudoers
 

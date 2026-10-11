@@ -686,7 +686,7 @@ def yt_dlp_download_format_selector(original_language: str | None = None) -> str
 
 
 def yt_dlp_fallback_format_selector(original_language: str | None = None) -> str:
-    return fallback_format_selector(original_language)
+    return fallback_format_selector(settings.max_height, original_language)
 
 
 def yt_dlp_direct_mp4_format_selector() -> str:
@@ -723,7 +723,7 @@ def cache_key(
 
 def render_profile_id(subtitle_font_size: int | None = None) -> str:
     return hashlib.sha1(
-        "\n".join(["dual-subtitle-layout-v15-punctuation-wrap", "media-stream-selection-v2", f"source-height-{settings.max_height}", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
+        "\n".join(["dual-subtitle-layout-v16-scaled", "media-stream-selection-v3-height-cap", f"source-height-{settings.max_height}", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
     ).hexdigest()[:8]
 
 
@@ -2877,16 +2877,16 @@ def ffmpeg_subtitle_arg(path: Path, subtitle_meta: dict | None = None, *, subtit
     )
     drawtext_filters = subtitle_overlay_drawtext_filters(subtitle_meta, font_file, subtitle_font_name)
     if drawtext_filters:
-        return f"{subtitle_filter},{','.join(drawtext_filters)}"
-    return subtitle_filter
+        subtitle_filter = f"{subtitle_filter},{','.join(drawtext_filters)}"
+    return f"scale=-2:min(ih\\,{settings.max_height}),{subtitle_filter}"
 
 
 def ffmpeg_video_args(encoder: str | None = None) -> list[str]:
     encoder = (encoder or settings.ffmpeg_video_encoder).strip().lower()
     if encoder in {"nvenc", "h264_nvenc"}:
-        nvenc_preset = (settings.ffmpeg_video_preset or "fast").strip().lower()
+        nvenc_preset = (settings.ffmpeg_video_preset or "p2").strip().lower()
         if nvenc_preset not in {"default", "slow", "medium", "fast", "hp", "hq", "bd", "ll", "llhq", "llhp", "lossless", "losslesshp", "p1", "p2", "p3", "p4", "p5", "p6", "p7"}:
-            nvenc_preset = "fast"
+            nvenc_preset = "p2"
         return [
             "-c:v",
             "h264_nvenc",
@@ -3913,7 +3913,7 @@ def ffmpeg_dual_subtitle_args(
 ) -> list[str]:
     combined_ass = original_subtitle.with_suffix(".dual.ass")
     base_font_size = subtitle_font_size if isinstance(subtitle_font_size, int) and subtitle_font_size > 0 else settings.subtitle_font_size
-    dual_font_size = max(round(base_font_size * 1.35), 24)
+    dual_font_size = base_font_size
     source_subtitles = load_srt(original_subtitle)
     translated_subtitles = load_srt(translated_subtitle)
     width_chars = max(38.0, 70.0 - dual_font_size * 0.55)
@@ -3985,9 +3985,7 @@ def ffmpeg_dual_subtitle_args(
     font_file, font_name = find_japanese_font_spec()
     subtitle_font_name = font_name or settings.subtitle_font
     drawtext_filters = subtitle_overlay_drawtext_filters(subtitle_meta, font_file, subtitle_font_name)
-    filter_str = (
-        f"ass='{escape_filter_value(combined_ass.as_posix())}'"
-    )
+    filter_str = f"scale=-2:min(ih\\,{settings.max_height}),ass='{escape_filter_value(combined_ass.as_posix())}'"
     if drawtext_filters:
         filter_str = f"{filter_str},{','.join(drawtext_filters)}"
     return [
