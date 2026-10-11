@@ -120,3 +120,12 @@ def test_maintenance_reboot_has_guards_and_nvenc_checks() -> None:
         "youtube-proxy-maintenance-boot.service",
     ):
         assert unit in provision
+
+
+def test_production_update_pauses_storage_watcher_while_services_are_replaced() -> None:
+    script = (ROOT / "scripts" / "youtube-proxy-update").read_text(encoding="utf-8")
+
+    stop_watcher = script.index('systemctl stop "$STORAGE_WATCH_SERVICE"')
+    stop_proxy = script.index('systemctl stop "$DISCORD_SERVICE" "$PROXY_SERVICE"')
+    start_watcher = script.index('systemctl start "$STORAGE_WATCH_SERVICE"')
+    assert stop_watcher < stop_proxy < start_watcher

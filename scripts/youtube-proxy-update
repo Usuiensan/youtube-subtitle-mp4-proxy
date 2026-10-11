@@ -4,6 +4,7 @@ set -Eeuo pipefail
 APP_DIR="/opt/youtube-mp4-proxy"
 PROXY_SERVICE="youtube-mp4-proxy"
 DISCORD_SERVICE="youtube-mp4-discord-bot"
+STORAGE_WATCH_SERVICE="youtube-proxy-storage-watch"
 INCOMING_DIR="/var/lib/youtube-proxy/incoming"
 ARCHIVE=""
 
@@ -47,6 +48,12 @@ rsync -a --delete \
     --exclude='cache/' \
     --exclude='data/' \
     "$APP_DIR/" "$BACKUP/"
+watcher_was_active=false
+if systemctl is-active --quiet "$STORAGE_WATCH_SERVICE"; then
+    watcher_was_active=true
+    systemctl stop "$STORAGE_WATCH_SERVICE"
+fi
+trap '$watcher_was_active && systemctl start "$STORAGE_WATCH_SERVICE"' EXIT
 systemctl stop "$DISCORD_SERVICE" "$PROXY_SERVICE"
 rsync -a --delete --exclude='.venv/' --exclude='.env*' --exclude='.pytest_cache/' --exclude='cache/' --exclude='data/' --exclude='.translation-audit/' --exclude='.translation-attempts/' "$STAGE/" "$APP_DIR/"
 install -o root -g root -m 755 "$STAGE/scripts/youtube-proxy-update" /usr/local/sbin/youtube-proxy-update
@@ -68,6 +75,8 @@ systemctl enable --now youtube-proxy-storage-watch.service youtube-proxy-ytdlp-u
 systemctl enable youtube-proxy-maintenance-boot.service
 systemctl start "$PROXY_SERVICE"
 systemctl start "$DISCORD_SERVICE"
+$watcher_was_active && systemctl start "$STORAGE_WATCH_SERVICE"
+trap - EXIT
 sleep 5
 systemctl is-active --quiet "$PROXY_SERVICE"
 systemctl is-active --quiet "$DISCORD_SERVICE"
