@@ -8,7 +8,6 @@ import re
 import shutil
 import time
 from dataclasses import dataclass
-from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
@@ -324,26 +323,11 @@ def split_group_translation_candidates(
 
 
 _ANCHOR_RE = re.compile(r"https?://\S+|[A-Za-z]*\d+(?:[.,]\d+)?[A-Za-z]*")
-_NUMBER_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(thousand|million|billion|万|億)?", re.IGNORECASE)
 _FILLER_TRANSLATIONS = {"完了", "終了", "翻訳なし", "翻訳完了", "translation complete", "done"}
 
 
 def _translation_anchors(text: str) -> list[str]:
     return [match.group(0) for match in _ANCHOR_RE.finditer(text)]
-
-
-def _values_preserved(source: list[Any], translated: list[Any]) -> bool:
-    remaining = iter(source)
-    expected = next(remaining, None)
-    for value in translated:
-        if value == expected:
-            expected = next(remaining, None)
-    return expected is None
-
-
-def _numeric_values(text: str) -> list[Decimal]:
-    scales = {"": 1, "thousand": 1_000, "million": 1_000_000, "billion": 1_000_000_000, "万": 10_000, "億": 100_000_000}
-    return [Decimal(number.replace(",", "")) * scales[scale.lower()] for number, scale in _NUMBER_RE.findall(text)]
 
 
 def _group_translation_issue(group: MeaningGroup, translation: str) -> str | None:
@@ -356,11 +340,8 @@ def _group_translation_issue(group: MeaningGroup, translation: str) -> str | Non
     source_anchors = _translation_anchors(source)
     source_named = [anchor for anchor in source_anchors if not anchor[0].isdigit()]
     translated_named = [anchor for anchor in _translation_anchors(text) if not anchor[0].isdigit()]
-    if source_anchors and (
-        not _values_preserved(source_named, translated_named)
-        or not _values_preserved(_numeric_values(source), _numeric_values(text))
-    ):
-        return "number, model, or URL anchors changed"
+    if source_named != translated_named:
+        return "model or URL anchors changed"
     return None
 
 
