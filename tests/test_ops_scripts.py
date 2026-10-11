@@ -13,9 +13,12 @@ def test_windows_ops_scripts_do_not_accept_or_print_tokens() -> None:
 
 
 def test_windows_config_script_allows_video_quality_settings() -> None:
-    text = (ROOT / "scripts" / "production-config.ps1").read_text(encoding="utf-8")
+    texts = [
+        (ROOT / "scripts" / "production-config.ps1").read_text(encoding="utf-8"),
+        (ROOT / "scripts" / "youtube-proxy-config").read_text(encoding="utf-8"),
+    ]
     for key in ("MAX_HEIGHT", "FFMPEG_VIDEO_CQ", "FFMPEG_VIDEO_PRESET"):
-        assert key in text
+        assert all(key in text for text in texts)
 
 
 def test_root_wrappers_have_fixed_local_endpoints_and_services() -> None:
