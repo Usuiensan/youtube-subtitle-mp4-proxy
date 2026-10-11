@@ -15,6 +15,14 @@ def test_unrelated_ffmpeg_error_does_not_use_nvenc_fallback() -> None:
     assert not app_main.is_nvenc_driver_error(message)
 
 
+def test_cpu_fallback_does_not_reuse_nvenc_preset(monkeypatch) -> None:
+    monkeypatch.setattr(app_main.settings, "ffmpeg_video_preset", "p2")
+
+    args = app_main.ffmpeg_video_args("libx264")
+
+    assert args[args.index("-preset") + 1] == "veryfast"
+
+
 def test_slideshow_ffmpeg_runner_uses_global_encode_lock(monkeypatch) -> None:
     events: list[str] = []
 

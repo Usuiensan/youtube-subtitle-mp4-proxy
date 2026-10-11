@@ -2905,11 +2905,14 @@ def ffmpeg_video_args(encoder: str | None = None) -> list[str]:
     if encoder != "libx264":
         raise HTTPException(status_code=500, detail=f"Unsupported video encoder: {encoder}")
 
+    x264_preset = settings.ffmpeg_video_preset or "veryfast"
+    if x264_preset.lower() in {f"p{number}" for number in range(1, 8)}:
+        x264_preset = "veryfast"
     return [
         "-c:v",
         "libx264",
         "-preset",
-        settings.ffmpeg_video_preset or "veryfast",
+        x264_preset,
         "-crf",
         settings.ffmpeg_video_crf,
         "-pix_fmt",
