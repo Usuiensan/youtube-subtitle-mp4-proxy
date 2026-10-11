@@ -48,6 +48,14 @@ def test_python_split_preserves_translation_and_weights_by_duration() -> None:
     assert len(result.segments[1]) > len(result.segments[0])
 
 
+def test_python_split_keeps_japanese_particles_with_the_preceding_phrase() -> None:
+    source = (cue(1, 0, 4, "x"), cue(2, 4, 10, "x"))
+
+    result = split_group_translation("誰にとっても最高の選択です", source)
+
+    assert result.segments == ("誰にとっても", "最高の選択です")
+
+
 def test_python_split_rejects_translation_too_short_for_non_empty_ids() -> None:
     with pytest.raises(TranslationError, match="too short"):
         split_group_translation("短文", tuple(cue(i, i, i + 1, "x") for i in range(1, 5)))

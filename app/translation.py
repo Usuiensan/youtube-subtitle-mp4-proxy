@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import srt
+from sudachipy import Dictionary, SplitMode
 
 
 @dataclass
@@ -227,13 +228,24 @@ def batch_translation_groups(payload: dict[str, Any], groups: list[MeaningGroup]
 _BAD_SPLIT_BEFORE = set("、。！？!?)]}）］｝」』】〉》,.;:：；")
 _BAD_SPLIT_AFTER = set("([{（［｛「『【〈《")
 _GOOD_SPLIT_AFTER = set("、。！？!?：；")
+_SUDACHI_DICTIONARY = Dictionary(dict="small")
 
 
 def _char_weight(text: str) -> float:
     return sum(0.5 if ord(character) < 128 else 1.0 for character in text)
 
 
-def _split_boundary_penalty(text: str, position: int) -> float:
+def _morpheme_boundaries(text: str) -> dict[int, tuple[str, str]]:
+    morphemes = list(_SUDACHI_DICTIONARY.tokenizer(mode=SplitMode.C).tokenize(text))
+    boundaries: dict[int, tuple[str, str]] = {}
+    position = 0
+    for before, after in zip(morphemes, morphemes[1:]):
+        position += len(before.raw_surface())
+        boundaries[position] = (before.part_of_speech()[0], after.part_of_speech()[0])
+    return boundaries
+
+
+def _split_boundary_penalty(text: str, position: int, morpheme_boundaries: dict[int, tuple[str, str]]) -> float:
     before = text[position - 1]
     after = text[position]
     if before in _BAD_SPLIT_AFTER or after in _BAD_SPLIT_BEFORE:
@@ -244,8 +256,14 @@ def _split_boundary_penalty(text: str, position: int) -> float:
         return -4.0
     if before.isascii() and after.isascii() and before.isalnum() and after.isalnum():
         return 30.0
-    if before in "てでにはをがとのもへばからのでし" or after in "しかしそしてまた":
-        return -1.5
+    parts_of_speech = morpheme_boundaries.get(position)
+    if parts_of_speech is None:
+        return 30.0
+    before_pos, after_pos = parts_of_speech
+    if after_pos in {"助詞", "助動詞", "接尾辞"}:
+        return 30.0
+    if before_pos in {"助詞", "助動詞"}:
+        return -2.0
     return 1.0
 
 
@@ -261,6 +279,7 @@ def split_group_translation(translation: str, subtitles: tuple[srt.Subtitle, ...
         difficult = _char_weight(text) / duration > 14.0
         return TranslationSplit((text,), 0.0, difficult)
 
+    morpheme_boundaries = _morpheme_boundaries(text)
     durations = [max(0.1, (item.end - item.start).total_seconds()) for item in subtitles]
     total_duration = sum(durations)
     cumulative_targets: list[float] = []
@@ -278,7 +297,7 @@ def split_group_translation(translation: str, subtitles: tuple[srt.Subtitle, ...
                 prior = states.get((segment_index - 1, previous_position))
                 if prior is None:
                     continue
-                cost = prior[0] + ((position - target) ** 2) / max(1.0, len(text)) + _split_boundary_penalty(text, position)
+                cost = prior[0] + ((position - target) ** 2) / max(1.0, len(text)) + _split_boundary_penalty(text, position, morpheme_boundaries)
                 if best is None or cost < best[0]:
                     best = (cost, (*prior[1], position))
             if best is not None:
@@ -294,7 +313,7 @@ def split_group_translation(translation: str, subtitles: tuple[srt.Subtitle, ...
         raise TranslationError("translation split did not preserve the completed translation")
     rates = [_char_weight(segment) / duration for segment, duration in zip(segments, durations)]
     bad_boundaries = sum(
-        _split_boundary_penalty(text, position) >= 30.0
+        _split_boundary_penalty(text, position, morpheme_boundaries) >= 30.0
         for position in best[1]
     )
     difficult = bad_boundaries > 0 or max(rates) > 14.0

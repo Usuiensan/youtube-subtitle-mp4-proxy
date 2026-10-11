@@ -3,5 +3,7 @@ python-multipart==0.0.20
 uvicorn[standard]==0.34.0
 discord.py==2.7.1
 srt==3.5.3
+sudachipy==0.7.0
+sudachidict_small==20260723.1
 google-cloud-translate==3.20.2
 yt-dlp[default,curl-cffi]
