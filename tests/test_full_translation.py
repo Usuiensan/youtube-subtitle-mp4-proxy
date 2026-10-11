@@ -81,6 +81,21 @@ def test_group_validation_keeps_source_digits_while_allowing_translated_quantity
     assert invalid == []
 
 
+def test_group_validation_accepts_equivalent_japanese_large_number_but_rejects_changed_value() -> None:
+    groups = build_meaning_groups([cue(1, 0, 2, "It cost $2 million.")])
+    accepted, invalid = validate_group_translations(groups, {
+        "groups": [{"group_id": "g001", "translation": "費用は200万ドルでした。"}]
+    })
+    assert accepted == {"g001": "費用は200万ドルでした。"}
+    assert invalid == []
+
+    accepted, invalid = validate_group_translations(groups, {
+        "groups": [{"group_id": "g001", "translation": "費用は300万ドルでした。"}]
+    })
+    assert accepted == {}
+    assert invalid == ["g001"]
+
+
 def test_prompt_uses_groups_and_flattens_escape_markers() -> None:
     prompt = translation_worker.build_full_translation_prompt({"source_language": "en", "target_language": "ja", "groups": [
         {"group_id": "g001", "source": [{"id": 1, "text": r"first\nsecond\hthird"}]}
