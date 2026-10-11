@@ -72,6 +72,15 @@ def test_group_validation_allows_a_spelled_number_to_become_digits() -> None:
     assert invalid == []
 
 
+def test_group_validation_keeps_source_digits_while_allowing_translated_quantity_digits() -> None:
+    groups = build_meaning_groups([cue(1, 0, 2, "24 ft wide, nearly a mile long.")])
+    accepted, invalid = validate_group_translations(groups, {
+        "groups": [{"group_id": "g001", "translation": "幅24 ft、全長約1マイルです。"}]
+    })
+    assert accepted == {"g001": "幅24 ft、全長約1マイルです。"}
+    assert invalid == []
+
+
 def test_prompt_uses_groups_and_flattens_escape_markers() -> None:
     prompt = translation_worker.build_full_translation_prompt({"source_language": "en", "target_language": "ja", "groups": [
         {"group_id": "g001", "source": [{"id": 1, "text": r"first\nsecond\hthird"}]}

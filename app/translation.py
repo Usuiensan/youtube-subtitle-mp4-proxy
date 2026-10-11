@@ -330,6 +330,17 @@ def _translation_anchors(text: str) -> list[str]:
     return [match.group(0) for match in _ANCHOR_RE.finditer(text)]
 
 
+def _translation_anchors_preserved(source: list[str], translated: list[str]) -> bool:
+    remaining = iter(source)
+    expected = next(remaining, None)
+    for anchor in translated:
+        if anchor == expected:
+            expected = next(remaining, None)
+        elif not re.fullmatch(r"\d+(?:[.,]\d+)?", anchor):
+            return False
+    return expected is None
+
+
 def _group_translation_issue(group: MeaningGroup, translation: str) -> str | None:
     text = str(translation).strip()
     if not text:
@@ -338,7 +349,7 @@ def _group_translation_issue(group: MeaningGroup, translation: str) -> str | Non
         return "filler translation"
     source = " ".join(normalize_subtitle_text(item.content, compact=True) for item in group.subtitles)
     source_anchors = _translation_anchors(source)
-    if source_anchors and source_anchors != _translation_anchors(text):
+    if source_anchors and not _translation_anchors_preserved(source_anchors, _translation_anchors(text)):
         return "number, model, or URL anchors changed"
     return None
 
