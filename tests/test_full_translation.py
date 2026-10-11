@@ -96,6 +96,15 @@ def test_group_validation_does_not_reject_numeric_differences() -> None:
     assert invalid == []
 
 
+def test_group_validation_does_not_reject_url_or_model_differences() -> None:
+    groups = build_meaning_groups([cue(1, 0, 2, "See https://example.com for model A123.")])
+    accepted, invalid = validate_group_translations(groups, {
+        "groups": [{"group_id": "g001", "translation": "詳細はexample.jpのB456を参照してください。"}]
+    })
+    assert accepted == {"g001": "詳細はexample.jpのB456を参照してください。"}
+    assert invalid == []
+
+
 def test_prompt_uses_groups_and_flattens_escape_markers() -> None:
     prompt = translation_worker.build_full_translation_prompt({"source_language": "en", "target_language": "ja", "groups": [
         {"group_id": "g001", "source": [{"id": 1, "text": r"first\nsecond\hthird"}]}

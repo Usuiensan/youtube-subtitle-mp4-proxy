@@ -322,12 +322,7 @@ def split_group_translation_candidates(
     return unique
 
 
-_ANCHOR_RE = re.compile(r"https?://\S+|[A-Za-z]*\d+(?:[.,]\d+)?[A-Za-z]*")
 _FILLER_TRANSLATIONS = {"完了", "終了", "翻訳なし", "翻訳完了", "translation complete", "done"}
-
-
-def _translation_anchors(text: str) -> list[str]:
-    return [match.group(0) for match in _ANCHOR_RE.finditer(text)]
 
 
 def _group_translation_issue(group: MeaningGroup, translation: str) -> str | None:
@@ -336,12 +331,6 @@ def _group_translation_issue(group: MeaningGroup, translation: str) -> str | Non
         return "empty translation"
     if text.lower().strip("。.!！ ") in _FILLER_TRANSLATIONS:
         return "filler translation"
-    source = " ".join(normalize_subtitle_text(item.content, compact=True) for item in group.subtitles)
-    source_anchors = _translation_anchors(source)
-    source_named = [anchor for anchor in source_anchors if not anchor[0].isdigit()]
-    translated_named = [anchor for anchor in _translation_anchors(text) if not anchor[0].isdigit()]
-    if source_named != translated_named:
-        return "model or URL anchors changed"
     return None
 
 
