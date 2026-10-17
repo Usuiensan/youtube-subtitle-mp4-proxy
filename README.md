@@ -288,7 +288,7 @@ reburn https://www.youtube.com/watch?v=dQw4w9WgXcQ lang=ja mode=mp4
 
 `DISCORD_URL_INTAKE_CHANNEL_ID` に特定チャンネルの ID を設定すると、そのチャンネルへ YouTube 動画 URL を貼るだけで、DM と同じ選択 UI を表示します。
 
-`url` にプレイリスト URL やチャンネル URL を渡した場合は、YouTube Data API v3 で一覧を展開して一括準備します。`max_items` の既定値は `DISCORD_PREPARE_BATCH_MAX_ITEMS`、未設定時は 5000 件です。
+`url` にプレイリスト URL やチャンネル URL を渡した場合は、YouTube Data API v3 で一覧を展開して一括準備します。`max_items` の既定値は `DISCORD_PREPARE_BATCH_MAX_ITEMS`、未設定時は 5000 件です。`lang` は字幕付き出力で使う言語で、既定値は `ja` です。ニコニコ動画のURLまたは `sm` / `so` / `nm` 動画IDを指定する場合は、`mode:字幕なしMP4（再エンコードなし）`を選びます。ニコニコ動画は現在direct MP4だけに対応します。
 `url` に動画URLまたは動画IDを複数入れた場合も、手動動画リストとして一括準備できます。区切りは改行、空白、カンマに対応します。Web UI の動画準備欄も同じ形式を受け付け、複数件の場合は `/prepare/youtube-batch` に `sourceType=videos` で送信します。
 
 大量一括準備では `PREPARE_JOB_CONCURRENCY` で同時に実行する準備ジョブ数を制限します。既定は `3` です。DL・翻訳はエンコード待ち中でも先行して実行され、エンコードだけを `FFMPEG_ENCODE_CONCURRENCY` で制限します。既定は `1` です。GPU/NVENC やCPUに余裕がある場合は `FFMPEG_ENCODE_CONCURRENCY=2` 以上へ上げられます。各ジョブは一時的な `429` / `5xx` / `502` / `504` / タイムアウト系の失敗を `PREPARE_JOB_MAX_ATTEMPTS` 回まで再試行し、待ち時間は `PREPARE_JOB_RETRY_BASE_SECONDS` から指数バックオフします。さらに、YouTube 取得に使う yt-dlp は `YTDLP_CONCURRENCY=1`、`YTDLP_MIN_INTERVAL_SECONDS=8` を既定にして、メタデータ取得・動画DL・字幕DLの開始頻度を制限します。チャンネル全件などで失敗が多い場合は、まず `PREPARE_JOB_CONCURRENCY=1` または `2`、`YTDLP_MIN_INTERVAL_SECONDS=10` 以上に下げ、cookies と yt-dlp の更新状況を確認してください。一括完了通知と `/prepare/batches/:batchId` には代表的な失敗理由が最大5件含まれます。

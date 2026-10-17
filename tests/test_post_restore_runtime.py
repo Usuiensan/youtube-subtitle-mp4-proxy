@@ -451,6 +451,54 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         ):
             asyncio.run(run_case(source))
 
+    def test_discord_prepare_routes_niconico_direct_to_niconico_api(self) -> None:
+        import asyncio
+
+        interaction = SimpleNamespace(
+            response=SimpleNamespace(defer=AsyncMock()),
+            edit_original_response=AsyncMock(return_value=SimpleNamespace()),
+            followup=SimpleNamespace(send=AsyncMock()),
+            user=SimpleNamespace(id=123456789012345678),
+        )
+        mode = bot_main.app_commands.Choice(name="字幕なしMP4（再エンコードなし）", value="direct")
+        with patch.object(bot_main.settings, "discord_prepare_token", "token"), patch.object(
+            bot_main, "prepare_niconico", new=AsyncMock(return_value=(202, {"status": "queued"}))
+        ) as prepare_niconico, patch.object(bot_main, "prepare_batch", new=AsyncMock()) as prepare_batch:
+            asyncio.run(
+                bot_main.prepare_command.callback(
+                    interaction,
+                    "https://www.nicovideo.jp/watch/sm9",
+                    mode=mode,
+                )
+            )
+
+        prepare_niconico.assert_awaited_once_with("https://www.nicovideo.jp/watch/sm9", interaction.user.id)
+        prepare_batch.assert_not_awaited()
+
+    def test_discord_prepare_rejects_niconico_subtitle_modes(self) -> None:
+        import asyncio
+
+        interaction = SimpleNamespace(
+            response=SimpleNamespace(defer=AsyncMock()),
+            edit_original_response=AsyncMock(return_value=SimpleNamespace()),
+            followup=SimpleNamespace(send=AsyncMock()),
+            user=SimpleNamespace(id=123456789012345678),
+        )
+        mode = bot_main.app_commands.Choice(name="MP4", value="mp4")
+        with patch.object(bot_main.settings, "discord_prepare_token", "token"), patch.object(
+            bot_main, "prepare_niconico", new=AsyncMock()
+        ) as prepare_niconico:
+            asyncio.run(
+                bot_main.prepare_command.callback(
+                    interaction,
+                    "https://www.nicovideo.jp/watch/sm9",
+                    mode=mode,
+                )
+            )
+
+        prepare_niconico.assert_not_awaited()
+        self.assertIn("字幕なしMP4", interaction.edit_original_response.await_args.kwargs["content"])
+
     def test_discord_clear_all_edits_original_response_and_calls_api_once(self) -> None:
         import asyncio
 

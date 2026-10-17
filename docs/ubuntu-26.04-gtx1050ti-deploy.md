@@ -331,7 +331,7 @@ botが起動すると `/prepare` スラッシュコマンドを同期します�
 /prepare url:https://www.youtube.com/@ikeaireland lang:ja mode:MP4 max_items:5000
 ```
 
-`url` にプレイリスト URL、プレイリスト ID、`@handle`、`https://www.youtube.com/@handle`、`https://www.youtube.com/channel/...` を渡すと、YouTube Data API v3 で一覧を展開して一括準備します。この機能には `YOUTUBE_DATA_API_KEY` が必要です。
+`url` にプレイリスト URL、プレイリスト ID、`@handle`、`https://www.youtube.com/@handle`、`https://www.youtube.com/channel/...` を渡すと、YouTube Data API v3 で一覧を展開して一括準備します。この機能には `YOUTUBE_DATA_API_KEY` が必要です。`lang` の既定値は `ja` です。ニコニコ動画のURLまたは `sm` / `so` / `nm` 動画IDは、`mode:字幕なしMP4（再エンコードなし）`を選んだ場合にdirect MP4として準備します。
 
 単体動画で `lang:ja` を指定し、日本語字幕が存在しない場合は、準備開始前に Discord の選択 UI で翻訳元字幕と翻訳先を選びます。手動字幕の候補は1件が初期選択され、翻訳先は日本語が初期値です。どちらも変更できます。翻訳プロファイルは `TRANSLATION_DEFAULT_PROFILE` で固定します。Google Cloud Translation と YouTube の自動生成字幕・自動翻訳字幕は使用しません。一括準備では動画ごとの UI は出さず、従来どおり自動選択します。
 

@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 import discord
 from discord import app_commands
+from fastapi import HTTPException
+from app.niconico_inputs import NICONICO_VIDEO_ID_RE, parse_niconico_url
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env.local"
 LANG_NAMES_JA = {
@@ -339,6 +341,23 @@ async def prepare_video(
         variant_path = f"/{urllib.parse.quote(subtitle_source_lang, safe='')}"
     url = f"{settings.youtube_proxy_internal_base_url}/prepare/youtube/{video_id}/{lang}{variant_path}?{query}"
     return await asyncio.to_thread(http_json, "POST", url)
+
+
+async def prepare_niconico(source: str, discord_user_id: int) -> tuple[int, dict[str, Any]]:
+    query = urllib.parse.urlencode({"source": source, "discordUserId": str(discord_user_id)})
+    url = f"{settings.youtube_proxy_internal_base_url}/prepare/niconico?{query}"
+    return await asyncio.to_thread(http_json, "POST", url)
+
+
+def niconico_source_url(value: str) -> str | None:
+    value = value.strip()
+    if NICONICO_VIDEO_ID_RE.fullmatch(value):
+        return f"https://www.nicovideo.jp/watch/{value.lower()}"
+    try:
+        _video_id, source_url = parse_niconico_url(value)
+    except HTTPException:
+        return None
+    return source_url
 
 
 async def fetch_subtitle_options(video_id: str, lang: str, mode: str) -> dict[str, Any]:
@@ -1815,10 +1834,10 @@ async def translation_model_command(
     await interaction.edit_original_response(content=output[:1900])
 
 
-@client.tree.command(name="prepare", description="YouTube動画を変換またはSSDへ準備します")
+@client.tree.command(name="prepare", description="YouTubeまたはニコニコ動画を準備します")
 @app_commands.describe(
-    url="YouTube URL、動画ID、playlist URL、channel URL、複数IDの並び",
-    lang="字幕言語",
+    url="YouTube／ニコニコURL、動画ID、playlist URL、channel URL、複数IDの並び",
+    lang="字幕付き出力の言語（既定: ja）",
     mode="出力形式",
     max_items="playlist/channel URL の最大準備件数",
     archive_immediately="準備後すぐHDDへ退避する",
@@ -1833,7 +1852,7 @@ async def translation_model_command(
 async def prepare_command(
     interaction: discord.Interaction,
     url: str,
-    lang: str,
+    lang: str = "ja",
     mode: app_commands.Choice[str] | None = None,
     max_items: int | None = None,
     archive_immediately: bool = False,
@@ -1851,7 +1870,16 @@ async def prepare_command(
         await interaction.edit_original_response(content="archive_immediately は MP4 のみ対応です。", view=None)
         return
     try:
-        if looks_like_manual_video_list(url) or looks_like_playlist_or_channel(url):
+        niconico_url = niconico_source_url(url)
+        if niconico_url:
+            if selected_mode != "direct":
+                await interaction.edit_original_response(
+                    content="ニコニコ動画は現在、字幕なしMP4（再エンコードなし）のみ対応しています。",
+                    view=None,
+                )
+                return
+            _status, body = await prepare_niconico(niconico_url, interaction.user.id)
+        elif looks_like_manual_video_list(url) or looks_like_playlist_or_channel(url):
             batch_source_type = "videos" if looks_like_manual_video_list(url) else "auto"
             _status, body = await prepare_batch(
                 url,
