@@ -261,6 +261,20 @@ bot はスラッシュコマンド `/prepare` を提供します。
 
 `mode=direct` で準備すると、字幕処理と再エンコードを行わず、VRChat向けの H.264/AAC MP4 を取得して `/youtube-direct/:videoId` から配信します。
 
+ニコニコ動画は、動画URLまたは動画IDを準備APIへ渡すと、字幕処理と再エンコードを行わずにMP4を取得して配信できます。対応IDは `sm`、`so`、`nm` 形式です。
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $DISCORD_PREPARE_TOKEN" \
+  "http://127.0.0.1:8000/prepare/niconico?source=https%3A%2F%2Fwww.nicovideo.jp%2Fwatch%2Fsm9"
+
+curl -X POST \
+  -H "Authorization: Bearer $DISCORD_PREPARE_TOKEN" \
+  "http://127.0.0.1:8000/prepare/niconico/sm9"
+```
+
+準備完了後の配信URLは `/niconico-direct/:videoId` です。H.264/AACのMP4形式を取得できない動画は、再エンコードせずエラーにします。
+
 運用者は `/scan` で現在の Discord サーバーにある全テキストチャンネルの YouTube 動画リンクを再走査できます。引数なしは全期間、`/scan days:30` は直近30日だけを対象にします。`days` 指定時は表示も「直近30日」となり、「累計」とは表示しません。初回から `days` 指定を使った場合は、サーバー全期間の件数ではない旨を注意表示します。
 
 Discord の DM へ YouTube 動画 URL を直接送ると、配信方法の選択 UI を表示します。既定は「字幕付きMP4（再エンコードあり）」です。字幕付きでは利用可能な手動字幕の元言語を1件、翻訳先を日本語で初期選択し、どちらもUIから変更できます。

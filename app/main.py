@@ -111,6 +111,7 @@ from app.youtube_inputs import (
     manual_video_tracks,
     parse_youtube_url,
 )
+from app.niconico_inputs import parse_niconico_url, validate_niconico_video_id
 from app.ytdlp_args import (
     args_without_cookies,
     direct_mp4_format_selector,
@@ -1004,6 +1005,7 @@ def write_meta(key: str, video_id: str, lang: str, info: dict, mode: str) -> Non
                 "channel_id": extract_channel_id(info),
                 "title_variants": extract_title_variants(info),
                 "duration": info.get("duration"),
+                "webpage_url": info.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}",
                 "created_at": int(time.time()),
                 "mode": mode,
             },
@@ -1628,8 +1630,8 @@ async def run_command_unlimited(
     )
 
 
-async def fetch_video_info(video_id: str) -> dict:
-    url = f"https://www.youtube.com/watch?v={video_id}"
+async def fetch_video_info(video_id: str, source_url: str | None = None) -> dict:
+    url = source_url or f"https://www.youtube.com/watch?v={video_id}"
     base_args = yt_dlp_base_args()
     info_args = base_args + [
         "--dump-single-json",
@@ -1668,7 +1670,8 @@ async def fetch_video_info(video_id: str) -> dict:
                         break
                 else:
                     info = json.loads(raw)
-                    await enrich_video_info_titles(info, video_id)
+                    if source_url is None:
+                        await enrich_video_info_titles(info, video_id)
                     return info
         if is_youtube_video_unavailable_error(detail):
             hint = (
@@ -1681,7 +1684,8 @@ async def fetch_video_info(video_id: str) -> dict:
             raise HTTPException(status_code=404, detail=hint) from error
         raise HTTPException(status_code=502, detail=detail[-1000:] or "Failed to fetch YouTube video info") from error
     info = json.loads(raw)
-    await enrich_video_info_titles(info, video_id)
+    if source_url is None:
+        await enrich_video_info_titles(info, video_id)
     return info
 
 
@@ -4344,13 +4348,17 @@ async def create_mp4(
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
-async def create_direct_mp4(video_id: str, job_id: str | None = None) -> Path:
+async def create_direct_mp4(
+    video_id: str,
+    job_id: str | None = None,
+    source_url: str | None = None,
+) -> Path:
     key = cache_key(video_id, "direct")
     prepared = prepared_output_path(key)
     if prepared:
         return prepared
 
-    info = await fetch_video_info(video_id)
+    info = await fetch_video_info(video_id, source_url=source_url)
     assert_duration_allowed(info)
     work_dir = settings.cache_hot_dir / f".work-{key}-{uuid.uuid4().hex}"
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -4366,7 +4374,7 @@ async def create_direct_mp4(video_id: str, job_id: str | None = None) -> Path:
             str(work_dir),
             "-o",
             "%(id)s.%(ext)s",
-            f"https://www.youtube.com/watch?v={video_id}",
+            source_url or f"https://www.youtube.com/watch?v={video_id}",
         ]
         if job_id:
             await run_yt_dlp_with_progress(args, job_id=job_id, cwd=work_dir)
@@ -4678,9 +4686,12 @@ def prepared_media_url(
     mode: str,
     subtitle_source_lang: str | None = None,
     translation_engine: str | None = None,
+    source_url: str | None = None,
 ) -> str:
     base_url = public_base_url(request)
     if mode == "direct":
+        if source_url and "nicovideo.jp" in source_url:
+            return f"{base_url}/niconico-direct/{video_id}"
         return f"{base_url}/youtube-direct/{video_id}"
     suffix = ""
     if subtitle_source_lang:
@@ -4998,6 +5009,7 @@ async def run_prepare_job_once(
     archive_immediately: bool = False,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
+    source_url: str | None = None,
 ) -> None:
     cache_id = prepare_cache_key(video_id, lang, mode, subtitle_source_lang, translation_engine)
     if archived_ready_entry_exists(cache_id, mode):
@@ -5019,7 +5031,7 @@ async def run_prepare_job_once(
             )
             update_job_eta(job_id, eta)
         else:
-            info = await fetch_video_info(video_id)
+            info = await fetch_video_info(video_id, source_url=source_url)
             assert_duration_allowed(info)
             _prepare_jobs[job_id]["title"] = info.get("title")
             _prepare_jobs[job_id]["title_variants"] = extract_title_variants(info)
@@ -5032,7 +5044,7 @@ async def run_prepare_job_once(
             update_job_eta(job_id, eta)
     update_job_eta(job_id, None)
     if mode == "direct":
-        await create_direct_mp4(video_id, job_id=job_id)
+        await create_direct_mp4(video_id, job_id=job_id, source_url=source_url)
     elif mode == "hls":
         await get_or_create_hls(
             video_id,
@@ -5084,6 +5096,7 @@ async def run_prepare_job(
     archive_immediately: bool = False,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
+    source_url: str | None = None,
 ) -> None:
     try:
         async with _prepare_job_semaphore:
@@ -5109,6 +5122,7 @@ async def run_prepare_job(
                         archive_immediately=archive_immediately,
                         reuse_cached_subtitle=reuse_cached_subtitle,
                         reuse_source_video=reuse_source_video,
+                        source_url=source_url,
                     )
                     return
                 except Exception as error:
@@ -5157,6 +5171,7 @@ async def enqueue_prepare_job(
     archive_immediately: bool = False,
     reuse_cached_subtitle: bool = False,
     reuse_source_video: bool = False,
+    source_url: str | None = None,
 ) -> tuple[int, dict]:
     if subtitle_source_lang:
         subtitle_source_lang = subtitle_source_lang.strip()
@@ -5166,7 +5181,7 @@ async def enqueue_prepare_job(
         configured_translation_engine() if subtitle_source_lang else None
     )
     ready = prepare_ready_path(video_id, lang, mode, subtitle_source_lang, normalized_engine)
-    url = prepared_media_url(request, video_id, lang, mode, subtitle_source_lang, normalized_engine)
+    url = prepared_media_url(request, video_id, lang, mode, subtitle_source_lang, normalized_engine, source_url=source_url)
     if ready:
         cache_id = prepare_cache_key(video_id, lang, mode, subtitle_source_lang, normalized_engine)
         job = {
@@ -5253,6 +5268,7 @@ async def enqueue_prepare_job(
                 archive_immediately=archive_immediately,
                 reuse_cached_subtitle=reuse_cached_subtitle,
                 reuse_source_video=reuse_source_video,
+                source_url=source_url,
             )
         )
         return 202, job_response_body(job_id, _prepare_jobs[job_id], request)
@@ -8336,6 +8352,17 @@ async def youtube_direct(video_id: str, request: Request) -> Response:
     raise HTTPException(status_code=404, detail="Direct MP4 is not prepared")
 
 
+@app.get("/niconico-direct/{video_id}")
+async def niconico_direct(video_id: str, request: Request) -> Response:
+    video_id = validate_niconico_video_id(video_id)
+    key = cache_key(video_id, "direct")
+    path = hot_output_path(key) or archived_output_path(key)
+    if path is not None:
+        return mp4_response(request, path)
+    await cleanup_expired_cache_async()
+    raise HTTPException(status_code=404, detail="Niconico direct MP4 is not prepared")
+
+
 @app.post("/slideshow")
 async def create_slideshow(
     request: Request,
@@ -8543,6 +8570,47 @@ async def prepare_youtube(
         translation_engine=translation_engine,
         subtitle_font_size=subtitle_font_size,
         archive_immediately=archive_immediately,
+    )
+    return JSONResponse(body, status_code=status_code)
+
+
+@app.post("/prepare/niconico")
+async def prepare_niconico_url(
+    request: Request,
+    source: str = Query(..., description="Niconico video URL"),
+    discord_user_id: str | None = Query(None, alias="discordUserId"),
+) -> JSONResponse:
+    video_id, source_url = parse_niconico_url(source)
+    return await prepare_niconico_video(request, video_id, discord_user_id, source_url)
+
+
+@app.post("/prepare/niconico/{video_id}")
+async def prepare_niconico_video_route(
+    video_id: str,
+    request: Request,
+    discord_user_id: str | None = Query(None, alias="discordUserId"),
+) -> JSONResponse:
+    return await prepare_niconico_video(request, video_id, discord_user_id)
+
+
+async def prepare_niconico_video(
+    request: Request,
+    video_id: str,
+    discord_user_id: str | None,
+    source_url: str | None = None,
+) -> JSONResponse:
+    require_prepare_auth(request)
+    video_id = validate_niconico_video_id(video_id)
+    discord_user_id = validate_discord_user_id(discord_user_id)
+    source_url = source_url or f"https://www.nicovideo.jp/watch/{video_id}"
+    await cleanup_expired_cache_async()
+    status_code, body = await enqueue_prepare_job(
+        request,
+        video_id,
+        "direct",
+        "direct",
+        discord_user_id,
+        source_url=source_url,
     )
     return JSONResponse(body, status_code=status_code)
 

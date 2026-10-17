@@ -86,6 +86,20 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         self.assertEqual(client.get("/").status_code, 200)
         self.assertEqual(client.get("/healthz").status_code, 200)
 
+    def test_niconico_prepare_accepts_url_and_queues_direct_mp4(self) -> None:
+        enqueue = AsyncMock(return_value=(202, {"status": "queued", "job_id": "job1"}))
+        with patch.object(app_main.settings, "discord_prepare_token", "token"), patch.object(
+            app_main, "enqueue_prepare_job", new=enqueue
+        ):
+            response = TestClient(app_main.app).post(
+                "/prepare/niconico?source=https%3A%2F%2Fwww.nicovideo.jp%2Fwatch%2Fsm9",
+                headers={"Authorization": "Bearer token"},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(enqueue.await_args.args[1:5], ("sm9", "direct", "direct", None))
+        self.assertEqual(enqueue.await_args.kwargs["source_url"], "https://www.nicovideo.jp/watch/sm9")
+
     def test_prepare_api_auth_failure_is_not_500(self) -> None:
         response = TestClient(app_main.app).post("/prepare/youtube/dQw4w9WgXcQ/ja?mode=mp4")
         self.assertIn(response.status_code, {401, 403, 503})

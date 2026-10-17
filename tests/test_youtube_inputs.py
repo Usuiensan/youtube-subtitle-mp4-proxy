@@ -7,6 +7,7 @@ from app.youtube_inputs import (
     extract_video_id_from_value,
     manual_video_tracks,
 )
+from app.niconico_inputs import parse_niconico_url, validate_niconico_video_id
 
 
 def test_extract_video_id_supports_common_url_forms() -> None:
@@ -32,3 +33,20 @@ def test_manual_video_tracks_deduplicates_and_limits() -> None:
     tracks = manual_video_tracks(f"{video_id} https://youtu.be/{video_id}", 10)
     assert len(tracks) == 1
     assert tracks[0]["video_id"] == video_id
+
+
+def test_niconico_video_urls_are_normalized() -> None:
+    assert parse_niconico_url("https://www.nicovideo.jp/watch/sm9") == (
+        "sm9",
+        "https://www.nicovideo.jp/watch/sm9",
+    )
+    assert parse_niconico_url("https://nico.ms/so123") == (
+        "so123",
+        "https://www.nicovideo.jp/watch/so123",
+    )
+    assert validate_niconico_video_id("SM9") == "sm9"
+
+
+def test_niconico_parser_rejects_non_video_urls() -> None:
+    with pytest.raises(HTTPException):
+        parse_niconico_url("https://www.nicovideo.jp/mylist/123")
