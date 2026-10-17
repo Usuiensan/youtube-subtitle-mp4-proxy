@@ -1013,10 +1013,17 @@ class SubtitleChoiceView(discord.ui.View):
         self.mode = mode
         self.archive_immediately = archive_immediately
         self.source_lang: str | None = None
-        self.target_lang: str | None = None
+        self.target_lang: str | None = "ja"
         candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
         visible_candidates = candidates[:25]
-        selected_source_lang = None
+        selected_source_lang = next(
+            (
+                str(candidate.get("language") or "")
+                for candidate in visible_candidates
+                if isinstance(candidate, dict) and candidate.get("language")
+            ),
+            None,
+        )
         self.source_lang = selected_source_lang
         source_options = []
         for candidate in visible_candidates:
@@ -1044,7 +1051,7 @@ class SubtitleChoiceView(discord.ui.View):
             options=source_options,
         )
         target_options = [
-            discord.SelectOption(label="日本語", value="ja"),
+            discord.SelectOption(label="日本語", value="ja", default=True),
             discord.SelectOption(label="そのまま", value="same"),
             discord.SelectOption(label="英語", value="en"),
             discord.SelectOption(label="韓国語", value="ko"),
@@ -1160,12 +1167,12 @@ class IntakePrepareView(discord.ui.View):
         super().__init__(timeout=300)
         self.requester_id = requester_id
         self.video_id = video_id
-        self.mode = "direct"
+        self.mode = "mp4"
         self.mode_select = discord.ui.Select(
             placeholder="配信方法を選択",
             options=[
-                discord.SelectOption(label="字幕付きMP4", value="mp4"),
-                discord.SelectOption(label="字幕なしMP4（再エンコードなし）", value="direct", default=True),
+                discord.SelectOption(label="字幕付きMP4", value="mp4", default=True),
+                discord.SelectOption(label="字幕なしMP4（再エンコードなし）", value="direct"),
             ],
         )
         self.mode_select.callback = self.on_mode_selected

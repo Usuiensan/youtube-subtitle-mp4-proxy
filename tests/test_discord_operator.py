@@ -53,8 +53,8 @@ def test_intake_channel_requires_explicit_prepare_choices(monkeypatch) -> None:
     sent = message.channel.messages[0]
     assert sent.content == "配信方法を選択してください。字幕付きの場合は元言語と翻訳先も選択します。"
     assert isinstance(sent.view, main.IntakePrepareView)
-    assert sent.view.mode == "direct"
-    assert sent.view.mode_select.options[1].default is True
+    assert sent.view.mode == "mp4"
+    assert sent.view.mode_select.options[0].default is True
 
 
 def test_direct_message_url_opens_prepare_choices(monkeypatch) -> None:
@@ -91,7 +91,8 @@ def test_direct_message_url_opens_prepare_choices(monkeypatch) -> None:
     content, view = message.author.messages[0]
     assert content == "配信方法を選択してください。字幕付きの場合は元言語と翻訳先も選択します。"
     assert isinstance(view, main.IntakePrepareView)
-    assert view.mode == "direct"
+    assert view.mode == "mp4"
+    assert view.mode_select.options[0].default is True
 
 
 def test_subtitle_intake_uses_available_source_languages(monkeypatch) -> None:
@@ -132,6 +133,10 @@ def test_subtitle_intake_uses_available_source_languages(monkeypatch) -> None:
 
     assert isinstance(interaction.message.view, main.SubtitleChoiceView)
     assert [option.value for option in interaction.message.view.source_select.options] == ["es", "en"]
+    assert interaction.message.view.source_lang == "es"
+    assert interaction.message.view.source_select.options[0].default is True
+    assert interaction.message.view.target_lang == "ja"
+    assert interaction.message.view.target_select.options[0].default is True
 
 
 def test_scan_days_result_does_not_call_count_cumulative() -> None:
