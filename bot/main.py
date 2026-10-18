@@ -1036,6 +1036,7 @@ class SubtitleChoiceView(discord.ui.View):
         super().__init__(timeout=300)
         self.requester_id = requester_id
         self.video_id = video_id
+        self.title = str(options_body.get("title") or video_id)
         self.lang = lang
         self.mode = mode
         self.archive_immediately = archive_immediately
@@ -1119,7 +1120,7 @@ class SubtitleChoiceView(discord.ui.View):
             return
         self.source_lang = self.source_select.values[0]
         self._mark_selected(self.source_select, self.source_lang)
-        await interaction.response.edit_message(content=subtitle_choice_prompt(self.video_id, self), view=self)
+        await interaction.response.edit_message(content=subtitle_choice_prompt(self.title, self), view=self)
 
     async def on_target_selected(self, interaction: discord.Interaction) -> None:
         if self._busy:
@@ -1127,7 +1128,7 @@ class SubtitleChoiceView(discord.ui.View):
             return
         self.target_lang = self.target_select.values[0]
         self._mark_selected(self.target_select, self.target_lang)
-        await interaction.response.edit_message(content=subtitle_choice_prompt(self.video_id, self), view=self)
+        await interaction.response.edit_message(content=subtitle_choice_prompt(self.title, self), view=self)
 
     @discord.ui.button(label="実行", style=discord.ButtonStyle.primary)
     async def start_prepare(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
