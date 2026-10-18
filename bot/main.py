@@ -1041,6 +1041,7 @@ class SubtitleChoiceView(discord.ui.View):
         self.mode = mode
         self.archive_immediately = archive_immediately
         self._busy = False
+        self._ui_lock = asyncio.Lock()
         self.source_lang: str | None = None
         self.target_lang: str | None = "ja"
         candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
@@ -1120,7 +1121,10 @@ class SubtitleChoiceView(discord.ui.View):
             return
         self.source_lang = self.source_select.values[0]
         self._mark_selected(self.source_select, self.source_lang)
-        await interaction.response.edit_message(content=subtitle_choice_prompt(self.title, self), view=self)
+        await interaction.response.defer()
+        async with self._ui_lock:
+            if not self._busy:
+                await interaction.message.edit(content=subtitle_choice_prompt(self.title, self), view=self)
 
     async def on_target_selected(self, interaction: discord.Interaction) -> None:
         if self._busy:
@@ -1128,7 +1132,10 @@ class SubtitleChoiceView(discord.ui.View):
             return
         self.target_lang = self.target_select.values[0]
         self._mark_selected(self.target_select, self.target_lang)
-        await interaction.response.edit_message(content=subtitle_choice_prompt(self.title, self), view=self)
+        await interaction.response.defer()
+        async with self._ui_lock:
+            if not self._busy:
+                await interaction.message.edit(content=subtitle_choice_prompt(self.title, self), view=self)
 
     @discord.ui.button(label="実行", style=discord.ButtonStyle.primary)
     async def start_prepare(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
@@ -1150,8 +1157,10 @@ class SubtitleChoiceView(discord.ui.View):
         target_lang = source_lang if self.target_lang == "same" else self.target_lang
         for child in self.children:
             child.disabled = True
-        await interaction.response.edit_message(content="選択を確定しました。準備の要求を送信しています…", view=None)
+        await interaction.response.defer()
         progress_message = interaction.message
+        async with self._ui_lock:
+            await progress_message.edit(content="選択を確定しました。準備の要求を送信しています…", view=None)
         try:
             _status, body = await prepare_video(
                 self.video_id,
@@ -1198,7 +1207,9 @@ class SubtitleChoiceView(discord.ui.View):
             await interaction.response.send_message("すでに準備の要求を受け付けています。", ephemeral=True, silent=True)
             return
         self._busy = True
-        await interaction.response.edit_message(content="準備をキャンセルしました。", view=None)
+        await interaction.response.defer()
+        async with self._ui_lock:
+            await interaction.message.edit(content="準備をキャンセルしました。", view=None)
         self.stop()
 
 class IntakePrepareView(discord.ui.View):
@@ -1209,6 +1220,7 @@ class IntakePrepareView(discord.ui.View):
         self.video_id = video_id
         self.mode = "mp4"
         self._busy = False
+        self._ui_lock = asyncio.Lock()
         self.mode_select = discord.ui.Select(
             placeholder="配信方法を選択",
             options=[
@@ -1235,10 +1247,13 @@ class IntakePrepareView(discord.ui.View):
         self.mode = self.mode_select.values[0]
         SubtitleChoiceView._mark_selected(self.mode_select, self.mode)
         label = "字幕なしMP4" if self.mode == "direct" else "字幕付きMP4"
-        await interaction.response.edit_message(
-            content=f"配信方法: {label} を選択しました。「次へ」で確定してください。",
-            view=self,
-        )
+        await interaction.response.defer()
+        async with self._ui_lock:
+            if not self._busy:
+                await interaction.message.edit(
+                    content=f"配信方法: {label} を選択しました。「次へ」で確定してください。",
+                    view=self,
+                )
 
     @discord.ui.button(label="次へ", style=discord.ButtonStyle.primary)
     async def continue_prepare(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
@@ -1251,11 +1266,13 @@ class IntakePrepareView(discord.ui.View):
         lang = "direct" if mode == "direct" else "ja"
         for child in self.children:
             child.disabled = True
-        await interaction.response.edit_message(
-            content="字幕候補を取得しています…" if mode != "direct" else "準備の要求を送信しています…",
-            view=None,
-        )
+        await interaction.response.defer()
         progress_message = interaction.message
+        async with self._ui_lock:
+            await progress_message.edit(
+                content="字幕候補を取得しています…" if mode != "direct" else "準備の要求を送信しています…",
+                view=None,
+            )
         if mode != "direct":
             try:
                 options_body = await fetch_subtitle_options(self.video_id, lang, "mp4")
@@ -1294,7 +1311,9 @@ class IntakePrepareView(discord.ui.View):
             await interaction.response.send_message("すでに処理を受け付けています。", ephemeral=True, silent=True)
             return
         self._busy = True
-        await interaction.response.edit_message(content="準備をキャンセルしました。", view=None)
+        await interaction.response.defer()
+        async with self._ui_lock:
+            await interaction.message.edit(content="準備をキャンセルしました。", view=None)
         self.stop()
 
 async def notify_when_done(
