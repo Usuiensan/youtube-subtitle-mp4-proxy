@@ -35,9 +35,16 @@ class GeminiTranslationTests(unittest.TestCase):
             async def edit_message(self, **kwargs):
                 self.kwargs = kwargs
 
+            async def defer(self, **_kwargs):
+                pass
+
+            async def edit(self, **kwargs):
+                self.kwargs = kwargs
+
         class Interaction:
             def __init__(self) -> None:
                 self.response = Response()
+                self.message = self.response
 
         interaction = Interaction()
         asyncio.run(view.on_target_selected(interaction))
@@ -82,9 +89,16 @@ class GeminiTranslationTests(unittest.TestCase):
             async def edit_message(self, **kwargs):
                 self.kwargs = kwargs
 
+            async def defer(self, **_kwargs):
+                pass
+
+            async def edit(self, **kwargs):
+                self.kwargs = kwargs
+
         class Interaction:
             def __init__(self) -> None:
                 self.response = Response()
+                self.message = self.response
 
         interaction = Interaction()
         view.source_select._values = ["en"]
