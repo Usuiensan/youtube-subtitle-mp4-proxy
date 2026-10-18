@@ -112,6 +112,9 @@ def test_subtitle_intake_uses_available_source_languages(monkeypatch) -> None:
         async def defer(self, **_kwargs) -> None:
             pass
 
+        async def edit_message(self, **_kwargs) -> None:
+            pass
+
     class Interaction:
         user = type("User", (), {"id": 42})()
         response = Response()
