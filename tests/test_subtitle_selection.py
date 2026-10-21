@@ -192,6 +192,13 @@ def test_dual_subtitle_uses_detected_japanese_font(tmp_path, monkeypatch) -> Non
     assert ",Noto Sans CJK SC," not in style
 
 
+def test_japanese_gothic_file_uses_its_actual_family_name(monkeypatch) -> None:
+    japanese_font = "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf"
+    monkeypatch.setattr(main.os.path, "exists", lambda path: path == japanese_font)
+
+    assert main.find_japanese_font_spec() == (japanese_font, "IPAGothic")
+
+
 def test_render_profile_changes_when_detected_font_changes(monkeypatch) -> None:
     monkeypatch.setattr(main.settings, "subtitle_font", "Noto Sans CJK SC")
     monkeypatch.setattr(main, "find_japanese_font_spec", lambda: ("/fonts/NotoSansJP-Regular.otf", "Noto Sans JP"))
