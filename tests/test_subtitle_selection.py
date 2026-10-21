@@ -199,6 +199,13 @@ def test_japanese_gothic_file_uses_its_actual_family_name(monkeypatch) -> None:
     assert main.find_japanese_font_spec() == (japanese_font, "IPAGothic")
 
 
+def test_noto_sans_regular_is_preferred_when_available(monkeypatch) -> None:
+    noto_font = "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"
+    monkeypatch.setattr(main.os.path, "exists", lambda path: path == noto_font)
+
+    assert main.find_japanese_font_spec() == (noto_font, "Noto Sans")
+
+
 def test_render_profile_changes_when_detected_font_changes(monkeypatch) -> None:
     monkeypatch.setattr(main.settings, "subtitle_font", "Noto Sans CJK SC")
     monkeypatch.setattr(main, "find_japanese_font_spec", lambda: ("/fonts/NotoSansJP-Regular.otf", "Noto Sans JP"))

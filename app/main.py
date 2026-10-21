@@ -2860,6 +2860,7 @@ def find_japanese_font_spec() -> tuple[str | None, str | None]:
     candidates = [
         ("/usr/share/fonts/opentype/noto/NotoSansJP-Regular.otf", "Noto Sans JP"),
         ("/usr/share/fonts/truetype/noto/NotoSansJP-Regular.ttf", "Noto Sans JP"),
+        ("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "Noto Sans"),
         ("/usr/local/share/fonts/truetype/form-udp-gothic/FORMUDPGothic-Regular.ttf", "FORM UDPGothic"),
         ("/usr/share/fonts/truetype/fonts-japanese-gothic.ttf", "IPAGothic"),
         ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "Noto Sans CJK JP"),
