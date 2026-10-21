@@ -206,6 +206,15 @@ def test_noto_sans_regular_is_preferred_when_available(monkeypatch) -> None:
     assert main.find_japanese_font_spec() == (noto_font, "Noto Sans")
 
 
+def test_noto_sans_cjk_jp_is_always_preferred(monkeypatch) -> None:
+    monkeypatch.setattr(main.os.path, "exists", lambda path: True)
+
+    assert main.find_japanese_font_spec() == (
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "Noto Sans CJK JP",
+    )
+
+
 def test_render_profile_changes_when_detected_font_changes(monkeypatch) -> None:
     monkeypatch.setattr(main.settings, "subtitle_font", "Noto Sans CJK SC")
     monkeypatch.setattr(main, "find_japanese_font_spec", lambda: ("/fonts/NotoSansJP-Regular.otf", "Noto Sans JP"))
@@ -297,6 +306,21 @@ def test_translation_overlay_uses_actual_engine_after_fallback() -> None:
 def test_translation_overlay_omits_incomplete_fallback_label() -> None:
     assert main.get_subtitle_overlay_label({}) == ""
     assert main.subtitle_overlay_drawtext_filters({}, None, "Noto Sans JP") == []
+
+
+def test_translation_overlay_uses_detected_japanese_font_file(monkeypatch, tmp_path) -> None:
+    font_file = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+    monkeypatch.setattr(main, "find_japanese_font_spec", lambda: (font_file, "Noto Sans CJK JP"))
+    subtitle = tmp_path / "subtitle.srt"
+    subtitle.write_text("1\n00:00:00,000 --> 00:00:01,000\n字幕\n", encoding="utf-8")
+
+    args = main.ffmpeg_subtitle_arg(
+        subtitle,
+        {"requested_language": "ja"},
+    )
+
+    assert f":fontfile='{font_file}'" in args
+    assert "text='[字幕]日本語'" in args
 
 
 def test_translation_overlay_contains_languages_and_model() -> None:

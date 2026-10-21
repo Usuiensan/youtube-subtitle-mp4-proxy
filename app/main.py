@@ -2858,13 +2858,12 @@ def enrich_existing_subtitle_usage_metadata(metadata: dict, subtitle: Path) -> d
 
 def find_japanese_font_spec() -> tuple[str | None, str | None]:
     candidates = [
+        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "Noto Sans CJK JP"),
         ("/usr/share/fonts/opentype/noto/NotoSansJP-Regular.otf", "Noto Sans JP"),
         ("/usr/share/fonts/truetype/noto/NotoSansJP-Regular.ttf", "Noto Sans JP"),
         ("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "Noto Sans"),
         ("/usr/local/share/fonts/truetype/form-udp-gothic/FORMUDPGothic-Regular.ttf", "FORM UDPGothic"),
         ("/usr/share/fonts/truetype/fonts-japanese-gothic.ttf", "IPAGothic"),
-        ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "Noto Sans CJK JP"),
-        ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", "Noto Sans CJK JP"),
         ("/usr/share/fonts/truetype/ipaexfont/ipaexg.ttf", "IPAexGothic"),
         ("/usr/share/fonts/truetype/vlgothic/VL-PGothic-Regular.ttf", "VL PGothic"),
     ]
