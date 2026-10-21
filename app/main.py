@@ -724,8 +724,9 @@ def cache_key(
 
 
 def render_profile_id(subtitle_font_size: int | None = None) -> str:
+    detected_font_name = find_japanese_font_spec()[1] or settings.subtitle_font
     return hashlib.sha1(
-        "\n".join(["dual-subtitle-layout-v16-scaled", "media-stream-selection-v3-height-cap", f"source-height-{settings.max_height}", subtitle_force_style(font_size=subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
+        "\n".join(["dual-subtitle-layout-v16-scaled", "media-stream-selection-v3-height-cap", f"source-height-{settings.max_height}", subtitle_force_style(detected_font_name, subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
     ).hexdigest()[:8]
 
 
@@ -3764,6 +3765,7 @@ def build_ass_from_srt(
         return f"{hours}:{minutes:02d}:{seconds:02d}.{centiseconds:02d}"
 
     subtitles = subtitles_override if subtitles_override is not None else load_srt(subtitle_path)
+    font_name = find_japanese_font_spec()[1] or settings.subtitle_font
     primary_colour = settings.subtitle_primary_colour
     back_colour = settings.subtitle_back_colour
     lines = [
@@ -3776,7 +3778,7 @@ def build_ass_from_srt(
         "",
         "[V4+ Styles]",
         "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding",
-        f"Style: Default,{settings.subtitle_font},{font_size},{primary_colour},&H000000FF,{back_colour},{back_colour},0,0,0,0,100,100,0,0,{border_style},0,0,{align},{margin_l},{margin_r},{margin_v},1",
+        f"Style: Default,{font_name},{font_size},{primary_colour},&H000000FF,{back_colour},{back_colour},0,0,0,0,100,100,0,0,{border_style},0,0,{align},{margin_l},{margin_r},{margin_v},1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",

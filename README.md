@@ -631,7 +631,7 @@ export SUBTITLE_PRIMARY_COLOUR='&H00FFFFFF'
 export SUBTITLE_BACK_COLOUR='&H40000000'
 ```
 
-`SUBTITLE_FONT` はサーバーにインストール済みのフォント名を指定してください。候補は `Noto Sans JP`、`Noto Sans CJK JP`、`BIZ UDPGothic`、`Rounded M+ 1c` あたりです。
+`SUBTITLE_FONT` は日本語フォントを自動検出できない環境で使うフォールバックのフォント名です。候補は `Noto Sans JP`、`Noto Sans CJK JP`、`BIZ UDPGothic`、`Rounded M+ 1c` あたりです。焼き込み時は、検出できた日本語フォントを優先して指定します。
 Windows の `start-local-server.bat` は起動時に `.env.local` を再生成します。`SUBTITLE_FONT_SIZE` などの字幕設定は、既存の `.env.local` に値があれば保持されます。コマンドラインで `-SubtitleFontSize 16` のように指定した場合は、その指定値で上書きされます。起動済みプロセスには環境変数ファイルの変更は自動反映されないため、変更後はサーバーを再起動してください。
 既に作成済みのMP4は字幕サイズを変えても書き換わりません。新しい字幕設定で作り直すには、対象動画のキャッシュを削除してから再準備してください。
 

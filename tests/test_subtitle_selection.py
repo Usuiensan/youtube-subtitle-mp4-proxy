@@ -175,6 +175,32 @@ def test_dual_subtitle_ass_is_centered_and_does_not_duplicate_source(tmp_path) -
     assert int(dialogues[0].split(",")[7]) > int(dialogues[1].split(",")[7])
 
 
+def test_dual_subtitle_uses_detected_japanese_font(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "source.srt"
+    translated = tmp_path / "translated.srt"
+    value = srt.compose([srt.Subtitle(1, timedelta(0), timedelta(seconds=1), "終わり")])
+    source.write_text(value, encoding="utf-8")
+    translated.write_text(value, encoding="utf-8")
+    monkeypatch.setattr(main.settings, "subtitle_font", "Noto Sans CJK SC")
+    monkeypatch.setattr(main, "find_japanese_font_spec", lambda: ("/fonts/NotoSansJP-Regular.otf", "Noto Sans JP"))
+
+    main.ffmpeg_dual_subtitle_args(source, translated)
+
+    ass = source.with_suffix(".dual.ass").read_text(encoding="utf-8")
+    style = next(line for line in ass.splitlines() if line.startswith("Style: Default,"))
+    assert ",Noto Sans JP," in style
+    assert ",Noto Sans CJK SC," not in style
+
+
+def test_render_profile_changes_when_detected_font_changes(monkeypatch) -> None:
+    monkeypatch.setattr(main.settings, "subtitle_font", "Noto Sans CJK SC")
+    monkeypatch.setattr(main, "find_japanese_font_spec", lambda: ("/fonts/NotoSansJP-Regular.otf", "Noto Sans JP"))
+    japanese_profile = main.render_profile_id()
+    monkeypatch.setattr(main, "find_japanese_font_spec", lambda: (None, None))
+
+    assert japanese_profile != main.render_profile_id()
+
+
 def test_dual_subtitle_ass_preserves_source_line_breaks(tmp_path) -> None:
     source = tmp_path / "source.srt"
     translated = tmp_path / "translated.srt"
