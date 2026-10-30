@@ -341,3 +341,23 @@ def test_wrap_text_to_width_prefers_punctuation_then_word_boundary() -> None:
     assert main.wrap_text_to_width("一二三、四五六、七八九", 7) == ["一二三、", "四五六、七八九"]
     assert main.wrap_text_to_width("one two three four", 4) == ["one two", "three", "four"]
     assert main.wrap_text_to_width("句読点のない長い日本語", 4) == ["句読点のない長い日本語"]
+
+
+def test_subtitle_candidates_prioritize_languages_without_dropping_tracks() -> None:
+    remaining = "fr de es it pt ru ar hi th vi id ms nl pl uk cs da fi el he hu no ro sk sv tr bg ca et fa hr lt lv sl ta te ur".split()
+    languages = remaining[:12] + ["ko", "en-US"] + remaining[12:] + [
+        "zh-Hant", "ja", "en", "zh-Hans", "ja-JP", "zh", "zh-CN", "zh-TW",
+    ]
+    info = {"language": "zh-Hant", "subtitles": {lang: [{"ext": "vtt"}] for lang in languages}}
+
+    candidates = main.subtitle_candidates(info, "ja")
+    ordered = [candidate["language"] for candidate in candidates]
+
+    assert languages.index("ja") > 25
+    assert "ja" in ordered[:25]
+    assert ordered[0] == "zh-Hant"
+    assert len(ordered) == len(languages)
+    assert set(ordered) == set(languages)
+    assert [lang for lang in ordered if lang in remaining] == remaining
+    assert [lang for lang in ordered if main.normalize_lang(lang) == "en"] == ["en-US", "en"]
+    assert [lang for lang in ordered if main.normalize_lang(lang) == "ja"] == ["ja", "ja-JP"]
