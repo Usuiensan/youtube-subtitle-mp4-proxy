@@ -1045,7 +1045,13 @@ class SubtitleChoiceView(discord.ui.View):
         self.source_lang: str | None = None
         self.target_lang: str | None = "ja"
         candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
-        visible_candidates = candidates[:25]
+        visible_candidates = sorted(
+            candidates,
+            key=lambda candidate: not (
+                isinstance(candidate, dict)
+                and str(candidate.get("language") or "").split("-")[0].lower() == self.lang.split("-")[0].lower()
+            ),
+        )[:25]
         selected_source_lang = next(
             (
                 str(candidate.get("language") or "")
@@ -1278,6 +1284,20 @@ class IntakePrepareView(discord.ui.View):
                 options_body = await fetch_subtitle_options(self.video_id, lang, "mp4")
             except PrepareApiError as error:
                 await progress_message.edit(content=subtitle_options_error_message(error), view=None)
+                return
+            if options_body.get("error") and not options_body.get("requires_choice"):
+                await progress_message.edit(content=str(options_body["error"]), view=None)
+                return
+            if not options_body.get("requires_choice"):
+                try:
+                    _status, body = await prepare_video(self.video_id, lang, "mp4", self.requester_id)
+                except PrepareApiError as error:
+                    await progress_message.edit(content=f"準備APIエラー ({error.status_code}): {error.detail}", view=None)
+                    return
+                await progress_message.edit(content=status_message(body, self.requester_id), view=None)
+                status_url = body.get("status_url")
+                if body.get("status") in {"queued", "running"} and isinstance(status_url, str):
+                    asyncio.create_task(notify_when_done(None, status_url, progress_message=progress_message, channel=interaction.channel, user=interaction.user))
                 return
             candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
             if not candidates:
