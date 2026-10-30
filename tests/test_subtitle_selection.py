@@ -68,6 +68,18 @@ def test_variant_japanese_track_is_recognized_as_requested_language(monkeypatch)
         "ja",
     )
 
+    assert body["requires_choice"] is True
+    assert "error" not in body
+
+    monkeypatch.setattr(main.settings, "translation_enabled", False)
+    body = main.subtitle_choice_body(
+        {
+            "id": "video",
+            "subtitles": {"ja-p4xb9ptA1GQ": [{"ext": "vtt"}]},
+        },
+        "ja",
+    )
+
     assert body["requires_choice"] is False
     assert "error" not in body
 
