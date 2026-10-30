@@ -2316,7 +2316,7 @@ def subtitle_choice_body(info: dict, requested_lang: str) -> dict:
     candidates = subtitle_candidates(info, requested_lang)
     body.update(
         {
-            "requires_choice": settings.translation_enabled and not requested and bool(candidates),
+            "requires_choice": settings.translation_enabled and bool(candidates),
             "candidates": candidates,
         }
     )
@@ -7581,7 +7581,7 @@ async def index() -> str:
         subtitleSource.appendChild(option);
       }}
       prepareOptions.hidden = false;
-      prepareStatus.textContent = "日本語字幕が見つかりませんでした。翻訳元字幕を選んで、もう一度 Prepare を押してください。";
+      prepareStatus.textContent = "翻訳元字幕を選んで、もう一度 Prepare を押してください。";
       return true;
     }}
 
