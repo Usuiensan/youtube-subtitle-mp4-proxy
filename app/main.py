@@ -2288,7 +2288,15 @@ def subtitle_candidates(info: dict, requested_lang: str) -> list[dict]:
                 "source_kind": source_kind,
             }
         )
-    return candidates
+    priorities = []
+    video_language = info.get("language")
+    if isinstance(video_language, str) and video_language:
+        priorities.append(video_language)
+    priorities.extend([requested_lang, "en", "ko", "zh-Hans", "zh-Hant", "zh", "zh-CN", "zh-TW"])
+    ranks = {}
+    for lang in priorities:
+        ranks.setdefault(normalize_lang(lang), len(ranks))
+    return sorted(candidates, key=lambda candidate: ranks.get(normalize_lang(candidate["language"]), len(ranks)))
 
 
 def subtitle_choice_body(info: dict, requested_lang: str) -> dict:

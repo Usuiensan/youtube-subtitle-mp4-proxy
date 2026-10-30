@@ -102,6 +102,7 @@ def test_intake_next_opens_single_subtitle_menu(monkeypatch) -> None:
             await finish.wait()
             return {
                 "title": "sample",
+                "requires_choice": True,
                 "candidates": [{"language": "en", "name": "English"}],
             }
         mocked = AsyncMock(side_effect=fetch)
@@ -191,5 +192,52 @@ def test_late_select_response_cannot_restore_menu_after_prepare(monkeypatch) -> 
         assert message.view is None
         assert "準備できました" in message.content
         assert not any(item.get("view") is view for item in message.edits)
+
+    asyncio.run(scenario())
+
+
+def test_intake_next_prepares_directly_when_requested_subtitles_exist(monkeypatch) -> None:
+    async def scenario() -> None:
+        fetch = AsyncMock(return_value={"requires_choice": False, "candidates": [{"language": "ja"}]})
+        body = {"status": "queued", "status_url": "https://example.test/status"}
+        prepare = AsyncMock(return_value=(202, body))
+        notify = AsyncMock()
+        monkeypatch.setattr(main, "fetch_subtitle_options", fetch)
+        monkeypatch.setattr(main, "prepare_video", prepare)
+        monkeypatch.setattr(main, "notify_when_done", notify)
+        view = main.IntakePrepareView(requester_id=42, video_id="dQw4w9WgXcQ")
+        message = FakeProgressMessage()
+        request = interaction(message)
+
+        await view.continue_prepare.callback(request)
+        await asyncio.sleep(0)
+
+        fetch.assert_awaited_once_with("dQw4w9WgXcQ", "ja", "mp4")
+        prepare.assert_awaited_once_with("dQw4w9WgXcQ", "ja", "mp4", 42)
+        assert message.view is None
+        assert message.content == main.status_message(body, 42)
+        notify.assert_awaited_once_with(
+            None, body["status_url"], progress_message=message, channel=request.channel, user=request.user,
+        )
+
+    asyncio.run(scenario())
+
+
+def test_subtitle_source_select_keeps_requested_language_beyond_limit() -> None:
+    async def scenario() -> None:
+        candidates = [{"language": f"other{i}"} for i in range(30)]
+        candidates.extend([{"language": "ja-JP"}, {"language": "ja"}])
+        view = main.SubtitleChoiceView(
+            requester_id=42,
+            video_id="dQw4w9WgXcQ",
+            lang="ja",
+            mode="mp4",
+            options_body={"candidates": candidates},
+        )
+
+        values = [option.value for option in view.source_select.options]
+        assert len(values) == 25
+        assert values[:2] == ["ja-JP", "ja"]
+        assert values[2:] == [candidate["language"] for candidate in candidates[:23]]
 
     asyncio.run(scenario())
