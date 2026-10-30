@@ -543,7 +543,7 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         interaction.followup.send.assert_awaited_once_with("done", ephemeral=True, silent=True)
         clear_all.assert_awaited_once()
 
-    def test_notify_when_done_updates_progress_with_completion(self) -> None:
+    def test_notify_when_done_replaces_progress_with_completion(self) -> None:
         import asyncio
 
         interaction = SimpleNamespace(
@@ -566,13 +566,14 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         ):
             asyncio.run(bot_main.notify_when_done(interaction, "http://example.test/jobs/1", progress_message=progress_message))
 
-        progress_message.edit.assert_awaited_once()
-        progress_message.delete.assert_not_awaited()
-        interaction.channel.send.assert_not_awaited()
-        self.assertIn("<@123> 準備できました。", progress_message.edit.await_args.kwargs["content"])
-        self.assertTrue(progress_message.edit.await_args.kwargs["allowed_mentions"].users)
+        progress_message.delete.assert_awaited_once()
+        progress_message.edit.assert_not_awaited()
+        interaction.channel.send.assert_awaited_once()
+        self.assertIn("<@123> 準備できました。", interaction.channel.send.await_args.args[0])
+        self.assertTrue(interaction.channel.send.await_args.kwargs["allowed_mentions"].users)
+        self.assertFalse(interaction.channel.send.await_args.kwargs.get("silent", False))
 
-    def test_notify_when_done_updates_progress_with_failure(self) -> None:
+    def test_notify_when_done_replaces_progress_with_failure(self) -> None:
         import asyncio
 
         interaction = SimpleNamespace(
@@ -594,10 +595,10 @@ class PostRestoreRuntimeTests(unittest.TestCase):
         ):
             asyncio.run(bot_main.notify_when_done(interaction, "http://example.test/jobs/1", progress_message=progress_message))
 
-        progress_message.edit.assert_awaited_once()
-        progress_message.delete.assert_not_awaited()
-        self.assertIn("model not found", progress_message.edit.await_args.kwargs["content"])
-        interaction.channel.send.assert_not_awaited()
+        progress_message.delete.assert_awaited_once()
+        progress_message.edit.assert_not_awaited()
+        interaction.channel.send.assert_awaited_once()
+        self.assertIn("model not found", interaction.channel.send.await_args.args[0])
         interaction.followup.send.assert_not_awaited()
 
 
