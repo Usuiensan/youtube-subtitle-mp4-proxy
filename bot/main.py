@@ -1428,13 +1428,25 @@ async def notify_when_done(
             content = content.replace("http://127.0.0.1:8000", settings.youtube_proxy_base_url)
             content = content.replace("http://localhost:8000", settings.youtube_proxy_base_url)
             if progress_message is not None:
+                # Do not edit the progress message for the final state: an
+                # edit never notifies, so delete it and post a fresh message
+                # whose mention actually reaches the requester.
                 try:
-                    await progress_message.edit(
-                        content=content,
-                        view=None,
-                        allowed_mentions=discord.AllowedMentions(users=True),
-                    )
+                    await progress_message.delete()
                 except discord.HTTPException:
+                    pass
+                posted = False
+                post_channel = target_channel if target_channel is not None else progress_message.channel
+                if post_channel is not None:
+                    try:
+                        await post_channel.send(
+                            content,
+                            allowed_mentions=discord.AllowedMentions(users=True),
+                        )
+                        posted = True
+                    except discord.HTTPException:
+                        posted = False
+                if not posted:
                     await send_notification(content, public=True)
             else:
                 await send_notification(content, public=True)
