@@ -123,6 +123,7 @@ def test_subtitle_intake_uses_available_source_languages(monkeypatch) -> None:
     async def fetch_options(_video_id: str, _lang: str, _mode: str):
         return {
             "title": "video",
+            "requires_choice": True,
             "candidates": [
                 {"language": "es", "name": "スペイン語"},
                 {"language": "en", "name": "英語"},
