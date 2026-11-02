@@ -346,8 +346,7 @@ def current_job_summaries() -> list[dict]:
     for job_id, job in _prepare_jobs.items():
         if job.get("status") not in {"queued", "running"}:
             continue
-        jobs.append(
-            {
+        item = {
                 "job_id": job_id,
                 "status": job.get("status"),
                 "video_id": job.get("video_id"),
@@ -358,7 +357,11 @@ def current_job_summaries() -> list[dict]:
                 "progress": job.get("progress"),
                 "queue_counts": queue_counts_for_job(job_id),
             }
-        )
+        key = cache_key(job["video_id"], job["lang"], job.get("subtitle_source_lang"), job.get("translation_engine"))
+        if read_subtitle_meta(key).get("translated") and cached_subtitle_path(key):
+            base_url = settings.youtube_proxy_base_url.rstrip("/")
+            item["watch_url"] = f"{base_url}/watch/{key}" if base_url else f"/watch/{key}"
+        jobs.append(item)
     return jobs
 
 
@@ -4104,15 +4107,27 @@ def subtitle_events_for_key(key: str) -> list[dict]:
     return subtitle_events_from_path(subtitle_path)
 
 
-def prepared_subtitle_bundle_for_key(key: str) -> dict:
+def prepared_subtitle_bundle_for_key(key: str, request: Request | None = None) -> dict:
     subtitle_meta = read_subtitle_meta(key)
     translated_path = cached_subtitle_path(key)
     original_path = cached_original_subtitle_path(key)
+    cache_meta = read_json_object(meta_path(key))
+    source_info = {**cache_meta, **(get_cached_video_info(key) or {})}
     translated_events = subtitle_events_from_path(translated_path) if translated_path else []
     if subtitle_meta.get("translated") and original_path and original_path != translated_path:
         source_events = subtitle_events_from_path(original_path)
     else:
         source_events = translated_events
+    source_ready = check_existing_source_video(key) is not None
+    output_path_for_key = hot_output_path(key) or archived_output_path(key)
+    output_url = None
+    if output_path_for_key and request is not None:
+        video_id = source_info.get("video_id")
+        lang = source_info.get("lang")
+        if isinstance(video_id, str) and isinstance(lang, str):
+            source_lang, translation_engine = prepared_variant_from_meta(subtitle_meta)
+            mode = "direct" if (source_info.get("mode") or cache_meta.get("mode")) == "direct" else "mp4"
+            output_url = prepared_media_url(request, video_id, lang, mode, source_lang, translation_engine)
     return {
         "key": key,
         "subtitle": subtitle_meta,
@@ -4120,6 +4135,10 @@ def prepared_subtitle_bundle_for_key(key: str) -> dict:
         "translated_subtitle_path": str(translated_path) if translated_path else None,
         "source_events": source_events,
         "translated_events": translated_events,
+        "source_ready": source_ready,
+        "output_ready": output_path_for_key is not None,
+        "output_url": output_url,
+        "title": source_info.get("title") if isinstance(source_info.get("title"), str) else None,
     }
 
 
@@ -4817,6 +4836,15 @@ def job_response_body(job_id: str, job: dict, request: Request) -> dict:
         body["duration"] = job["duration"]
     if job.get("subtitle") is not None:
         body["subtitle"] = job["subtitle"]
+    key = cache_key(
+        job["video_id"],
+        job["lang"],
+        job.get("subtitle_source_lang"),
+        job.get("translation_engine"),
+    )
+    subtitle_meta = read_subtitle_meta(key)
+    if subtitle_meta.get("translated") and cached_subtitle_path(key):
+        body["watch_url"] = f"{public_base_url(request)}/watch/{key}"
     if job.get("progress") is not None:
         body["progress"] = job["progress"]
     if job["status"] in {"queued", "running"}:
@@ -6982,6 +7010,14 @@ async def index() -> str:
         const percent = typeof progress.percent === "number" ? `${{progress.percent.toFixed(1)}}%` : "--";
         const eta = typeof job.estimated_ready_at === "number" ? new Date(job.estimated_ready_at * 1000).toLocaleTimeString() : "--";
         item.textContent = `${{job.mode?.toUpperCase() || "MP4"}} ${{job.status}} / ${{job.title || job.video_id}} / ${{progress.phase || "queued"}} ${{percent}} / 終了予想 ${{eta}} / 待ち: DL ${{counts.download || 0}}, 翻訳 ${{counts.translate || 0}}, Encode ${{counts.encode || 0}}`;
+        if (job.watch_url) {{
+          const link = document.createElement("a");
+          link.href = job.watch_url;
+          link.textContent = " 字幕プレビュー";
+          link.target = "_blank";
+          link.rel = "noopener";
+          item.appendChild(link);
+        }}
         monitorJobs.appendChild(item);
       }}
     }}
@@ -7042,6 +7078,15 @@ async def index() -> str:
     function setPrepareStatus(body) {{
       activePrepareBody = body;
       prepareStatus.textContent = prepareMessage(body);
+      if (body.watch_url) {{
+        const link = document.createElement("a");
+        link.href = body.watch_url;
+        link.textContent = "字幕プレビュー";
+        link.target = "_blank";
+        link.rel = "noopener";
+        prepareStatus.appendChild(document.createTextNode(" "));
+        prepareStatus.appendChild(link);
+      }}
       if (body.status === "queued" || body.status === "running") {{
         if (!etaTimer) {{
           etaTimer = setInterval(() => {{
@@ -7174,6 +7219,12 @@ async def index() -> str:
         translatedSubtitleButton.textContent = "翻訳 SRT";
         translatedSubtitleButton.href = `/prepared/${{encodeURIComponent(item.key)}}/translated.srt`;
         actions.appendChild(translatedSubtitleButton);
+
+        const watchButton = document.createElement("a");
+        watchButton.className = "button secondary";
+        watchButton.textContent = "字幕プレビュー";
+        watchButton.href = `/watch/${{encodeURIComponent(item.key)}}`;
+        actions.appendChild(watchButton);
 
         for (const output of item.outputs || []) {{
           const url = publicUrl(output.url);
@@ -7898,6 +7949,102 @@ async def index() -> str:
   </script>
 </body>
 </html>"""
+
+
+@app.get("/watch/{key}", response_class=HTMLResponse)
+async def watch_page(key: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", key):
+        raise HTTPException(status_code=400, detail="Invalid cache key")
+    page = r'''<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>字幕プレビュー</title>
+  <style>
+    :root { color-scheme: dark; --accent: #6ee7b7; --panel: #17202b; --text: #e5edf5; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #0b1118; color: var(--text); font: 16px/1.6 system-ui, sans-serif; }
+    main { width: min(1500px, 100%); margin: auto; padding: 20px; }
+    h1 { margin: 0 0 8px; font-size: clamp(22px, 4vw, 36px); }
+    .muted { color: #9aa9b8; }
+    .token, .panel { background: var(--panel); border: 1px solid #293746; border-radius: 12px; padding: 14px; }
+    .token { margin: 14px 0; display: flex; gap: 8px; flex-wrap: wrap; }
+    input, select, button { border: 1px solid #405263; border-radius: 6px; background: #101820; color: inherit; padding: 7px 9px; }
+    .token input { flex: 1 1 260px; }
+    button, a { color: var(--accent); cursor: pointer; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 360px); gap: 16px; align-items: start; }
+    .stage { position: relative; background: #000; border-radius: 12px; overflow: hidden; }
+    video { display: block; width: 100%; max-height: 75vh; background: #000; }
+    #subtitleOverlay { position: absolute; left: 4%; right: 4%; text-align: center; pointer-events: none; white-space: pre-wrap; font-size: 28px; line-height: 1.25; text-shadow: 0 2px 4px #000; padding: 8px; bottom: 48px; }
+    #subtitleOverlay.top { top: 20px; bottom: auto; }
+    #subtitleOverlay.none { background: transparent; }
+    #subtitleOverlay.semi { background: #0008; }
+    #subtitleOverlay.solid { background: #000; }
+    .controls, .settings { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-top: 12px; }
+    label { display: grid; gap: 3px; font-size: 13px; }
+    #subtitleList { max-height: 70vh; overflow: auto; margin-top: 10px; }
+    .event { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid #293746; border-radius: 0; padding: 9px 4px; }
+    .event.active { background: #244334; color: #fff; }
+    .time { color: #9aa9b8; font-variant-numeric: tabular-nums; margin-right: 8px; }
+    @media (max-width: 800px) { main { padding: 12px; } .layout { grid-template-columns: 1fr; } #subtitleList { max-height: 35vh; } #subtitleOverlay { font-size: 22px; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1 id="title">字幕プレビュー</h1>
+  <div id="status" class="muted">読み込み中...</div>
+  <form class="token" id="tokenForm">
+    <label style="flex:1 1 260px">Prepare token<input id="watchToken" type="password" autocomplete="current-password" placeholder="DISCORD_PREPARE_TOKEN"></label>
+    <button type="submit">保存して再読み込み</button>
+  </form>
+  <div id="outputStatus" class="muted"></div>
+  <div class="layout">
+    <section>
+      <div class="stage"><video id="watchVideo" controls preload="metadata" disabled></video><div id="subtitleOverlay"></div></div>
+      <div class="controls">
+        <label>トラック<select id="track"><option value="translated">翻訳</option><option value="source">原文</option><option value="off">オフ</option></select></label>
+        <label>検索<input id="search" type="search" placeholder="字幕を検索"></label>
+        <label><input id="autoScroll" type="checkbox" checked>現在位置へ自動スクロール</label>
+      </div>
+      <div class="settings">
+        <label>サイズ<input id="fontSize" type="range" min="14" max="56" value="28"></label>
+        <label>文字色<input id="fontColor" type="color" value="#ffffff"></label>
+        <label>背景<select id="background"><option value="none">なし</option><option value="semi" selected>半透明</option><option value="solid">不透明</option></select></label>
+        <label>位置<select id="position"><option value="bottom" selected>下部</option><option value="top">上部</option></select></label>
+      </div>
+    </section>
+    <aside class="panel"><strong>字幕リスト</strong><div id="subtitleList"></div></aside>
+  </div>
+</main>
+<script>
+const key = "__WATCH_KEY__";
+const tokenKey = "youtubeProxyPrepareToken";
+const styleKey = "youtubeProxyWatchSubtitleStyle";
+const token = document.getElementById("watchToken"), video = document.getElementById("watchVideo");
+const status = document.getElementById("status"), outputStatus = document.getElementById("outputStatus"), title = document.getElementById("title");
+const overlay = document.getElementById("subtitleOverlay"), track = document.getElementById("track"), list = document.getElementById("subtitleList"), search = document.getElementById("search"), autoScroll = document.getElementById("autoScroll");
+let bundle = null, active = [], current = -1;
+token.value = localStorage.getItem(tokenKey) || "";
+document.getElementById("tokenForm").addEventListener("submit", (event) => { event.preventDefault(); localStorage.setItem(tokenKey, token.value.trim()); load(); });
+function headers() { const value = token.value.trim(); return value ? { Authorization: `Bearer ${value}` } : {}; }
+async function api(url) { const response = await fetch(url, { headers: headers() }); const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`); return body; }
+function formatTime(seconds) { const value = Math.max(0, Math.floor(seconds)); return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`; }
+function selectedEvents() { return track.value === "source" ? (bundle?.source_events || []) : (bundle?.translated_events || []); }
+function renderList() { active = selectedEvents().filter((item) => !search.value.trim() || item.text.toLowerCase().includes(search.value.trim().toLowerCase())); list.innerHTML = ""; active.forEach((item, index) => { const button = document.createElement("button"); button.className = "event" + (index === current ? " active" : ""); button.innerHTML = `<span class="time">${formatTime(item.start)}</span>${item.text.replaceAll("&", "&amp;").replaceAll("<", "&lt;")}`; button.addEventListener("click", () => { video.currentTime = item.start; video.play(); }); list.appendChild(button); }); }
+function updateSubtitle() { const events = selectedEvents(); const time = video.currentTime || 0; current = events.findIndex((item) => item.start <= time && time <= item.end); const item = current >= 0 ? events[current] : null; overlay.textContent = track.value === "off" ? "" : (item?.text || ""); Array.from(list.children).forEach((node, index) => node.classList.toggle("active", active[index] === item)); const selected = list.querySelector(".active"); if (selected && autoScroll.checked) selected.scrollIntoView({ block: "nearest" }); }
+function applyStyle() { const value = { fontSize: fontSize.value, fontColor: fontColor.value, background: background.value, position: position.value }; localStorage.setItem(styleKey, JSON.stringify(value)); overlay.style.fontSize = `${value.fontSize}px`; overlay.style.color = value.fontColor; overlay.className = `${value.background} ${value.position === "top" ? "top" : ""}`; }
+const fontSize = document.getElementById("fontSize"), fontColor = document.getElementById("fontColor"), background = document.getElementById("background"), position = document.getElementById("position");
+try { const value = JSON.parse(localStorage.getItem(styleKey) || "{}"); for (const field of [fontSize, fontColor, background, position]) if (value[field.id]) field.value = value[field.id]; } catch {}
+[fontSize, fontColor, background, position].forEach((field) => field.addEventListener("input", applyStyle)); applyStyle();
+track.addEventListener("change", () => { if (track.value === "translated" && !bundle?.subtitle?.translated) track.value = "source"; renderList(); updateSubtitle(); }); search.addEventListener("input", renderList); video.addEventListener("timeupdate", updateSubtitle); video.addEventListener("seeked", updateSubtitle);
+document.addEventListener("keydown", (event) => { if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName)) return; if (event.key === " " || event.key.toLowerCase() === "k") { event.preventDefault(); video.paused ? video.play() : video.pause(); } else if (event.key === "ArrowLeft") video.currentTime -= 5; else if (event.key === "ArrowRight") video.currentTime += 5; else if (event.key.toLowerCase() === "j") video.currentTime -= 10; else if (event.key.toLowerCase() === "l") video.currentTime += 10; else if (event.key.toLowerCase() === "c") { track.selectedIndex = (track.selectedIndex + 1) % track.options.length; track.dispatchEvent(new Event("change")); } else if (event.key.toLowerCase() === "f") video.requestFullscreen?.(); else if (event.key.toLowerCase() === "m") video.muted = !video.muted; });
+async function load() { try { bundle = await api(`/prepare/subtitle-bundle/${encodeURIComponent(key)}`); title.textContent = bundle.title || `字幕プレビュー: ${key}`; track.querySelector('[value="translated"]').disabled = !bundle.subtitle.translated; if (!bundle.subtitle.translated) track.value = "source"; const ready = bundle.source_ready && (bundle.translated_events.length || !bundle.subtitle.translated); video.disabled = !ready; if (bundle.source_ready && !video.src) video.src = `/prepared/${encodeURIComponent(key)}/source.mp4`; status.textContent = ready ? "再生できます" : "翻訳字幕を準備中..."; outputStatus.innerHTML = bundle.output_ready && bundle.output_url ? `焼き込み済みMP4: <a href="${bundle.output_url}" target="_blank" rel="noopener">開く</a>` : "焼き込み未完了（字幕プレビュー表示中）"; renderList(); updateSubtitle(); return ready && bundle.output_ready; } catch (error) { status.textContent = `読み込みエラー: ${error.message}`; return false; } }
+(async () => { let done = false; while (!done) { done = await load(); if (!done) await new Promise((resolve) => setTimeout(resolve, 3000)); } })();
+</script>
+</body>
+</html>'''
+    return page.replace("__WATCH_KEY__", key)
 
 
 @app.get("/healthz")
@@ -8690,7 +8837,7 @@ async def prepared_subtitle_bundle_by_key(key: str, request: Request) -> JSONRes
     require_prepare_auth(request)
     if not re.fullmatch(r"[A-Za-z0-9_.:-]+", key):
         raise HTTPException(status_code=400, detail="Invalid cache key")
-    return JSONResponse(prepared_subtitle_bundle_for_key(key))
+    return JSONResponse(prepared_subtitle_bundle_for_key(key, request))
 
 
 @app.get("/prepare/jobs/{job_id}")
