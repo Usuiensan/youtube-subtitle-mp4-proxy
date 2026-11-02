@@ -498,6 +498,14 @@ async def translate_srt_with_local_worker(
                 )
                 for group in chunk
             }
+        else:
+            payload["target_max_characters"] = {
+                group.group_id: max(
+                    1,
+                    math.floor((group.subtitles[-1].end - group.subtitles[0].start).total_seconds() * 14.0),
+                )
+                for group in chunk
+            }
         payload.pop("subtitles", None)
         usage_totals["requests"] += 1
         result = await run_worker(payload)
@@ -562,6 +570,7 @@ async def translate_srt_with_local_worker(
         on_progress(0, total_subtitles, recent_pairs)
     try:
         translated_groups: dict[str, str] = {}
+        split_fallback_groups: list[str] = []
         completed = 0
         for chunk_index, chunk in enumerate(chunks, start=1):
             following = chunks[chunk_index] if chunk_index < len(chunks) else []
@@ -607,8 +616,9 @@ async def translate_srt_with_local_worker(
                 split = candidates[0]
             if split.difficult:
                 if len(candidates) < 2:
-                    raise TranslationError(f"translation cannot be split naturally: {group.group_id}")
-                split = await select_split_candidate(group, translation, candidates)
+                    split_fallback_groups.append(group.group_id)
+                else:
+                    split = await select_split_candidate(group, translation, candidates)
             for source_subtitle, translated_text in zip(group.subtitles, split.segments):
                 translated_subtitles.append(
                     srt.Subtitle(
@@ -651,6 +661,7 @@ async def translate_srt_with_local_worker(
             "translation_engine": settings.engine,
             "translation_model": settings.model_name,
             "translation_fallback_used": False,
+            "translation_split_fallback_groups": split_fallback_groups,
             "translation_created_at": int(time.time()),
             "translation_characters": translation_characters,
             "translation_input_tokens": usage_totals["input_tokens"],
