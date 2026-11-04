@@ -155,8 +155,10 @@ Candidates:
     if payload.get("concise"):
         limits = json.dumps(payload.get("concise_max_characters") or {}, ensure_ascii=False, separators=(",", ":"))
         concise = (
-            "Make the translation shorter while preserving all important information because the previous result exceeded the available display time. "
-            f"The Japanese translation for each group must not exceed this character limit: {limits}."
+            "The previous result exceeded the available display time, so this retry has a hard character limit. "
+            f"The Japanese translation for each group must not exceed this character limit: {limits}. "
+            "Fit within the limit by shortening the wording, never by dropping content: preserve all information, clauses, topics, and facts, in the same order as the source. "
+            "Do not omit, merge, or summarize any information to save characters. Instead, compress the expression itself: remove redundant phrasing, choose shorter equivalent expressions, and simplify particles and connective wording, so the same content and order are expressed in fewer characters."
         )
     target_length = ""
     if "target_max_characters" in payload:

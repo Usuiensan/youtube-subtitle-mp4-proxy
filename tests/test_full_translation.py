@@ -202,6 +202,21 @@ def test_split_does_not_overprefer_early_punctuation() -> None:
     assert "".join(result.segments) == "さて、滴り落ちるのを待つ間に、フィルターを少し予備充填しておきます。"
 
 
+def test_concise_prompt_requires_shorter_wording_without_dropping_content() -> None:
+    prompt = translation_worker.build_full_translation_prompt({
+        "source_language": "en",
+        "target_language": "ja",
+        "groups": [{"group_id": "g001", "source": [{"id": 1, "text": "A source sentence."}]}],
+        "concise": True,
+        "concise_max_characters": {"g001": 11},
+    })
+
+    assert "important information" not in prompt
+    assert "shortening the wording, never by dropping content" in prompt
+    assert "Do not omit, merge, or summarize" in prompt
+    assert "must not exceed this character limit" in prompt
+
+
 def test_overlong_single_id_is_retranslated_concisely(tmp_path) -> None:
     source_path, output = tmp_path / "source.srt", tmp_path / "translated.srt"
     source_path.write_text(srt.compose([cue(1, 0, 0.8, "I like it a lot.")]), encoding="utf-8")
