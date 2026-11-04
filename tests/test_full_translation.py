@@ -132,6 +132,9 @@ def test_prompt_uses_groups_and_flattens_escape_markers() -> None:
     assert r"first\nsecond" not in prompt
     assert '"text":"first second third"' in prompt
     assert "Do not translate individual subtitle ids separately" in prompt
+    assert "preserve the source structure" in prompt
+    assert "Do not reorder for style" in prompt
+    assert "reorder words freely" not in prompt
 
 
 def test_pipeline_keeps_every_original_id_and_time(tmp_path) -> None:
