@@ -1,4 +1,5 @@
 from app import main
+import asyncio
 import srt
 import pytest
 from datetime import timedelta
@@ -27,20 +28,20 @@ def test_explicit_translation_source_wins_over_target_auto_caption() -> None:
     assert selection["translation_engine"] == main.configured_translation_engine()
 
 
-def test_automatic_captions_are_always_excluded() -> None:
+def test_automatic_captions_are_translation_sources_but_not_passthrough() -> None:
     info = {
         "language": "en",
-        "subtitles": {"en": [{"ext": "vtt"}]},
         "automatic_captions": {"en": [{"ext": "vtt"}], "ja": [{"ext": "vtt"}]},
     }
 
     selection = main.select_subtitle_language(info, "ja")
 
     assert selection["source_language"] == "en"
-    assert selection["source_kind"] == "manual"
+    assert selection["source_kind"] == "automatic"
+    assert selection["translated"] is True
 
     with pytest.raises(main.HTTPException) as error:
-        main.select_subtitle_language({"automatic_captions": {"en": [{}]}}, "ja")
+        main.select_subtitle_language({"automatic_captions": {"ja": [{}]}}, "ja")
     assert error.value.status_code == 422
 
 
@@ -49,13 +50,59 @@ def test_translation_api_503_is_retryable_but_other_errors_are_not() -> None:
     assert not main.is_retryable_translation_api_503(RuntimeError("translation api http error 429: quota"))
 
 
-def test_subtitle_candidates_ignore_automatic_captions() -> None:
+def test_subtitle_candidates_include_automatic_captions_with_manual_priority() -> None:
     info = {
-        "subtitles": {"en": [{"ext": "vtt"}]},
-        "automatic_captions": {"ja": [{"ext": "vtt"}]},
+        "subtitles": {"en": [{"ext": "vtt"}], "ja": [{"ext": "vtt"}]},
+        "automatic_captions": {"ja": [{"ext": "vtt"}], "de": [{"ext": "vtt"}]},
     }
 
-    assert [item["language"] for item in main.subtitle_candidates(info, "ja")] == ["en"]
+    candidates = main.subtitle_candidates(info, "ja")
+    assert {item["language"]: item["source_kind"] for item in candidates} == {
+        "en": "manual",
+        "ja": "manual",
+        "de": "automatic",
+    }
+
+
+def test_explicit_automatic_translation_source_is_selected() -> None:
+    selection = main.select_subtitle_language(
+        {"automatic_captions": {"de": [{"ext": "vtt"}]}},
+        "ja",
+        source_lang="de",
+    )
+
+    assert selection["source_language"] == "de"
+    assert selection["source_kind"] == "automatic"
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "expected_flag"),
+    [("automatic", "--write-auto-subs"), ("manual", "--write-subs")],
+)
+def test_download_subtitle_only_uses_source_specific_flag(
+    tmp_path, monkeypatch, source_kind: str, expected_flag: str
+) -> None:
+    calls: list[list[str]] = []
+
+    async def fake_run_command(args, cwd=None, raise_http=True):
+        calls.append(args)
+        (cwd / "video.en.srt").write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nsource\n", encoding="utf-8"
+        )
+        return ""
+
+    async def fake_translate_subtitle_if_needed(**kwargs):
+        return kwargs["subtitle"], kwargs["selection"]
+
+    monkeypatch.setattr(main, "run_command", fake_run_command)
+    monkeypatch.setattr(main, "translate_subtitle_if_needed", fake_translate_subtitle_if_needed)
+    info = {"subtitles": {"en": [{}]}} if source_kind == "manual" else {
+        "automatic_captions": {"en": [{}]}
+    }
+
+    asyncio.run(main.download_subtitle_only("video", "ja", tmp_path, info))
+
+    assert expected_flag in calls[0]
 
 
 def test_variant_japanese_track_is_recognized_as_requested_language(monkeypatch) -> None:
