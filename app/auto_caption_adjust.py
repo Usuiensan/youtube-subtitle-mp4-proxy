@@ -122,10 +122,6 @@ def adjust_auto_captions(
     }
     if not windows:
         return [], report
-    payload = {
-        "task": "adjust_auto_captions", "source_language": source_language,
-        "video_title": video_title, "channel_name": channel_name, "windows": payload_windows,
-    }
     adjusted: list[srt.Subtitle] = []
     for number, (window, expected) in enumerate(zip(windows, payload_windows), start=1):
         try:
