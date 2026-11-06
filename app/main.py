@@ -43,6 +43,7 @@ from app.translation import (
     translate_srt_with_local_worker,
 )
 from app.translation_worker import estimate_translation_input_tokens
+from app import auto_caption_adjust
 from app.subtitle_preprocess import preprocess_downloaded_subtitle, raw_subtitle_sidecar
 from app.metrics import MetricsManager
 from app.ops_config import (
@@ -2271,11 +2272,15 @@ def manual_subtitle_candidates(info: dict, requested_lang: str) -> list[dict]:
 def subtitle_tracks(info: dict) -> dict[str, str]:
     """Return available subtitle languages and their yt-dlp source kind."""
     tracks: dict[str, str] = {}
-    values = info.get("subtitles") or {}
-    if not isinstance(values, dict):
+    manual = info.get("subtitles") or {}
+    if isinstance(manual, dict):
+        for lang in manual:
+            tracks.setdefault(str(lang), "manual")
+    automatic = info.get("automatic_captions") or {}
+    if not isinstance(automatic, dict):
         return tracks
-    for lang in values:
-        tracks.setdefault(str(lang), "manual")
+    for lang in automatic:
+        tracks.setdefault(str(lang), "automatic")
     return tracks
 
 
@@ -2338,21 +2343,26 @@ def select_subtitle_language(
     manual_subtitles = info.get("subtitles") or {}
     if not isinstance(manual_subtitles, dict):
         manual_subtitles = {}
-
-    available_subtitles = manual_subtitles
+    automatic_subtitles = info.get("automatic_captions") or {}
+    if not isinstance(automatic_subtitles, dict):
+        automatic_subtitles = {}
 
     # An explicit translation variant (for example /ja/en/google_cloud) must
     # use the requested source language even when YouTube also exposes an
     # automatic caption track for the target language.
     if source_lang:
-        selected = subtitle_lang_available(available_subtitles, source_lang)
+        selected = subtitle_lang_available(manual_subtitles, source_lang)
+        source_kind = "manual"
+        if not selected:
+            selected = subtitle_lang_available(automatic_subtitles, source_lang)
+            source_kind = "automatic"
         if not selected:
             raise HTTPException(status_code=422, detail=f"No subtitle found for source language: {source_lang}")
         return {
             "requested_language": requested_lang,
             "source_language": selected,
             "translated": normalize_lang(selected) != normalize_lang(requested_lang),
-            "source_kind": "manual",
+            "source_kind": source_kind,
             "translation_engine": configured_translation_engine(),
         }
 
@@ -2381,13 +2391,17 @@ def select_subtitle_language(
         if normalized in seen:
             continue
         seen.add(normalized)
-        selected = subtitle_lang_available(available_subtitles, lang)
+        selected = subtitle_lang_available(manual_subtitles, lang)
+        source_kind = "manual"
+        if not selected:
+            selected = subtitle_lang_available(automatic_subtitles, lang)
+            source_kind = "automatic"
         if selected:
             return {
                 "requested_language": requested_lang,
                 "source_language": selected,
                 "translated": True,
-                "source_kind": "manual",
+                "source_kind": source_kind,
                 "translation_engine": configured_translation_engine(),
             }
 
@@ -3233,24 +3247,10 @@ async def translate_subtitle_if_needed(
     if not selection["translated"]:
         return subtitle, enrich_existing_subtitle_usage_metadata(selection, subtitle)
 
-    translated_path = work_dir / f"{subtitle.stem}.ja.translated.srt"
     selected_settings = translation_settings(configured_translation_engine())
     video_title = str(info.get("title") or "")
     channel_name = extract_channel_name(info)
     source_subtitles = load_srt(subtitle)
-    estimate_payload = build_worker_payload(
-        video_title=video_title,
-        channel_name=channel_name,
-        source_language=selection["source_language"],
-        target_language=selection["requested_language"],
-        all_subtitles=source_subtitles,
-        settings=selected_settings,
-        video_id=str(info.get("id") or ""),
-    )
-    attempt_plan = translation_attempt_plan(
-        selected_settings,
-        estimate_translation_input_tokens(estimate_payload),
-    )
     provider_failover = translation_provider_failover_settings(selected_settings)
     active_provider_settings = selected_settings
     provider_failover_used = False
@@ -3286,6 +3286,62 @@ async def translate_subtitle_if_needed(
                         details=f"API再試行中… {retry_number}/{retry_total}（503、一時的な混雑）",
                     )
                 await asyncio.sleep(delay)
+
+    adjustment_report = {
+        "windows_total": 0, "windows_adjusted": 0, "windows_fallback": 0,
+        "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+        "model_name": selected_settings.model_name,
+    }
+    adjusted = False
+    if selection.get("source_kind") == "automatic":
+        try:
+            def adjustment_call(payload: dict) -> dict:
+                payload["translation_provider"] = selected_settings.provider_name
+                return asyncio.run(worker(payload, selected_settings, ""))
+
+            adjusted_subtitles, adjustment_report = await asyncio.to_thread(
+                auto_caption_adjust.adjust_auto_captions,
+                source_subtitles,
+                source_language=selection["source_language"],
+                llm_call=adjustment_call,
+                model_name=selected_settings.model_name,
+                video_title=video_title,
+                channel_name=channel_name,
+            )
+            adjusted = adjustment_report.get("windows_adjusted", 0) > 0
+            if adjusted:
+                adjusted_path = work_dir / f"{subtitle.stem}.adjusted.srt"
+                save_srt(adjusted_path, adjusted_subtitles)
+                subtitle = adjusted_path
+                source_subtitles = adjusted_subtitles
+            usage = adjustment_report.get("usage") or {}
+            input_tokens = int(usage.get("input_tokens") or 0)
+            output_tokens = int(usage.get("output_tokens") or 0)
+            total_tokens = int(usage.get("total_tokens") or input_tokens + output_tokens)
+            estimated_usd, _ = llm_overage_estimate(selected_settings.engine, input_tokens, output_tokens)
+            record_llm_translation_usage(
+                settings.llm_translation_usage_file,
+                selected_settings.engine,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                estimated_usd,
+                estimated_usd,
+            )
+        except Exception:
+            adjusted = False
+
+    estimate_payload = build_worker_payload(
+        video_title=video_title,
+        channel_name=channel_name,
+        source_language=selection["source_language"],
+        target_language=selection["requested_language"],
+        all_subtitles=source_subtitles,
+        settings=selected_settings,
+        video_id=str(info.get("id") or ""),
+    )
+    translated_path = work_dir / f"{subtitle.stem}.ja.translated.srt"
+    attempt_plan = translation_attempt_plan(selected_settings, estimate_translation_input_tokens(estimate_payload))
 
     async def worker_with_provider_failover(payload: dict, attempt_settings: TranslationSettings, thinking_level: str) -> dict:
         nonlocal active_provider_settings, provider_failover_used, provider_failover_from
@@ -3424,6 +3480,9 @@ async def translate_subtitle_if_needed(
     metadata = enrich_translation_metadata({
         **selection,
         **result.metadata,
+        "adjusted": adjusted,
+        "adjustment_model": adjustment_report.get("model_name") or selected_settings.model_name,
+        "auto_caption_adjustment": adjustment_report,
         "translation_fallback_used": selected_settings.engine != configured_translation_engine(),
         "translation_failover_from": provider_failover_from,
     })
@@ -3455,7 +3514,9 @@ async def download_sources(
         source_lang=subtitle_source_lang,
     )
     source_lang = subtitle_selection["source_language"]
-    subtitle_flags = ["--write-subs"]
+    subtitle_flags = [
+        "--write-auto-subs" if subtitle_selection.get("source_kind") == "automatic" else "--write-subs"
+    ]
     subtitle_languages = source_lang
     original_language = str(info.get("language") or "").strip()
     format_selector = yt_dlp_download_format_selector(original_language)
@@ -3550,7 +3611,9 @@ async def download_subtitle_only(
         source_lang=subtitle_source_lang,
     )
     source_lang = subtitle_selection["source_language"]
-    subtitle_flags = ["--write-subs"]
+    subtitle_flags = [
+        "--write-auto-subs" if subtitle_selection.get("source_kind") == "automatic" else "--write-subs"
+    ]
     subtitle_languages = source_lang
     start_t = time.time()
     dl_args = yt_dlp_base_args() + [

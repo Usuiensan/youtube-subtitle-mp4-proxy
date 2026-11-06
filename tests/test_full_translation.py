@@ -7,7 +7,7 @@ from datetime import timedelta
 import pytest
 import srt
 
-from app import translation, translation_worker
+from app import main as app_main, translation, translation_worker
 from app.translation import TranslationError, TranslationSettings, batch_translation_groups, build_meaning_groups, resplit_existing_translation, split_group_translation, translate_srt_with_local_worker, validate_group_translations
 
 
@@ -17,6 +17,91 @@ def cue(index: int, start: float, end: float, text: str) -> srt.Subtitle:
 
 def config(provider: str = "openai_compatible") -> TranslationSettings:
     return TranslationSettings(True, 120, 10, 120, 5, 120, 5, "test-model", "test-engine", "", "", "", "", "", provider, "https://example.invalid", "test-key")
+
+
+@pytest.mark.parametrize("source_kind", ["automatic", "manual"])
+def test_subtitle_translation_adjusts_only_automatic_sources(tmp_path, monkeypatch, source_kind: str) -> None:
+    settings = config("gemini_api")
+    calls: list[dict] = []
+
+    async def fake_worker(payload: dict) -> dict:
+        calls.append(payload.copy())
+        if payload.get("task") == "adjust_auto_captions":
+            cue_payload = payload["windows"][0]["cues"][0]
+            return {
+                "windows": [{
+                    "window_id": payload["windows"][0]["window_id"],
+                    "sentences": [{"start_cue": cue_payload["index"], "text": "adjusted source"}],
+                }],
+                "_usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            }
+        return {
+            "groups": [{"group_id": group["group_id"], "translation": "翻訳済み"} for group in payload["groups"]],
+            "_usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        }
+
+    monkeypatch.setattr(app_main, "translation_settings", lambda _profile: settings)
+    monkeypatch.setattr(app_main, "translation_attempt_plan", lambda selected, _estimate: [(selected, "")])
+    monkeypatch.setattr(app_main, "translation_provider_failover_settings", lambda _selected: None)
+    monkeypatch.setattr(app_main, "run_translation_worker", fake_worker)
+    monkeypatch.setattr(app_main, "record_llm_translation_usage", lambda *args: None)
+
+    async def direct_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(app_main.asyncio, "to_thread", direct_to_thread)
+
+    async def fake_translate_srt_with_local_worker(*, subtitle_path, output_path, run_worker, **kwargs):
+        subtitles = translation.load_srt(subtitle_path)
+        payload = {
+            "groups": [{"group_id": "g001", "source": [{"id": subtitles[0].index, "text": subtitles[0].content}]}]
+        }
+        await run_worker(payload)
+        translated = [srt.Subtitle(item.index, item.start, item.end, "翻訳済み") for item in subtitles]
+        translation.save_srt(output_path, translated)
+        return translation.SubtitleTranslationResult(output_path, {
+            "translated": True, "translation_engine": settings.engine,
+        })
+
+    monkeypatch.setattr(app_main, "translate_srt_with_local_worker", fake_translate_srt_with_local_worker)
+
+    def fake_adjust(subtitles, *, source_language, llm_call, model_name, video_title, channel_name):
+        calls.append({
+            "task": "adjust_auto_captions", "source_language": source_language,
+            "video_title": video_title, "channel_name": channel_name,
+            "translation_provider": settings.provider_name,
+        })
+        return [srt.Subtitle(1, subtitles[0].start, subtitles[0].end, "adjusted source")], {
+            "windows_total": 1, "windows_adjusted": 1, "windows_fallback": 0,
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}, "model_name": model_name,
+        }
+
+    monkeypatch.setattr(app_main.auto_caption_adjust, "adjust_auto_captions", fake_adjust)
+
+    subtitle = tmp_path / "source.srt"
+    subtitle.write_text(srt.compose([cue(1, 0, 1, "original source")]), encoding="utf-8")
+    selection = {
+        "translated": True,
+        "source_language": "en",
+        "requested_language": "ja",
+        "source_kind": source_kind,
+    }
+
+    _output, metadata = asyncio.run(app_main.translate_subtitle_if_needed(
+        key="test-key", subtitle=subtitle, info={"id": "video", "title": "title"},
+        selection=selection, work_dir=tmp_path,
+    ))
+
+    tasks = [call.get("task") for call in calls]
+    if source_kind == "automatic":
+        assert tasks[:2] == ["adjust_auto_captions", None]
+        assert calls[0]["translation_provider"] == "gemini_api"
+        assert calls[1]["groups"][0]["source"][0]["text"] == "adjusted source"
+        assert metadata["adjusted"] is True
+    else:
+        assert tasks == [None]
+        assert metadata["adjusted"] is False
+    assert metadata["source_kind"] == source_kind
 
 
 def test_meaning_groups_prefer_sentence_and_gap_boundaries() -> None:
