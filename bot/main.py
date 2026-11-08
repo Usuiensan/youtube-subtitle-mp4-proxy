@@ -997,6 +997,15 @@ def lang_matches_priority(candidate: str, preferred: str) -> bool:
 
 
 def default_source_language(candidates: list[dict[str, Any]]) -> str | None:
+    original_audio_asr = [
+        str(candidate.get("language") or "")
+        for candidate in candidates
+        if isinstance(candidate, dict)
+        and candidate.get("track_kind") == "asr_original"
+        and candidate.get("language")
+    ]
+    if original_audio_asr:
+        return original_audio_asr[0]
     languages = [
         str(candidate.get("language") or "")
         for candidate in candidates
@@ -1045,21 +1054,51 @@ class SubtitleChoiceView(discord.ui.View):
         self.source_lang: str | None = None
         self.target_lang: str | None = "ja"
         candidates = options_body.get("candidates") if isinstance(options_body.get("candidates"), list) else []
-        visible_candidates = sorted(
+        kind_ranks = {"manual": 0, "asr_original": 1, "youtube_mt": 2}
+        ordered_candidates = sorted(
             candidates,
-            key=lambda candidate: not (
-                isinstance(candidate, dict)
-                and str(candidate.get("language") or "").split("-")[0].lower() == self.lang.split("-")[0].lower()
+            key=lambda candidate: (
+                kind_ranks.get(str(candidate.get("track_kind") or "").strip().lower(), len(kind_ranks))
+                if isinstance(candidate, dict)
+                else len(kind_ranks),
+                not (
+                    isinstance(candidate, dict)
+                    and str(candidate.get("language") or "").split("-")[0].lower() == self.lang.split("-")[0].lower()
+                ),
             ),
-        )[:25]
-        selected_source_lang = next(
+        )
+        visible_candidates = ordered_candidates[:25]
+        original_audio_asr = next(
             (
-                str(candidate.get("language") or "")
-                for candidate in visible_candidates
-                if isinstance(candidate, dict) and candidate.get("language")
+                candidate
+                for candidate in ordered_candidates
+                if isinstance(candidate, dict) and candidate.get("track_kind") == "asr_original"
             ),
             None,
         )
+        if original_audio_asr is not None and original_audio_asr not in visible_candidates:
+            visible_candidates[-1] = original_audio_asr
+            visible_candidates.sort(
+                key=lambda candidate: (
+                    kind_ranks.get(str(candidate.get("track_kind") or "").strip().lower(), len(kind_ranks)),
+                    not (
+                        isinstance(candidate, dict)
+                        and str(candidate.get("language") or "").split("-")[0].lower() == self.lang.split("-")[0].lower()
+                    ),
+                )
+            )
+        if any(isinstance(candidate, dict) and candidate.get("track_kind") for candidate in visible_candidates):
+            selected_source_lang = default_source_language(visible_candidates)
+        else:
+            # track_kind を持たない候補（旧形式）では、従来どおり表示順の先頭を既定にする
+            selected_source_lang = next(
+                (
+                    str(candidate.get("language") or "")
+                    for candidate in visible_candidates
+                    if isinstance(candidate, dict) and candidate.get("language")
+                ),
+                None,
+            )
         self.source_lang = selected_source_lang
         source_options = []
         for candidate in visible_candidates:
@@ -1070,13 +1109,17 @@ class SubtitleChoiceView(discord.ui.View):
                 continue
             name = str(candidate.get("name") or language)
             name_en = str(candidate.get("name_en") or "")
-            source_kind = str(candidate.get("source_kind") or "").strip().lower()
-            source_kind_label = "手動字幕" if source_kind == "manual" else "自動生成字幕"
+            track_kind = str(candidate.get("track_kind") or "").strip().lower()
+            source_kind_label = {
+                "manual": "手動字幕",
+                "asr_original": "自動生成字幕（元の音声）",
+                "youtube_mt": "YouTube機械翻訳",
+            }.get(track_kind, "自動生成字幕")
             source_options.append(
                 discord.SelectOption(
-                    label=option_label(f"{language} / {name} / {source_kind_label}", 100),
+                    label=option_label(f"{name} / {source_kind_label}", 100),
                     value=language,
-                    description=option_label(name_en, 100) if name_en else None,
+                    description=option_label(f"{language} · {name_en}" if name_en else language, 100),
                     default=language == selected_source_lang,
                 )
             )

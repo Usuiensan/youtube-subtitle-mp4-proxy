@@ -209,7 +209,7 @@ curl -X POST \
 
 `POST /prepare/youtube/:videoId/:lang?mode=mp4|hls` は、準備済みなら `200 {"status":"ready","url":"..."}` を返します。準備が必要なら `202` と `job_id` / `status_url` を返すので、Discord bot 側で `GET /prepare/jobs/:jobId` をポーリングし、`ready` になってから `url` を投稿します。
 
-`GET /prepare/youtube/:videoId/:lang/subtitles?mode=mp4|hls` は、準備前に字幕候補を確認するための API です。`lang=ja` で日本語字幕がなく、翻訳可能な提供元字幕がある場合は `requires_choice: true` と `candidates` を返します。YouTube の自動生成字幕・自動翻訳字幕は候補に含めません。
+`GET /prepare/youtube/:videoId/:lang/subtitles?mode=mp4|hls` は、準備前に字幕候補を確認するための API です。`lang=ja` で日本語字幕がなく、翻訳可能な提供元字幕がある場合は `requires_choice: true` と `candidates` を返します。候補には手動字幕、自動生成字幕（元の音声）、YouTube機械翻訳が含まれ、YouTube の自動吹替音声を元にした字幕は含まれません。
 
 準備済みの原語 SRT と翻訳 SRT はそれぞれ以下からダウンロードできます。
 

@@ -730,7 +730,7 @@ def cache_key(
 def render_profile_id(subtitle_font_size: int | None = None) -> str:
     detected_font_name = find_japanese_font_spec()[1] or settings.subtitle_font
     return hashlib.sha1(
-        "\n".join(["dual-subtitle-layout-v16-scaled", "media-stream-selection-v3-height-cap", f"source-height-{settings.max_height}", subtitle_force_style(detected_font_name, subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
+        "\n".join(["dual-subtitle-layout-v17-scaled", "media-stream-selection-v3-height-cap", f"source-height-{settings.max_height}", subtitle_force_style(detected_font_name, subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
     ).hexdigest()[:8]
 
 
@@ -2334,24 +2334,49 @@ def subtitle_tracks(info: dict) -> dict[str, str]:
 def subtitle_candidates(info: dict, requested_lang: str) -> list[dict]:
     tracks = subtitle_tracks(info)
     candidates = []
+    automatic = info.get("automatic_captions") or {}
+    video_language = info.get("language")
+    original_language = normalize_lang(video_language) if isinstance(video_language, str) else ""
     for lang, source_kind in tracks.items():
+        track_kind = source_kind
+        if source_kind == "automatic":
+            if lang.endswith("-orig"):
+                base_language = normalize_lang(lang[:-5])
+                track_kind = "asr_original" if base_language == original_language else "asr_dub"
+            else:
+                formats = automatic.get(lang) if isinstance(automatic, dict) else []
+                has_translation = any(
+                    "tlang=" in str(entry.get("url") or "")
+                    for entry in formats
+                    if isinstance(entry, dict)
+                )
+                track_kind = "youtube_mt" if has_translation else "asr_original"
+        if track_kind == "asr_dub":
+            continue
         candidates.append(
             {
                 "language": lang,
                 "name": get_lang_name_ja(lang),
                 "name_en": get_lang_name_en(lang),
                 "source_kind": source_kind,
+                "track_kind": track_kind,
             }
         )
     priorities = []
-    video_language = info.get("language")
     if isinstance(video_language, str) and video_language:
         priorities.append(video_language)
     priorities.extend([requested_lang, "en", "ko", "zh-Hans", "zh-Hant", "zh", "zh-CN", "zh-TW"])
     ranks = {}
     for lang in priorities:
         ranks.setdefault(normalize_lang(lang), len(ranks))
-    return sorted(candidates, key=lambda candidate: ranks.get(normalize_lang(candidate["language"]), len(ranks)))
+    kind_ranks = {"manual": 0, "asr_original": 1, "youtube_mt": 2}
+    return sorted(
+        candidates,
+        key=lambda candidate: (
+            kind_ranks.get(candidate["track_kind"], len(kind_ranks)),
+            ranks.get(normalize_lang(candidate["language"]), len(ranks)),
+        ),
+    )
 
 
 def subtitle_choice_body(info: dict, requested_lang: str) -> dict:
@@ -3617,7 +3642,7 @@ async def download_sources(
     
     video = find_downloaded_video(work_dir)
     original_subtitle = find_subtitle(work_dir, source_lang)
-    preprocess_downloaded_subtitle(original_subtitle)
+    preprocess_downloaded_subtitle(original_subtitle, force=subtitle_selection.get("source_kind") == "automatic")
     metrics_manager.record_download(video.stat().st_size, end_t - start_t)
     subtitle, subtitle_meta = await translate_subtitle_if_needed(
         key=cache_key(video_id, lang, subtitle_source_lang, translation_engine),
@@ -3670,7 +3695,7 @@ async def download_subtitle_only(
     else:
         await run_command(dl_args, cwd=work_dir)
     original_subtitle = find_subtitle(work_dir, source_lang)
-    preprocess_downloaded_subtitle(original_subtitle)
+    preprocess_downloaded_subtitle(original_subtitle, force=subtitle_selection.get("source_kind") == "automatic")
     metrics_manager.record_download(original_subtitle.stat().st_size, time.time() - start_t)
     subtitle, subtitle_meta = await translate_subtitle_if_needed(
         key=cache_key(video_id, lang, subtitle_source_lang, translation_engine),
@@ -4032,10 +4057,16 @@ def ffmpeg_dual_subtitle_args(
 ) -> list[str]:
     combined_ass = original_subtitle.with_suffix(".dual.ass")
     base_font_size = subtitle_font_size if isinstance(subtitle_font_size, int) and subtitle_font_size > 0 else settings.subtitle_font_size
-    dual_font_size = base_font_size
+    # 単言語字幕は ffmpeg の subtitles フィルタが SRT を PlayRes 384x288 の
+    # ASS として描画するため、設定値は画面高さの 288 分率で効く。
+    # 二言語字幕の ASS は PlayResY 720 なので、同じ設定値で単言語と同じ
+    # 見た目の大きさになるよう 720/288 倍して使う。
+    dual_font_size = max(1, int(base_font_size * 720 / 288 + 0.5))
     source_subtitles = load_srt(original_subtitle)
     translated_subtitles = load_srt(translated_subtitle)
-    width_chars = max(38.0, 70.0 - dual_font_size * 0.55)
+    # 折り返し幅は、従来レイアウトで調整した実寸の行幅を保つため、
+    # 設定値ベースで求めた幅をフォントの拡大率で割る。
+    width_chars = max(38.0, 70.0 - base_font_size * 0.55) * base_font_size / dual_font_size
     base_margin_v = max(settings.subtitle_margin_v, 52)
     line_height = max(1, round(dual_font_size * 1.25))
     line_gap = max(4, round(dual_font_size * 0.45))
