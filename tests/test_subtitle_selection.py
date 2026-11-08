@@ -64,6 +64,44 @@ def test_subtitle_candidates_include_automatic_captions_with_manual_priority() -
     }
 
 
+def test_subtitle_candidates_classify_and_hide_dubbed_asr_tracks() -> None:
+    info = {
+        "language": "en-US",
+        "subtitles": {"fr": [{"ext": "vtt"}]},
+        "automatic_captions": {
+            "en-orig": [{"url": "https://example.test/en"}],
+            "en": [{"url": "https://example.test/en?tlang=en"}],
+            "ja": [{"url": "https://example.test/en?tlang=ja"}],
+            "ja-orig": [{"url": "https://example.test/ja"}],
+            "ko": [{"url": "https://example.test/en?tlang=ko"}],
+            "de": [{"url": "https://example.test/de"}],
+        },
+    }
+
+    candidates = main.subtitle_candidates(info, "ja")
+
+    assert [(item["language"], item["track_kind"]) for item in candidates] == [
+        ("fr", "manual"),
+        ("en-orig", "asr_original"),
+        ("de", "asr_original"),
+        ("en", "youtube_mt"),
+        ("ja", "youtube_mt"),
+        ("ko", "youtube_mt"),
+    ]
+
+
+def test_subtitle_candidates_treat_single_automatic_track_as_original_asr() -> None:
+    candidates = main.subtitle_candidates(
+        {
+            "language": "en-US",
+            "automatic_captions": {"fr": [{"url": "https://example.test/fr"}]},
+        },
+        "ja",
+    )
+
+    assert candidates[0]["track_kind"] == "asr_original"
+
+
 def test_explicit_automatic_translation_source_is_selected() -> None:
     selection = main.select_subtitle_language(
         {"automatic_captions": {"de": [{"ext": "vtt"}]}},
@@ -301,18 +339,25 @@ def test_dual_subtitle_ass_preserves_source_line_breaks(tmp_path) -> None:
     assert r"First line\NSecond line" in ass
 
 
-def test_dual_subtitle_uses_requested_size_and_scales_before_drawing(tmp_path) -> None:
+def test_dual_subtitle_size_matches_single_subtitle_scale(tmp_path) -> None:
     source = tmp_path / "source.srt"
     translated = tmp_path / "translated.srt"
     value = srt.compose([srt.Subtitle(1, timedelta(0), timedelta(seconds=1), "line")])
     source.write_text(value, encoding="utf-8")
     translated.write_text(value, encoding="utf-8")
 
+    # 単言語字幕は PlayRes 288 基準で描画されるため、二言語字幕（PlayResY 720）
+    # では設定値を 720/288 倍して初めて見た目の大きさが一致する。
     args = main.ffmpeg_dual_subtitle_args(source, translated, subtitle_font_size=16)
     ass = source.with_suffix(".dual.ass").read_text(encoding="utf-8")
 
     assert args[1].startswith(r"scale=-2:min(ih\,")
-    assert ",16," in next(line for line in ass.splitlines() if line.startswith("Style: Default,"))
+    assert ",40," in next(line for line in ass.splitlines() if line.startswith("Style: Default,"))
+
+    main.ffmpeg_dual_subtitle_args(source, translated, subtitle_font_size=25)
+    ass = source.with_suffix(".dual.ass").read_text(encoding="utf-8")
+
+    assert ",63," in next(line for line in ass.splitlines() if line.startswith("Style: Default,"))
 
 
 def test_dual_subtitle_ass_keeps_source_cues_with_a_ranged_translation(tmp_path) -> None:
