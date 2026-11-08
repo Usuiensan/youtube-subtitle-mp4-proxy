@@ -7,7 +7,7 @@ import srt
 from app.translation import normalize_subtitle_text
 
 
-_TRANSIENT_CUE_SECONDS = 0.2
+_TRANSIENT_CUE_SECONDS = 0.5
 _MIN_TRANSIENT_RATIO = 0.2
 _MIN_TRANSIENT_RELATION_RATIO = 0.7
 
@@ -62,10 +62,21 @@ def _remove_rolling_overlap(previous: str, current: str) -> str:
     return current
 
 
-def normalize_word_incremental_subtitles(subtitles: list[srt.Subtitle]) -> list[srt.Subtitle] | None:
-    if not is_word_incremental_subtitles(subtitles):
+def normalize_word_incremental_subtitles(
+    subtitles: list[srt.Subtitle], *, force: bool = False
+) -> list[srt.Subtitle] | None:
+    if not force and not is_word_incremental_subtitles(subtitles):
         return None
-    kept = [subtitle for position, subtitle in enumerate(subtitles) if not _is_transient(subtitle)]
+    if force:
+        # ASR と分かっている字幕は検出ゲートなしで必ず正規化する。
+        # ただし隣接キューと無関係な短いキューは途中経過ではないので残す。
+        kept = [
+            subtitle
+            for position, subtitle in enumerate(subtitles)
+            if not _is_transient(subtitle) or not _transient_is_related(subtitles, position)
+        ]
+    else:
+        kept = [subtitle for subtitle in subtitles if not _is_transient(subtitle)]
     normalized: list[srt.Subtitle] = []
     previous_text = ""
     for subtitle in kept:
@@ -87,9 +98,9 @@ def normalize_word_incremental_subtitles(subtitles: list[srt.Subtitle]) -> list[
     return normalized
 
 
-def preprocess_downloaded_subtitle(path: Path) -> Path:
+def preprocess_downloaded_subtitle(path: Path, *, force: bool = False) -> Path:
     subtitles = list(srt.parse(path.read_text(encoding="utf-8-sig")))
-    normalized = normalize_word_incremental_subtitles(subtitles)
+    normalized = normalize_word_incremental_subtitles(subtitles, force=force)
     if normalized is None:
         return path
     shutil.copy2(path, raw_subtitle_sidecar(path))
