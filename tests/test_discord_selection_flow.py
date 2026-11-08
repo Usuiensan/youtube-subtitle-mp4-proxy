@@ -50,6 +50,56 @@ def interaction(message: FakeProgressMessage) -> SimpleNamespace:
     )
 
 
+def test_subtitle_choice_prefers_original_asr_and_labels_track_kind() -> None:
+    view = main.SubtitleChoiceView(
+        requester_id=42,
+        video_id="dQw4w9WgXcQ",
+        lang="ja",
+        mode="mp4",
+        options_body={
+            "candidates": [
+                {"language": "en", "name": "英語", "name_en": "English", "track_kind": "youtube_mt"},
+                {"language": "en-orig", "name": "英語", "name_en": "English", "track_kind": "asr_original"},
+                {"language": "fr", "name": "フランス語", "name_en": "French", "track_kind": "manual"},
+            ]
+        },
+    )
+
+    assert main.default_source_language([
+        {"language": "en", "track_kind": "youtube_mt"},
+        {"language": "en-orig", "track_kind": "asr_original"},
+    ]) == "en-orig"
+    assert view.source_lang == "en-orig"
+    assert [option.label for option in view.source_select.options] == [
+        "フランス語 / 手動字幕",
+        "英語 / 自動生成字幕（元の音声）",
+        "英語 / YouTube機械翻訳",
+    ]
+    assert [option.description for option in view.source_select.options] == [
+        "fr · French", "en-orig · English", "en · English",
+    ]
+
+
+def test_subtitle_choice_keeps_original_asr_with_twenty_five_visible_options() -> None:
+    candidates = [
+        {"language": f"lang-{index}", "name": f"Language {index}", "track_kind": "manual"}
+        for index in range(25)
+    ]
+    candidates.append({"language": "en-orig", "name": "英語", "track_kind": "asr_original"})
+
+    view = main.SubtitleChoiceView(
+        requester_id=42,
+        video_id="dQw4w9WgXcQ",
+        lang="ja",
+        mode="mp4",
+        options_body={"candidates": candidates},
+    )
+
+    assert len(view.source_select.options) == 25
+    assert "en-orig" in [option.value for option in view.source_select.options]
+    assert view.source_lang == "en-orig"
+
+
 def test_subtitle_select_confirmed_only_once(monkeypatch) -> None:
     async def scenario() -> None:
         entered = asyncio.Event()
