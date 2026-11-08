@@ -2119,17 +2119,64 @@ def translation_settings(profile_id: str = "local_llm") -> TranslationSettings:
     )
 
 
-def is_non_retryable_gemini_quota_error(error: Exception) -> bool:
+def classify_gemini_429(error: Exception) -> tuple[str, int | None]:
     text = str(error).lower()
-    markers = (
-        "monthly spending cap",
-        "spending cap",
-        "requests per day",
-        "generaterequestsperday",
-        "daily quota",
-        "resource_exhausted",
-    )
-    return "gemini" in text and "429" in text and any(marker in text for marker in markers)
+    if "perday" in text or "per day" in text or "requests per day" in text or "daily quota" in text or "spending cap" in text or "monthly spending cap" in text:
+        scope = "per_day"
+    elif "perminute" in text or "per minute" in text or "requestsperminute" in text:
+        scope = "per_minute"
+    else:
+        scope = "per_minute"
+    retry_match = re.search(r'"retrydelay"\s*:\s*"(\d+(?:\.\d+)?)s"', text)
+    retry_delay = int(float(retry_match.group(1))) if retry_match else None
+    return scope, retry_delay
+
+
+async def run_translation_worker_with_retries(
+    *,
+    payload: dict,
+    run_worker,
+    job_id: str | None,
+    max_attempts: int,
+    retry_base_seconds: int,
+    sleep=asyncio.sleep,
+) -> dict:
+    quota_retries = 0
+    temporary_retries = 0
+    while True:
+        try:
+            return await run_worker(payload)
+        except RuntimeError as error:
+            if "translation api http error 429:" in str(error).lower():
+                scope, retry_delay = classify_gemini_429(error)
+                if scope == "per_minute" and quota_retries < 3:
+                    quota_retries += 1
+                    delay = max(5, min(120, retry_delay or 60))
+                    if job_id:
+                        update_job_progress(
+                            job_id,
+                            "translate",
+                            0.0,
+                            eta_seconds=delay,
+                            details=f"APIの分あたり上限のため {delay} 秒待機して再試行します…",
+                        )
+                    await sleep(delay)
+                    continue
+            if not is_retryable_translation_api_503(error) or temporary_retries >= max_attempts - 1:
+                raise
+            retry_number = temporary_retries + 1
+            retry_total = max_attempts - 1
+            delay = retry_base_seconds * (2**temporary_retries)
+            if job_id:
+                update_job_progress(
+                    job_id,
+                    "translate",
+                    0.0,
+                    eta_seconds=int(delay),
+                    details=f"API再試行中… {retry_number}/{retry_total}（503、一時的な混雑）",
+                )
+            temporary_retries += 1
+            await sleep(delay)
 
 
 def is_retryable_translation_api_503(error: Exception) -> bool:
@@ -3267,25 +3314,13 @@ async def translate_subtitle_if_needed(
             payload["gemini_thinking_level"] = thinking_level
         else:
             payload.pop("gemini_thinking_level", None)
-        max_attempts = settings.translation_api_retry_max_attempts
-        for attempt in range(1, max_attempts + 1):
-            try:
-                return await run_translation_worker(payload)
-            except RuntimeError as error:
-                if not is_retryable_translation_api_503(error) or attempt >= max_attempts:
-                    raise
-                retry_number = attempt
-                retry_total = max_attempts - 1
-                delay = settings.translation_api_retry_base_seconds * (2 ** (attempt - 1))
-                if job_id:
-                    update_job_progress(
-                        job_id,
-                        "translate",
-                        0.0,
-                        eta_seconds=int(delay),
-                        details=f"API再試行中… {retry_number}/{retry_total}（503、一時的な混雑）",
-                    )
-                await asyncio.sleep(delay)
+        return await run_translation_worker_with_retries(
+            payload=payload,
+            run_worker=run_translation_worker,
+            job_id=job_id,
+            max_attempts=settings.translation_api_retry_max_attempts,
+            retry_base_seconds=settings.translation_api_retry_base_seconds,
+        )
 
     adjustment_report = {
         "windows_total": 0, "windows_adjusted": 0, "windows_fallback": 0,
@@ -5090,7 +5125,13 @@ def prune_prepare_jobs() -> None:
 
 
 def prepare_error_text(error: Exception) -> str:
-    return str(getattr(error, "detail", None) or error)[-1000:]
+    text = str(getattr(error, "detail", None) or error)
+    if "translation api http error 429:" in text.lower() and any(
+        marker in text.lower()
+        for marker in ("gemini", "resource_exhausted", "quotafailure", "generativelanguage", "quota")
+    ):
+        return "Gemini APIの利用上限に達しました。しばらく待ってから再試行してください"
+    return text[-1000:]
 
 
 def is_retryable_prepare_error(error: Exception) -> bool:
