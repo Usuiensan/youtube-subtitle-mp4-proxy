@@ -231,6 +231,94 @@ class GeminiTranslationTests(unittest.TestCase):
         self.assertTrue(app_main.is_translation_provider_failover_error(RuntimeError("translation api http error 429: RESOURCE_EXHAUSTED")))
         self.assertFalse(app_main.is_translation_provider_failover_error(RuntimeError("translation api http error 400: bad schema")))
 
+    def test_gemini_429_classifies_minute_quota_and_retry_delay(self) -> None:
+        error = RuntimeError(
+            'translation api http error 429: {"error":{"status":"RESOURCE_EXHAUSTED",'
+            '"message":"quota exceeded", "details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure",'
+            '"violations":[{"quotaId":"GenerateRequestsPerMinutePerProjectPerModel-FreeTier",'
+            '"description":"Requests per minute per project per model"}]},{"@type":"type.googleapis.com/google.rpc.RetryInfo",'
+            '"retryDelay":"47s"}]}}'
+        )
+
+        self.assertEqual(app_main.classify_gemini_429(error), ("per_minute", 47))
+
+    def test_gemini_429_classifies_daily_quota(self) -> None:
+        error = RuntimeError(
+            'translation api http error 429: {"error":{"message":"requests per day quota exceeded",'
+            '"status":"RESOURCE_EXHAUSTED"}}'
+        )
+
+        self.assertEqual(app_main.classify_gemini_429(error), ("per_day", None))
+
+    def test_gemini_429_without_details_defaults_to_minute_quota(self) -> None:
+        self.assertEqual(
+            app_main.classify_gemini_429(RuntimeError("translation api http error 429: too many requests")),
+            ("per_minute", None),
+        )
+
+    def test_gemini_minute_quota_waits_and_retries(self) -> None:
+        calls = 0
+        sleeps: list[float] = []
+
+        async def fake_worker(_payload: dict) -> dict:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError('translation api http error 429: {"error":{"details":[{"retryDelay":"47s"}]}}')
+            return {"ok": True}
+
+        async def fake_sleep(delay: float) -> None:
+            sleeps.append(delay)
+
+        result = asyncio.run(
+            app_main.run_translation_worker_with_retries(
+                payload={},
+                run_worker=fake_worker,
+                job_id=None,
+                max_attempts=3,
+                retry_base_seconds=1,
+                sleep=fake_sleep,
+            )
+        )
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(calls, 2)
+        self.assertEqual(sleeps, [47])
+
+    def test_gemini_daily_quota_does_not_wait(self) -> None:
+        sleeps: list[float] = []
+
+        async def fake_worker(_payload: dict) -> dict:
+            raise RuntimeError('translation api http error 429: {"error":{"message":"requests per day exceeded"}}')
+
+        async def fake_sleep(delay: float) -> None:
+            sleeps.append(delay)
+
+        with self.assertRaises(RuntimeError):
+            asyncio.run(
+                app_main.run_translation_worker_with_retries(
+                    payload={},
+                    run_worker=fake_worker,
+                    job_id=None,
+                    max_attempts=3,
+                    retry_base_seconds=1,
+                    sleep=fake_sleep,
+                )
+            )
+
+        self.assertEqual(sleeps, [])
+
+    def test_prepare_error_text_shortens_gemini_quota_error(self) -> None:
+        error = RuntimeError(
+            'translation api http error 429: {"error":{"status":"RESOURCE_EXHAUSTED",'
+            '"message":"requests per day quota exceeded"}}'
+        )
+
+        self.assertEqual(
+            app_main.prepare_error_text(error),
+            "Gemini APIの利用上限に達しました。しばらく待ってから再試行してください",
+        )
+
     def test_gemini_thinking_level_is_added_to_generation_config(self) -> None:
         requests: list[dict] = []
 
