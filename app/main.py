@@ -731,7 +731,7 @@ def cache_key(
 def render_profile_id(subtitle_font_size: int | None = None) -> str:
     detected_font_name = find_japanese_font_spec()[1] or settings.subtitle_font
     return hashlib.sha1(
-        "\n".join(["dual-subtitle-layout-v19-fragment-align", "media-stream-selection-v3-height-cap", f"source-height-{settings.max_height}", subtitle_force_style(detected_font_name, subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
+        "\n".join(["dual-subtitle-layout-v20-youtube-ratio", "media-stream-selection-v3-height-cap", f"source-height-{settings.max_height}", subtitle_force_style(detected_font_name, subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
     ).hexdigest()[:8]
 
 
@@ -2485,21 +2485,39 @@ def escape_filter_value(value: str) -> str:
     return value.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
 
 
+SUBTITLE_FONT_HEIGHT_RATIO = 0.065
+# YouTube実測のグリフ実高4.11%を、libassの換算係数約0.63で再現する較正値。
+SUBTITLE_FONT_SIZE_REFERENCE = 25
+
+
+def subtitle_scale(subtitle_font_size: int | None) -> float:
+    # subtitleFontSize=25を等倍とし、明示指定時は比率サイズへ倍率として適用する。
+    if isinstance(subtitle_font_size, int) and subtitle_font_size > 0:
+        return subtitle_font_size / SUBTITLE_FONT_SIZE_REFERENCE
+    return 1.0
+
+
+def subtitle_font_size_for_height(height: int, subtitle_font_size: int | None = None) -> int:
+    return max(1, round(height * SUBTITLE_FONT_HEIGHT_RATIO * subtitle_scale(subtitle_font_size)))
+
+
 def subtitle_force_style(font_name: str | None = None, font_size: int | None = None) -> str:
     resolved_font = font_name or settings.subtitle_font
-    resolved_font_size = font_size if isinstance(font_size, int) and font_size > 0 else settings.subtitle_font_size
+    resolved_font_size = subtitle_font_size_for_height(288, font_size)
     return ",".join(
         [
             f"FontName={resolved_font}",
             f"FontSize={resolved_font_size}",
             f"PrimaryColour={settings.subtitle_primary_colour}",
+            f"OutlineColour={settings.subtitle_back_colour}",
             f"BackColour={settings.subtitle_back_colour}",
             "BorderStyle=3",
             "Outline=1",
             "Shadow=0",
-            f"MarginV={max(settings.subtitle_margin_v, 28)}",
-            f"MarginL={settings.subtitle_margin_l}",
-            f"MarginR={settings.subtitle_margin_r}",
+            # 余白も PlayRes (384x288) に対する比率で決める: 下3%、左右6%。
+            f"MarginV={round(288 * 0.03)}",
+            f"MarginL={round(384 * 0.06)}",
+            f"MarginR={round(384 * 0.06)}",
             "Alignment=2",
         ]
     )
@@ -2980,9 +2998,44 @@ def ffmpeg_subtitle_arg(path: Path, subtitle_meta: dict | None = None, *, subtit
         f"force_style='{escape_filter_value(subtitle_force_style(subtitle_font_name, subtitle_font_size))}'"
     )
     drawtext_filters = subtitle_overlay_drawtext_filters(subtitle_meta, font_file, subtitle_font_name)
+    # 字幕→scale の順にする。scale を先に置くと libass のボックス不透明度が
+    # 実測で約75%→約66%に落ちる (scale のピクセル形式変換経由の合成誤差)。
+    # ラベル (drawtext) は従来どおり scale 後に描く。
+    filters = [subtitle_filter, f"scale=-2:min(ih\\,{settings.max_height})"]
     if drawtext_filters:
-        subtitle_filter = f"{subtitle_filter},{','.join(drawtext_filters)}"
-    return f"scale=-2:min(ih\\,{settings.max_height}),{subtitle_filter}"
+        filters.extend(drawtext_filters)
+    return ",".join(filters)
+
+
+def probe_video_size(video: Path) -> tuple[int, int] | None:
+    try:
+        completed = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "csv=p=0:s=x",
+                str(video),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception:
+        return None
+    if completed.returncode != 0:
+        return None
+    try:
+        width, height = (int(value) for value in completed.stdout.strip().split("x", 1))
+    except (ValueError, TypeError):
+        return None
+    return (width, height) if width > 0 and height > 0 else None
 
 
 def ffmpeg_video_args(encoder: str | None = None) -> list[str]:
@@ -3721,12 +3774,14 @@ async def burn_subtitles(
 ) -> None:
     tmp_output = destination.with_suffix(".tmp.mp4")
     start_t = time.time()
+    video_size = probe_video_size(video)
     if original_subtitle and subtitle_meta and subtitle_meta.get("translated"):
         vf_args = ffmpeg_dual_subtitle_args(
             original_subtitle,
             subtitle,
             subtitle_meta,
             subtitle_font_size=subtitle_font_size,
+            video_size=video_size,
         )
     else:
         vf_args = ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta, subtitle_font_size=subtitle_font_size)]
@@ -3773,12 +3828,14 @@ async def create_hls(
             old_file.unlink()
 
     start_t = time.time()
+    video_size = probe_video_size(video)
     if original_subtitle and subtitle_meta and subtitle_meta.get("translated"):
         vf_args = ffmpeg_dual_subtitle_args(
             original_subtitle,
             subtitle,
             subtitle_meta,
             subtitle_font_size=subtitle_font_size,
+            video_size=video_size,
         )
     else:
         vf_args = ["-vf", ffmpeg_subtitle_arg(subtitle, subtitle_meta, subtitle_font_size=subtitle_font_size)]
@@ -3887,9 +3944,12 @@ def build_ass_from_srt(
     margin_r: int,
     margin_v: int,
     font_size: int,
+    playres_x: int = 1280,
+    playres_y: int = 720,
     keep_source_line_breaks: bool = True,
     subtitles_override: list[srt.Subtitle] | None = None,
     border_style: int = 3,
+    outline: int = 0,
     event_margin_v: dict[int, int] | None = None,
 ) -> None:
     def ass_time(value: Any) -> str:
@@ -3906,14 +3966,14 @@ def build_ass_from_srt(
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
-        "PlayResX: 1280",
-        "PlayResY: 720",
+        f"PlayResX: {playres_x}",
+        f"PlayResY: {playres_y}",
         "WrapStyle: 0",
         "ScaledBorderAndShadow: yes",
         "",
         "[V4+ Styles]",
         "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding",
-        f"Style: Default,{font_name},{font_size},{primary_colour},&H000000FF,{back_colour},{back_colour},0,0,0,0,100,100,0,0,{border_style},0,0,{align},{margin_l},{margin_r},{margin_v},1",
+        f"Style: Default,{font_name},{font_size},{primary_colour},&H000000FF,{back_colour},{back_colour},0,0,0,0,100,100,0,0,{border_style},{outline},0,{align},{margin_l},{margin_r},{margin_v},1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -4071,26 +4131,26 @@ def ffmpeg_dual_subtitle_args(
     subtitle_meta: dict | None = None,
     *,
     subtitle_font_size: int | None = None,
+    video_size: tuple[int, int] | None = None,
 ) -> list[str]:
     combined_ass = original_subtitle.with_suffix(".dual.ass")
-    base_font_size = subtitle_font_size if isinstance(subtitle_font_size, int) and subtitle_font_size > 0 else settings.subtitle_font_size
-    # 単言語字幕は ffmpeg の subtitles フィルタが SRT を PlayRes 384x288 の
-    # ASS として描画するため、設定値は画面高さの 288 分率で効く。
-    # 二言語字幕の ASS は PlayResY 720 なので、同じ設定値で単言語と同じ
-    # 見た目の大きさになるよう 720/288 倍して使う。
-    dual_font_size = max(1, int(base_font_size * 720 / 288 + 0.5))
+    # PlayRes は入力 (scale 前) の解像度に合わせ、字幕描画→scale の順で処理する。
+    # scale 後に縮小されても画面比率は保たれ、scale を先に置いた場合に起きる
+    # libass のボックス不透明度の低下 (実測 約75%→約66%) も避けられる。
+    output_width, output_height = video_size or (1280, 720)
+    dual_font_size = subtitle_font_size_for_height(output_height, subtitle_font_size)
     source_subtitles = load_srt(original_subtitle)
     translated_subtitles = load_srt(translated_subtitle)
-    # 折り返し幅は、従来レイアウトで調整した実寸の行幅を保つため、
-    # 設定値ベースで求めた幅をフォントの拡大率で割る。
-    width_chars = max(38.0, 70.0 - base_font_size * 0.55) * base_font_size / dual_font_size
+    margin_l = round(output_width * 0.06)
+    margin_r = round(output_width * 0.06)
+    # 画面幅・高さに対するYouTube字幕の余白比率で配置する。
+    base_margin_v = round(output_height * 0.03)
     # 幅見積もりの1.0は全角グリフの送り幅＝フォントサイズpx換算なので、
-    # PlayResX 1280 から左右マージンを引いた可用幅を超える行は、
+    # PlayResX から左右マージンを引いた可用幅を超える行は、
     # 折り返しできていても実描画ではみ出す。可用幅に収まる上限をかける。
-    available_units = (1280 - settings.subtitle_margin_l - settings.subtitle_margin_r) / dual_font_size
+    available_units = (output_width - margin_l - margin_r) / dual_font_size
     # 閉じ括弧を行末へ寄せる拡張ではみ出す分（最大2文字程度）も見込む
-    width_chars = min(width_chars, available_units * 0.90)
-    base_margin_v = max(settings.subtitle_margin_v, 52)
+    width_chars = available_units * 0.90
     line_height = max(1, round(dual_font_size * 1.25))
     line_gap = max(4, round(dual_font_size * 0.45))
 
@@ -4160,19 +4220,22 @@ def ffmpeg_dual_subtitle_args(
         original_subtitle,
         combined_ass,
         align=2,
-        margin_l=settings.subtitle_margin_l,
-        margin_r=settings.subtitle_margin_r,
+        margin_l=margin_l,
+        margin_r=margin_r,
         margin_v=base_margin_v,
         font_size=dual_font_size,
+        playres_x=output_width,
+        playres_y=output_height,
         keep_source_line_breaks=True,
         subtitles_override=combined_subtitles,
-        border_style=4,
+        border_style=3,
+        outline=max(1, round(output_height * 0.002)),
         event_margin_v=event_margin_v,
     )
     font_file, font_name = find_japanese_font_spec()
     subtitle_font_name = font_name or settings.subtitle_font
     drawtext_filters = subtitle_overlay_drawtext_filters(subtitle_meta, font_file, subtitle_font_name)
-    filter_str = f"scale=-2:min(ih\\,{settings.max_height}),ass='{escape_filter_value(combined_ass.as_posix())}'"
+    filter_str = f"ass='{escape_filter_value(combined_ass.as_posix())}',scale=-2:min(ih\\,{settings.max_height})"
     if drawtext_filters:
         filter_str = f"{filter_str},{','.join(drawtext_filters)}"
     return [
