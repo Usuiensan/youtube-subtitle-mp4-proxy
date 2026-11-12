@@ -358,6 +358,58 @@ def resplit_existing_translation(
     return result
 
 
+def resplit_translation_onto_source(
+    source_subtitles: list[srt.Subtitle], translated_subtitles: list[srt.Subtitle]
+) -> list[srt.Subtitle]:
+    """訳文キューを原文キューのタイミングへ割り直す。
+
+    自動字幕のLLM調整は原文を文単位に再分割するため、訳文キューが
+    表示用の原文（断片単位）より長い区間を持つことがある。二言語表示で
+    原文と訳文の表示タイミングを揃えるため、複数の原文キューにまたがる
+    訳文は split_group_translation で原文キューごとに分割する。
+    分割できない訳文はそのまま残す。
+    """
+    if not source_subtitles or not translated_subtitles:
+        return list(translated_subtitles)
+
+    def overlap_seconds(source: srt.Subtitle, translated: srt.Subtitle) -> float:
+        start = max(source.start, translated.start)
+        end = min(source.end, translated.end)
+        return max(0.0, (end - start).total_seconds())
+
+    # 各原文キューは、重なりが最大の訳文キューへ1つだけ割り当てる
+    assignment: dict[int, list[srt.Subtitle]] = {}
+    for source in source_subtitles:
+        best_index: int | None = None
+        best_overlap = 0.0
+        for position, translated in enumerate(translated_subtitles):
+            overlap = overlap_seconds(source, translated)
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_index = position
+        if best_index is not None:
+            assignment.setdefault(best_index, []).append(source)
+
+    result: list[srt.Subtitle] = []
+    for position, translated in enumerate(translated_subtitles):
+        group = assignment.get(position, [])
+        text = normalize_subtitle_text(translated.content, compact=True)
+        if len(group) <= 1 or not text:
+            result.append(translated)
+            continue
+        try:
+            split = split_group_translation(text, tuple(group))
+        except TranslationError:
+            result.append(translated)
+            continue
+        result.extend(
+            srt.Subtitle(item.index, item.start, item.end, content, item.proprietary)
+            for item, content in zip(group, split.segments)
+        )
+    result.sort(key=lambda item: (item.start, item.end))
+    return result
+
+
 _FILLER_TRANSLATIONS = {"完了", "終了", "翻訳なし", "翻訳完了", "translation complete", "done"}
 
 

@@ -39,6 +39,7 @@ from app.translation import (
     load_srt,
     normalize_subtitle_text,
     resplit_existing_translation,
+    resplit_translation_onto_source,
     save_srt,
     translate_srt_with_local_worker,
 )
@@ -730,7 +731,7 @@ def cache_key(
 def render_profile_id(subtitle_font_size: int | None = None) -> str:
     detected_font_name = find_japanese_font_spec()[1] or settings.subtitle_font
     return hashlib.sha1(
-        "\n".join(["dual-subtitle-layout-v18-wrapfix", "media-stream-selection-v3-height-cap", f"source-height-{settings.max_height}", subtitle_force_style(detected_font_name, subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
+        "\n".join(["dual-subtitle-layout-v19-fragment-align", "media-stream-selection-v3-height-cap", f"source-height-{settings.max_height}", subtitle_force_style(detected_font_name, subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
     ).hexdigest()[:8]
 
 
@@ -4104,9 +4105,23 @@ def ffmpeg_dual_subtitle_args(
                 return text[len(source_text) + 1 :]
         return text
 
-    translated_lines = [
-        (subtitle, wrap_text_to_width(translated_text(subtitle), width_chars))
+    # 訳文の表示タイミングを原文キューへ揃える（語学学習向け）。
+    # 自動字幕の調整で文単位に再分割された訳文は、原文の断片キューに
+    # またがって表示され続けるため、原文キューごとに分割し直す。
+    plain_translated = [
+        srt.Subtitle(
+            index=subtitle.index,
+            start=subtitle.start,
+            end=subtitle.end,
+            content=translated_text(subtitle),
+            proprietary=subtitle.proprietary,
+        )
         for subtitle in translated_subtitles
+    ]
+    aligned_translated = resplit_translation_onto_source(source_subtitles, plain_translated)
+    translated_lines = [
+        (subtitle, wrap_text_to_width(subtitle.content, width_chars))
+        for subtitle in aligned_translated
     ]
     combined_subtitles: list[srt.Subtitle] = []
     event_margin_v: dict[int, int] = {}

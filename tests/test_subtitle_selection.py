@@ -360,7 +360,7 @@ def test_dual_subtitle_size_matches_single_subtitle_scale(tmp_path) -> None:
     assert ",63," in next(line for line in ass.splitlines() if line.startswith("Style: Default,"))
 
 
-def test_dual_subtitle_ass_keeps_source_cues_with_a_ranged_translation(tmp_path) -> None:
+def test_dual_subtitle_ass_aligns_ranged_translation_to_source_cues(tmp_path) -> None:
     source = tmp_path / "source.srt"
     translated = tmp_path / "translated.srt"
     source.write_text(
@@ -381,11 +381,19 @@ def test_dual_subtitle_ass_keeps_source_cues_with_a_ranged_translation(tmp_path)
     ass = source.with_suffix(".dual.ass").read_text(encoding="utf-8")
     dialogues = [line for line in ass.splitlines() if line.startswith("Dialogue:")]
 
-    assert len(dialogues) == 3
+    assert len(dialogues) == 4
     assert sum("First source" in line for line in dialogues) == 1
     assert sum("Second source" in line for line in dialogues) == 1
-    ranged = next(line for line in dialogues if "まとめた訳" in line)
-    assert ",0:00:01.00,0:00:03.00," in ranged
+    # 範囲訳文は原文キューのタイミングへ分割され、連結すると元の訳文に戻る
+    translated_events = sorted(
+        (line for line in dialogues if "source" not in line),
+        key=lambda line: line.split(",")[1],
+    )
+    assert len(translated_events) == 2
+    assert ",0:00:01.00,0:00:02.00," in translated_events[0]
+    assert ",0:00:02.00,0:00:03.00," in translated_events[1]
+    joined = "".join(line.split(",", 9)[9] for line in translated_events)
+    assert joined == "まとめた訳"
 
 
 def test_translation_overlay_uses_model_only() -> None:
