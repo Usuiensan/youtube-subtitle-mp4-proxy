@@ -263,7 +263,7 @@ def test_dual_subtitle_ass_is_centered_and_does_not_duplicate_source(tmp_path) -
     ass = source.with_suffix(".dual.ass").read_text(encoding="utf-8")
 
     assert args[1].count("ass=") == 1
-    assert ",4," in next(line for line in ass.splitlines() if line.startswith("Style: Default,"))
+    assert ",3," in next(line for line in ass.splitlines() if line.startswith("Style: Default,"))
     dialogues = [line for line in ass.splitlines() if line.startswith("Dialogue:")]
     assert len(dialogues) == 2
     assert dialogues[0].count("English line") == 1
@@ -339,25 +339,53 @@ def test_dual_subtitle_ass_preserves_source_line_breaks(tmp_path) -> None:
     assert r"First line\NSecond line" in ass
 
 
-def test_dual_subtitle_size_matches_single_subtitle_scale(tmp_path) -> None:
+def test_subtitle_sizes_follow_video_height_and_youtube_style(tmp_path) -> None:
     source = tmp_path / "source.srt"
     translated = tmp_path / "translated.srt"
     value = srt.compose([srt.Subtitle(1, timedelta(0), timedelta(seconds=1), "line")])
     source.write_text(value, encoding="utf-8")
     translated.write_text(value, encoding="utf-8")
 
-    # 単言語字幕は PlayRes 288 基準で描画されるため、二言語字幕（PlayResY 720）
-    # では設定値を 720/288 倍して初めて見た目の大きさが一致する。
-    args = main.ffmpeg_dual_subtitle_args(source, translated, subtitle_font_size=16)
+    args = main.ffmpeg_dual_subtitle_args(source, translated)
     ass = source.with_suffix(".dual.ass").read_text(encoding="utf-8")
+    style = next(line for line in ass.splitlines() if line.startswith("Style: Default,"))
 
-    assert args[1].startswith(r"scale=-2:min(ih\,")
-    assert ",40," in next(line for line in ass.splitlines() if line.startswith("Style: Default,"))
+    # 字幕描画→scale の順 (scale 先行だと libass のボックス不透明度が落ちる)
+    assert args[1].startswith("ass=")
+    assert r",scale=-2:min(ih\,1080)" in args[1]
+    assert "PlayResX: 1280" in ass
+    assert "PlayResY: 720" in ass
+    assert ",47,&H00FFFFFF," in style
+    assert ",&H40000000,&H40000000," in style
+    assert ",3,1,0,2," in style
 
-    main.ffmpeg_dual_subtitle_args(source, translated, subtitle_font_size=25)
+    main.ffmpeg_dual_subtitle_args(source, translated, video_size=(1920, 1080))
     ass = source.with_suffix(".dual.ass").read_text(encoding="utf-8")
+    assert "PlayResX: 1920" in ass
+    assert "PlayResY: 1080" in ass
+    assert ",70,&H00FFFFFF," in next(line for line in ass.splitlines() if line.startswith("Style: Default,"))
 
-    assert ",63," in next(line for line in ass.splitlines() if line.startswith("Style: Default,"))
+    # 上限を超える入力でも PlayRes は入力解像度で、scale で縮小後に比率が保たれる
+    main.ffmpeg_dual_subtitle_args(source, translated, video_size=(2560, 1440))
+    ass = source.with_suffix(".dual.ass").read_text(encoding="utf-8")
+    assert "PlayResX: 2560" in ass
+    assert "PlayResY: 1440" in ass
+    assert ",94,&H00FFFFFF," in next(line for line in ass.splitlines() if line.startswith("Style: Default,"))
+
+    main.ffmpeg_dual_subtitle_args(source, translated, video_size=(640, 360))
+    ass = source.with_suffix(".dual.ass").read_text(encoding="utf-8")
+    assert "PlayResX: 640" in ass
+    assert "PlayResY: 360" in ass
+    assert ",23,&H00FFFFFF," in next(line for line in ass.splitlines() if line.startswith("Style: Default,"))
+
+    main.ffmpeg_dual_subtitle_args(source, translated, subtitle_font_size=50)
+    ass = source.with_suffix(".dual.ass").read_text(encoding="utf-8")
+    assert ",94,&H00FFFFFF," in next(line for line in ass.splitlines() if line.startswith("Style: Default,"))
+
+    single_style = main.subtitle_force_style()
+    assert "FontSize=19" in single_style
+    assert "BackColour=&H40000000" in single_style
+    assert "OutlineColour=&H40000000" in single_style
 
 
 def test_dual_subtitle_ass_aligns_ranged_translation_to_source_cues(tmp_path) -> None:
