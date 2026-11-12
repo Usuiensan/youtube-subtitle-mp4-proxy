@@ -444,7 +444,9 @@ def test_translation_overlay_contains_languages_and_model() -> None:
 def test_wrap_text_to_width_prefers_punctuation_then_word_boundary() -> None:
     assert main.wrap_text_to_width("一二三、四五六、七八九", 7) == ["一二三、", "四五六、七八九"]
     assert main.wrap_text_to_width("one two three four", 4) == ["one two", "three", "four"]
-    assert main.wrap_text_to_width("句読点のない長い日本語", 4) == ["句読点のない長い日本語"]
+    # 句読点も空白も無い場合は収まる位置で強制改行する（旧仕様は行全体を
+    # 出して字幕が画面からはみ出していたため変更した）
+    assert main.wrap_text_to_width("句読点のない長い日本語", 4) == ["句読点の", "ない長い", "日本語"]
 
 
 def test_subtitle_candidates_prioritize_languages_without_dropping_tracks() -> None:

@@ -730,7 +730,7 @@ def cache_key(
 def render_profile_id(subtitle_font_size: int | None = None) -> str:
     detected_font_name = find_japanese_font_spec()[1] or settings.subtitle_font
     return hashlib.sha1(
-        "\n".join(["dual-subtitle-layout-v17-scaled", "media-stream-selection-v3-height-cap", f"source-height-{settings.max_height}", subtitle_force_style(detected_font_name, subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
+        "\n".join(["dual-subtitle-layout-v18-wrapfix", "media-stream-selection-v3-height-cap", f"source-height-{settings.max_height}", subtitle_force_style(detected_font_name, subtitle_font_size), *ffmpeg_video_args(), translation_profile_id()]).encode("utf-8")
     ).hexdigest()[:8]
 
 
@@ -3962,6 +3962,10 @@ def wrap_text_to_width(text: str, max_width: float) -> list[str]:
     lines: list[str] = []
     punctuation = "、。，．！？!?：；:;"
     closing = "）］｝」』】〉》"
+    # 行頭に置けない文字（句読点・小書き仮名・長音・閉じ括弧）。
+    # 強制改行ではこれらを前の行へ寄せ、行頭に来ないようにする。
+    line_start_prohibited = "、。，．・：；:;！？!?）］｝」』】〉》ーぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮ"
+    opening = "（［｛「『【〈《"
     for source_line in source_lines:
         remaining = " ".join(source_line.split())
         if not remaining:
@@ -3970,16 +3974,28 @@ def wrap_text_to_width(text: str, max_width: float) -> list[str]:
         while ass_text_width(remaining) > max_width:
             punctuation_break = 0
             word_break = 0
+            fit_break = 0
             for index, character in enumerate(remaining):
                 if ass_text_width(remaining[: index + 1]) > max_width:
                     break
+                fit_break = index + 1
                 if character in punctuation:
                     punctuation_break = index + 1
                 elif character.isspace():
                     word_break = index
             split_at = punctuation_break or word_break
             if not split_at:
-                break
+                # 幅内に句読点も空白も無い場合は、収まる位置で強制改行する。
+                # （従来はここで諦めて行全体を出し、字幕が画面からはみ出していた）
+                split_at = fit_break
+                if not split_at or split_at >= len(remaining):
+                    break
+                while split_at < len(remaining) and remaining[split_at] in line_start_prohibited:
+                    split_at += 1
+                while split_at > 1 and remaining[split_at - 1] in opening:
+                    split_at -= 1
+                if split_at >= len(remaining):
+                    break
             while split_at < len(remaining) and remaining[split_at] in closing:
                 split_at += 1
             lines.append(remaining[:split_at].rstrip())
@@ -4067,6 +4083,12 @@ def ffmpeg_dual_subtitle_args(
     # 折り返し幅は、従来レイアウトで調整した実寸の行幅を保つため、
     # 設定値ベースで求めた幅をフォントの拡大率で割る。
     width_chars = max(38.0, 70.0 - base_font_size * 0.55) * base_font_size / dual_font_size
+    # 幅見積もりの1.0は全角グリフの送り幅＝フォントサイズpx換算なので、
+    # PlayResX 1280 から左右マージンを引いた可用幅を超える行は、
+    # 折り返しできていても実描画ではみ出す。可用幅に収まる上限をかける。
+    available_units = (1280 - settings.subtitle_margin_l - settings.subtitle_margin_r) / dual_font_size
+    # 閉じ括弧を行末へ寄せる拡張ではみ出す分（最大2文字程度）も見込む
+    width_chars = min(width_chars, available_units * 0.90)
     base_margin_v = max(settings.subtitle_margin_v, 52)
     line_height = max(1, round(dual_font_size * 1.25))
     line_gap = max(4, round(dual_font_size * 0.45))
