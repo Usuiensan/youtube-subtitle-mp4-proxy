@@ -94,11 +94,10 @@ PY
     [[ ! -e "$INHIBIT" ]] || { set_state deferred "自動再起動を延期しました: $INHIBIT が存在します。"; exit 0; }
     [[ -z "$(who)" ]] || { set_state deferred '自動再起動を延期しました: 対話ログイン利用者がいます。'; exit 0; }
     [[ "$(active_jobs)" == 0 ]] || { set_state deferred '自動再起動を延期しました: 動画ジョブが実行中です。'; exit 0; }
-    ! pgrep -x ffmpeg >/dev/null || { set_state deferred '自動再起動を延期しました: ffmpegが実行中です。'; exit 0; }
     ! pgrep -f '/yt-dlp|python.*yt_dlp' >/dev/null || { set_state deferred '自動再起動を延期しました: yt-dlpが実行中です。'; exit 0; }
     ! pgrep -x dpkg >/dev/null && ! pgrep -x apt >/dev/null && ! pgrep -x apt-get >/dev/null \
         || { set_state deferred '自動再起動を延期しました: apt/dpkgが実行中です。'; exit 0; }
-    set_state rebooting '本番ホストを保守再起動します。実行中ジョブと利用者がいないことを確認済みです。'
+    set_state rebooting '本番ホストを保守再起動します。実行中ジョブと利用者がいないことを確認済みです。Atlas送出は一時中断します。'
     systemctl reboot
 }
 

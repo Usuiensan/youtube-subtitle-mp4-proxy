@@ -76,7 +76,7 @@ $state = .\scripts\production-config.ps1 -Get | ConvertFrom-Json
 
 - `youtube-proxy-ytdlp-update.timer` は毎日04:10 JST以降に新版を確認する。変換中は延期し、更新後にYouTubeメタデータ、字幕一覧、API、Discord Gatewayを検証する。失敗時は更新前の `yt-dlp`、`curl-cffi`、`yt-dlp-ejs` へ戻す。
 - `youtube-proxy-maintenance-check.timer` は毎日03:45 JST以降に `reboot-required`、NVIDIAのロード済み版とライブラリ版、`nvidia-smi`、1フレームNVENCを確認する。異常と復旧だけをDiscord運用者へDMする。
-- `youtube-proxy-maintenance-reboot.timer` は毎日04:30 JST以降、再起動が必要な場合だけ動く。実行中ジョブ、`ffmpeg`、`yt-dlp`、apt/dpkg、対話ログインがある場合と、`/etc/youtube-mp4-proxy/no-auto-reboot` がある場合は翌日へ延期する。
+- `youtube-proxy-maintenance-reboot.timer` は毎日04:30 JST以降、再起動が必要な場合だけ動く。実行中の動画ジョブ、`yt-dlp`、apt/dpkg、対話ログインがある場合と、`/etc/youtube-mp4-proxy/no-auto-reboot` がある場合は翌日へ延期する。Atlas送出は保守再起動で一時中断することを許容し、単独の`ffmpeg`実行は延期条件にしない。
 - 再起動後は `youtube-proxy-maintenance-boot.service` がAPI、Discord Bot、HDD、NVIDIA、NVENCを確認する。失敗しても再起動を繰り返さず、CPUフォールバックを維持してDiscordへ通知する。
 
 保守状態は `/var/lib/youtube-mp4-proxy/maintenance.json` の一箇所だけに保存する。正常時の定期通知は行わない。

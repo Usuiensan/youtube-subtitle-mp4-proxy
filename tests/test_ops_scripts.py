@@ -110,6 +110,7 @@ def test_ytdlp_updater_is_safe_and_uses_real_service_names() -> None:
 def test_maintenance_reboot_has_guards_and_nvenc_checks() -> None:
     script = (ROOT / "scripts" / "youtube-proxy-maintenance").read_text(encoding="utf-8")
     provision = (ROOT / "scripts" / "provision-production-ops.sh").read_text(encoding="utf-8")
+    operations = (ROOT / "docs" / "production-operations.md").read_text(encoding="utf-8")
 
     for required in (
         "/var/run/reboot-required",
@@ -123,6 +124,9 @@ def test_maintenance_reboot_has_guards_and_nvenc_checks() -> None:
         "DISCORD_OPERATOR_USER_ID",
     ):
         assert required in script
+    assert 'pgrep -x ffmpeg' not in script
+    assert "Atlas送出は保守再起動で一時中断する" in operations
+    assert "動画ジョブ、`yt-dlp`" in operations
     for unit in (
         "youtube-proxy-ytdlp-update.timer",
         "youtube-proxy-maintenance-check.timer",
