@@ -62,26 +62,42 @@ def test_splits_windows_by_subtitle_end_time() -> None:
 
     def llm_call(payload: dict) -> dict:
         calls.append(payload)
-        window = payload["windows"][0]
         return {"windows": [
             {"window_id": window["window_id"], "sentences": [{"start_cue": window["cues"][0]["index"], "text": window["cues"][0]["text"]}]}
+            for window in payload["windows"]
         ], "_usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}}
 
     _adjusted, report = adjust_auto_captions(source, source_language="en", llm_call=llm_call)
     assert report["windows_total"] == 2
-    assert len(calls) == 2
-    assert [len(payload["windows"]) for payload in calls] == [1, 1]
-    assert [len(payload["windows"][0]["cues"]) for payload in calls] == [2, 2]
-    assert report["usage"] == {"input_tokens": 2, "output_tokens": 4, "total_tokens": 6}
+    # 2窓は1リクエストにまとめて送る（窓ごとの連射でAPIの分あたり上限を踏まない）
+    assert len(calls) == 1
+    assert [len(payload["windows"]) for payload in calls] == [2]
+    assert [len(window["cues"]) for window in calls[0]["windows"]] == [2, 2]
+    assert report["usage"] == {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+
+
+def test_batches_windows_up_to_four_per_request() -> None:
+    source = [subtitle(index, index * 30, index * 30 + 30, f"cue {index}") for index in range(10)]
+    calls: list[dict] = []
+
+    def llm_call(payload: dict) -> dict:
+        calls.append(payload)
+        return {"windows": [
+            {"window_id": window["window_id"], "sentences": [{"start_cue": window["cues"][0]["index"], "text": window["cues"][0]["text"]}]}
+            for window in payload["windows"]
+        ]}
+
+    _adjusted, report = adjust_auto_captions(source, source_language="en", llm_call=llm_call)
+    assert report["windows_total"] == 5
+    assert [len(payload["windows"]) for payload in calls] == [4, 1]
+    assert report["windows_adjusted"] == 5
 
 
 def test_renumbers_adjusted_and_fallback_cues_across_windows() -> None:
     source = [subtitle(index, index * 30, index * 30 + 30, f"cue {index}") for index in range(4)]
 
     def llm_call(payload: dict) -> dict:
-        window = payload["windows"][0]
-        if window["window_id"] == "w002":
-            raise RuntimeError("down")
+        # w002 は応答から欠落させる。その窓だけがフォールバックする
         return {"windows": [{
             "window_id": "w001",
             "sentences": [{"start_cue": 0, "text": "cue 0 adjusted"}, {"start_cue": 1, "text": "cue 1"}],
@@ -93,3 +109,33 @@ def test_renumbers_adjusted_and_fallback_cues_across_windows() -> None:
     assert [item.content for item in adjusted] == ["cue 0 adjusted", "cue 1", "cue 2", "cue 3"]
     assert report["windows_adjusted"] == 1
     assert report["windows_fallback"] == 1
+
+
+def test_sentences_may_share_a_start_cue() -> None:
+    # 実例: 1キューに2文入っていると LLM は同じ start_cue で2文返す。
+    # 重複を理由に窓ごと捨てると、正しく再構成された文が全部失われる。
+    source = [
+        subtitle(1, 0, 2, 'said, "Fine, you abolished the law, but'),
+        subtitle(2, 2, 4, 'we will continue the policy anyway,"'),
+        subtitle(3, 4, 6, "Answer me. Go read the stance"),
+        subtitle(4, 6, 8, "on nuclear energy."),
+    ]
+
+    def llm_call(payload: dict) -> dict:
+        return {"windows": [{"window_id": "w001", "sentences": [
+            {"start_cue": 0, "text": 'Said, "Fine, you abolished the law, but we will continue the policy anyway,"'},
+            {"start_cue": 2, "text": "Answer me."},
+            {"start_cue": 2, "text": "Go read the stance on nuclear energy."},
+        ]}]}
+
+    adjusted, report = adjust_auto_captions(source, source_language="en", llm_call=llm_call)
+
+    assert report["windows_adjusted"] == 1
+    assert report["windows_fallback"] == 0
+    assert [item.content for item in adjusted] == [
+        'Said, "Fine, you abolished the law, but we will continue the policy anyway,"',
+        "Answer me.",
+        "Go read the stance on nuclear energy.",
+    ]
+    assert all(item.start < item.end for item in adjusted)
+    assert all(adjusted[i].end <= adjusted[i + 1].start for i in range(len(adjusted) - 1))

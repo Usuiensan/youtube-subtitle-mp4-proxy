@@ -14,6 +14,26 @@ from app.translation import normalize_subtitle_text
 
 WINDOW_SECONDS = 75
 SIMILARITY_THRESHOLD = 0.6
+WINDOWS_PER_BATCH = 4
+MAX_CUES_PER_BATCH = 150
+
+
+def _batches(
+    windows: list[list[tuple[int, srt.Subtitle]]], payload_windows: list[dict]
+) -> list[list[tuple[list[tuple[int, srt.Subtitle]], dict]]]:
+    result: list[list[tuple[list[tuple[int, srt.Subtitle]], dict]]] = []
+    current: list[tuple[list[tuple[int, srt.Subtitle]], dict]] = []
+    cue_count = 0
+    for window, expected in zip(windows, payload_windows):
+        if current and (len(current) >= WINDOWS_PER_BATCH or cue_count + len(window) > MAX_CUES_PER_BATCH):
+            result.append(current)
+            current = []
+            cue_count = 0
+        current.append((window, expected))
+        cue_count += len(window)
+    if current:
+        result.append(current)
+    return result
 
 
 def _normalized_for_similarity(text: str) -> str:
@@ -70,7 +90,7 @@ def _rebuild(window: list[tuple[int, srt.Subtitle]], sentences: Any) -> list[srt
         if not isinstance(sentence, dict) or not isinstance(sentence.get("start_cue"), int):
             raise ValueError("invalid sentence")
         start_cue = sentence["start_cue"]
-        if start_cue not in indexes or (starts and start_cue <= starts[-1]):
+        if start_cue not in indexes or (starts and start_cue < starts[-1]):
             raise ValueError("invalid sentence start_cue")
         text = str(sentence.get("text") or "").strip()
         if not text:
@@ -97,10 +117,23 @@ def _rebuild(window: list[tuple[int, srt.Subtitle]], sentences: Any) -> list[srt
         return window[-1][1].end
 
     result: list[srt.Subtitle] = []
-    for number, (start_cue, text) in enumerate(zip(starts, texts), start=1):
-        start_position = spans[start_cue][0]
-        end_position = spans[starts[number]][0] if number < len(starts) else len(source_text)
-        result.append(srt.Subtitle(number, time_at(start_position), time_at(end_position), text))
+    position = 0
+    while position < len(starts):
+        group_end = position
+        while group_end + 1 < len(starts) and starts[group_end + 1] == starts[position]:
+            group_end += 1
+        span_start = spans[starts[position]][0]
+        span_end = spans[starts[group_end + 1]][0] if group_end + 1 < len(starts) else len(source_text)
+        group_texts = texts[position:group_end + 1]
+        total_length = sum(len(text) for text in group_texts) or 1
+        cursor = float(span_start)
+        for text in group_texts:
+            next_cursor = cursor + (span_end - span_start) * len(text) / total_length
+            result.append(
+                srt.Subtitle(len(result) + 1, time_at(round(cursor)), time_at(round(next_cursor)), text)
+            )
+            cursor = next_cursor
+        position = group_end + 1
     return result
 
 
@@ -123,34 +156,46 @@ def adjust_auto_captions(
     if not windows:
         return [], report
     adjusted: list[srt.Subtitle] = []
-    for number, (window, expected) in enumerate(zip(windows, payload_windows), start=1):
+    for batch in _batches(windows, payload_windows):
+        batch_windows = [window for window, _ in batch]
+        batch_expected = [expected for _, expected in batch]
+        items_by_id: dict[str, Any] = {}
         try:
             response = _call(llm_call, {
                 "task": "adjust_auto_captions", "source_language": source_language,
-                "video_title": video_title, "channel_name": channel_name, "windows": [expected],
+                "video_title": video_title, "channel_name": channel_name, "windows": batch_expected,
             })
             raw_windows = response.get("windows")
-            if not isinstance(raw_windows, list) or len(raw_windows) != 1:
+            if not isinstance(raw_windows, list):
                 raise ValueError("invalid windows response")
-            item = raw_windows[0]
             usage = _usage(response)
             for key in report["usage"]:
                 report["usage"][key] += usage[key]
-            if not isinstance(item, dict) or item.get("window_id") != expected["window_id"]:
-                raise ValueError("window_id mismatch")
-            candidate = _rebuild(window, item.get("sentences"))
-            original = "".join(cue["text"] for cue in expected["cues"])
-            adjusted_text = "".join(subtitle.content for subtitle in candidate)
-            similarity = difflib.SequenceMatcher(
-                None, _normalized_for_similarity(original), _normalized_for_similarity(adjusted_text)
-            ).ratio()
-            if similarity < SIMILARITY_THRESHOLD:
-                raise ValueError("adjusted text is too dissimilar")
-            adjusted.extend(candidate)
-            report["windows_adjusted"] += 1
+            items_by_id = {
+                item["window_id"]: item
+                for item in raw_windows
+                if isinstance(item, dict) and isinstance(item.get("window_id"), str)
+            }
         except Exception:
-            adjusted.extend(item for _, item in window)
-            report["windows_fallback"] += 1
+            items_by_id = {}
+        for window, expected in zip(batch_windows, batch_expected):
+            try:
+                item = items_by_id.get(expected["window_id"])
+                if item is None:
+                    raise ValueError("window missing from response")
+                candidate = _rebuild(window, item.get("sentences"))
+                original = "".join(cue["text"] for cue in expected["cues"])
+                adjusted_text = "".join(subtitle.content for subtitle in candidate)
+                similarity = difflib.SequenceMatcher(
+                    None, _normalized_for_similarity(original), _normalized_for_similarity(adjusted_text)
+                ).ratio()
+                if similarity < SIMILARITY_THRESHOLD:
+                    raise ValueError("adjusted text is too dissimilar")
+                adjusted.extend(candidate)
+                report["windows_adjusted"] += 1
+            except Exception:
+                adjusted.extend(item for _, item in window)
+                report["windows_fallback"] += 1
     if report["windows_adjusted"] == 0:
         return list(subtitles), report
     for index, item in enumerate(adjusted, start=1):
