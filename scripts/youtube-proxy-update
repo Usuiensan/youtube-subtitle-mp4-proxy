@@ -56,6 +56,9 @@ fi
 trap '$watcher_was_active && systemctl start "$STORAGE_WATCH_SERVICE"' EXIT
 systemctl stop "$DISCORD_SERVICE" "$PROXY_SERVICE"
 rsync -a --delete --exclude='.venv/' --exclude='.env*' --exclude='.pytest_cache/' --exclude='cache/' --exclude='data/' --exclude='.translation-audit/' --exclude='.translation-attempts/' "$STAGE/" "$APP_DIR/"
+# rsync -a は mktemp のステージ (700) の属性を APP_DIR 自体にも移し、
+# User=app のサービスが 200/CHDIR で起動できなくなるため、元の 755 へ戻す。
+chmod 755 "$APP_DIR"
 install -o root -g root -m 755 "$STAGE/scripts/youtube-proxy-update" /usr/local/sbin/youtube-proxy-update
 install -o root -g root -m 755 "$STAGE/scripts/youtube-proxy-audit" /usr/local/sbin/youtube-proxy-audit
 install -o root -g root -m 755 "$STAGE/scripts/youtube-proxy-config" /usr/local/sbin/youtube-proxy-config
