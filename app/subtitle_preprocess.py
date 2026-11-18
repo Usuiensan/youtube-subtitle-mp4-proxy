@@ -53,12 +53,26 @@ def _words(text: str) -> list[str]:
     return text.split()
 
 
+_MIN_SINGLE_WORD_OVERLAP_CHARS = 4
+_MIN_CHAR_OVERLAP_CHARS = 4
+
+
 def _remove_rolling_overlap(previous: str, current: str) -> str:
     previous_words = _words(previous)
     current_words = _words(current)
-    for size in range(min(len(previous_words), len(current_words)), 1, -1):
-        if previous_words[-size:] == current_words[:size]:
-            return " ".join(current_words[size:])
+    for size in range(min(len(previous_words), len(current_words)), 0, -1):
+        if previous_words[-size:] != current_words[:size]:
+            continue
+        if size == 1 and len(current_words[0]) < _MIN_SINGLE_WORD_OVERLAP_CHARS:
+            break
+        return " ".join(current_words[size:])
+    # 空白で区切れない言語（日本語・中国語など）は1行が1単語扱いになり、
+    # 単語単位では行ごとの重なり（サイズ1）を検出できないことがある。
+    # 空白を含まないテキスト同士は文字単位の接尾・接頭一致で差分を取る。
+    if " " not in previous and " " not in current:
+        for size in range(min(len(previous), len(current)), _MIN_CHAR_OVERLAP_CHARS - 1, -1):
+            if previous[-size:] == current[:size]:
+                return current[size:]
     return current
 
 

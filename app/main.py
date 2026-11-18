@@ -3294,6 +3294,15 @@ async def run_slideshow_ffmpeg(args: list[str]) -> None:
         await run_ffmpeg_with_optional_nvenc_fallback(args)
 
 
+def worker_error_message(message: str) -> str:
+    # エラー判定は "translation api http error 429:" のような先頭の目印と、
+    # 末尾の RetryInfo の両方に依存する。末尾だけを切り取ると目印が消えて
+    # 429 の待機・再試行も短文表示も効かなくなるため、先頭と末尾を残す。
+    if len(message) <= 2000:
+        return message
+    return f"{message[:1000]}\n...[truncated {len(message) - 2000} chars]...\n{message[-1000:]}"
+
+
 async def run_translation_worker(payload: dict) -> dict:
     work_dir = Path(payload["_work_dir"])
     clean_payload = {key: value for key, value in payload.items() if key != "_work_dir"}
@@ -3342,9 +3351,9 @@ async def run_translation_worker(payload: dict) -> dict:
             stdout=stdout.decode("utf-8", errors="replace"),
             stderr=message,
             returncode=process.returncode,
-            exception=message[-1000:] or "local llm translation failed",
+            exception=worker_error_message(message) or "local llm translation failed",
         )
-        raise RuntimeError(message[-1000:] or "local llm translation failed")
+        raise RuntimeError(worker_error_message(message) or "local llm translation failed")
     try:
         result = json.loads(output_path.read_text(encoding="utf-8"))
     except Exception as error:

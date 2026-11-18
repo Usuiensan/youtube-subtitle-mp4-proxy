@@ -108,6 +108,67 @@ def test_force_normalizes_asr_even_when_detection_misses() -> None:
     ]
 
 
+def test_japanese_two_line_rolling_keeps_each_line_once() -> None:
+    # YouTube の日本語ASRは2行ローリング形式: 各行が次のキューでもう一度出る。
+    # 1行=1単語扱いになるため、単語単位の重なり除去では行の重複を取り除けない。
+    subtitles = [
+        cue(1, 16.4, 18.99, "おはよう直火焼きワッパーセットの頂点に"),
+        cue(2, 18.99, 19.0, "おはよう直火焼きワッパーセットの頂点に\n "),
+        cue(3, 19.0, 20.99, "おはよう直火焼きワッパーセットの頂点に\n君臨するビーフ焼き"),
+        cue(4, 20.99, 21.0, "君臨するビーフ焼き\n "),
+        cue(5, 21.0, 23.09, "君臨するビーフ焼き\nそれこそが我らの癒し"),
+    ]
+
+    normalized = normalize_word_incremental_subtitles(subtitles, force=True)
+
+    assert normalized is not None
+    assert [item.content for item in normalized] == [
+        "おはよう直火焼きワッパーセットの頂点に",
+        "君臨するビーフ焼き",
+        "それこそが我らの癒し",
+    ]
+
+
+def test_chinese_single_line_growth_keeps_only_the_new_tail() -> None:
+    subtitles = [
+        cue(1, 0, 2, "今天是第三場電視"),
+        cue(2, 2, 4, "今天是第三場電視發表會由中選會"),
+        cue(3, 4, 6, "發表會由中選會主辦"),
+    ]
+
+    normalized = normalize_word_incremental_subtitles(subtitles, force=True)
+
+    assert normalized is not None
+    assert [item.content for item in normalized] == ["今天是第三場電視", "發表會由中選會", "主辦"]
+
+
+def test_single_word_overlap_is_removed_when_the_word_is_long() -> None:
+    subtitles = [
+        cue(1, 0, 2, "a bell will ring twice."),
+        cue(2, 2, 4, "twice. The representative must then conclude"),
+    ]
+
+    normalized = normalize_word_incremental_subtitles(subtitles, force=True)
+
+    assert normalized is not None
+    assert [item.content for item in normalized] == [
+        "a bell will ring twice.",
+        "The representative must then conclude",
+    ]
+
+
+def test_short_single_word_overlap_is_kept() -> None:
+    subtitles = [
+        cue(1, 0, 2, "this is the"),
+        cue(2, 2, 4, "the house on the hill"),
+    ]
+
+    normalized = normalize_word_incremental_subtitles(subtitles, force=True)
+
+    assert normalized is not None
+    assert [item.content for item in normalized] == ["this is the", "the house on the hill"]
+
+
 def test_preprocess_without_force_leaves_undetected_file_unchanged(tmp_path) -> None:
     path = tmp_path / "subtitle.ja.srt"
     path.write_text(srt.compose(_mixed_subtitles()), encoding="utf-8")
